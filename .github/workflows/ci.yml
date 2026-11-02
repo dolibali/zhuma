@@ -5,16 +5,27 @@ on:
     branches: [main, develop]
   pull_request:
   workflow_dispatch:
+    inputs:
+      task:
+        description: Normal checks, or save an unsigned Windows candidate
+        type: choice
+        default: check
+        options: [check, windows-package]
+      source_sha:
+        description: Full source SHA for Windows packaging, matching the dispatch ref
+        type: string
+        required: false
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}-${{ inputs.task || 'check' }}
   cancel-in-progress: true
 
 jobs:
   scaffold:
+    if: github.event_name != 'workflow_dispatch' || inputs.task != 'windows-package'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -54,3 +65,62 @@ jobs:
           if-no-files-found: ignore
       - name: Confirm clean upstream source
         run: pnpm upstream:check
+
+  windows-candidate:
+    if: github.event_name == 'workflow_dispatch' && inputs.task == 'windows-package'
+    runs-on: windows-2025
+    timeout-minutes: 120
+    env:
+      CANDIDATE_SOURCE_SHA: ${{ inputs.source_sha }}
+      COREPACK_ENABLE_DOWNLOAD_PROMPT: '0'
+      DSH_DESKTOP_OPEN_DEVTOOLS: '0'
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - name: Bind the candidate to the exact dispatch SHA
+        shell: pwsh
+        env:
+          DISPATCH_SHA: ${{ github.sha }}
+        run: |
+          if ($env:CANDIDATE_SOURCE_SHA -cnotmatch '^[a-f0-9]{40}$') { throw 'Full source SHA required.' }
+          if ($env:DISPATCH_SHA -cne $env:CANDIDATE_SOURCE_SHA) { throw 'Dispatch/source SHA differs.' }
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.source_sha }}
+          submodules: true
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .node-version
+      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+        with:
+          run_install: false
+      - name: Install the shell-free SDK package manager entrypoint
+        run: npm install --global corepack@0.34.6 --force
+      - name: Install locked product dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Confirm the native build host and frozen source
+        shell: pwsh
+        run: |
+          node -e "if(process.platform!=='win32'||process.arch!=='x64'||process.versions.node!=='24.15.0')process.exit(1)"
+          if ($LASTEXITCODE -ne 0) { throw 'Windows x64 product toolchain required.' }
+          if ((git rev-parse HEAD) -cne $env:CANDIDATE_SOURCE_SHA) { throw 'Checkout/source SHA differs.' }
+          if (git status --porcelain) { throw 'Product source is dirty.' }
+          pnpm upstream:check
+      - name: Prepare the pinned official desktop
+        run: pnpm desktop:prepare
+      - name: Build the native unsigned Windows x64 installer
+        run: pnpm desktop:package:win
+      - name: Verify packaged bytes and record the exact source
+        run: pnpm desktop:verify:win --source-sha $env:CANDIDATE_SOURCE_SHA
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: desktop-windows-x64-${{ inputs.source_sha }}
+          path: |
+            dist/windows-x64/*.exe
+            dist/windows-x64/SOURCE.json
+            dist/windows-x64/SHA256SUMS
+            dist/windows-x64/LICENSE
+            dist/windows-x64/THIRD_PARTY_NOTICES.md
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14

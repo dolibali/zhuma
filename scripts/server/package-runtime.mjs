@@ -18,8 +18,14 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import { fileHash, HEADLESS_SDK_PIN, runtimeInventory } from './runtime-manifest.mjs';
 import { assertProductSourceRecipe } from '../desktop/source-recipe.mjs';
+import { assertReversiblePatchSeries, PRODUCT_SOURCE_PATCHES } from '../desktop/patch-series.mjs';
 import { bundleHeadlessLaunchers } from './bundle-headless.mjs';
-import { sharedPatchPackageRoot } from './shared-patch-owner.mjs';
+import { deployedSharedPatchPackageRoot, sharedPatchPackageRoot } from './shared-patch-owner.mjs';
+import {
+  materializeExternalWorkspaceLinks,
+  portableRuntimeFileExclusion,
+  installedDependencyRoot,
+} from './portable-dependencies.mjs';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
 const { values } = parseArgs({ options: { sdk: { type: 'string' }, out: { type: 'string' } } });
@@ -50,10 +56,9 @@ assertProductSourceRecipe(
   JSON.parse(await readFile(join(sdk, '.zhuma-prepared.json'), 'utf8')),
   'server',
 );
-execFileSync(
-  'git',
-  ['apply', '--reverse', '--check', join(root, 'patches/deepseek-harness/zhuma-desktop.patch')],
-  { cwd: sdk },
+assertReversiblePatchSeries(
+  sdk,
+  PRODUCT_SOURCE_PATCHES.map((name) => join(root, name)),
 );
 await assert.rejects(access(output), { code: 'ENOENT' });
 await mkdir(dirname(output), { recursive: true });
@@ -88,22 +93,16 @@ try {
     '--legacy',
     '--prod',
     '--config.allow-unused-patches=true',
-    '--config.node-linker=hoisted',
+    '--config.node-linker=isolated',
     '--config.auto-install-peers=false',
     '--config.link-workspace-packages=true',
     '--config.hoist-workspace-packages=false',
     deployed,
   );
-  const { restoreLegacyHoists } = await import(source('scripts/executable-packaging.ts'));
-  const { materializeStagedLinks, deduplicateStagedWorkspacePackages } = await import(
-    source('scripts/build-exe-for-python-sdk-staging.ts')
-  );
-  await restoreLegacyHoists(deployed, join(sdk, 'python/sdk-runtime/node_modules'));
-  await materializeStagedLinks(deployed);
-  await deduplicateStagedWorkspacePackages(deployed, sdk);
+  await materializeExternalWorkspaceLinks(deployed, sdk);
   for (const patch of plan.patches) {
     const from = await sharedPatchPackageRoot(sdk, patch.name, patch.version);
-    const to = join(deployed, 'node_modules', patch.name);
+    const to = await deployedSharedPatchPackageRoot(deployed, sdk, patch.name, patch.version);
     assert.equal(
       JSON.parse(await readFile(join(to, 'package.json'), 'utf8')).version,
       patch.version,
@@ -117,7 +116,7 @@ try {
       assert.equal(
         await fileHash(join(to, file)),
         await fileHash(join(from, file)),
-        'Production shared patch bytes differ.',
+        `Production shared patch bytes differ: ${patch.name}`,
       );
     }
   }
@@ -125,17 +124,19 @@ try {
   const { desktopRuntimeFileExclusion } = await import(
     source('apps/desktop/scripts/runtime-file-policy.ts')
   );
-  const office = JSON.parse(
-    await readFile(
-      join(deployed, 'node_modules/@deepseek-ai/libreoffice-kit/package.json'),
-      'utf8',
-    ),
-  );
+  const office = (
+    await installedDependencyRoot(
+      deployed,
+      join(deployed, 'node_modules/@deepseek-ai/dsh-skill-office/package.json'),
+      '@deepseek-ai/libreoffice-kit',
+    )
+  ).manifest;
   const engine = selectOfficeEngine(office, { platform: process.platform, arch: process.arch });
   const destination = join(stage, 'sdk');
   await cp(deployed, destination, {
     recursive: true,
-    dereference: true,
+    dereference: false,
+    verbatimSymlinks: true,
     filter(path) {
       const local = path
         .slice(deployed.length + 1)
@@ -143,10 +144,11 @@ try {
         .join('/');
       if (local.startsWith('node_modules/'))
         return (
-          desktopRuntimeFileExclusion(
+          portableRuntimeFileExclusion(
             local.slice('node_modules/'.length),
             { platform: process.platform, arch: process.arch },
             engine,
+            desktopRuntimeFileExclusion,
           ) === undefined
         );
       return !['pnpm-lock.yaml', 'pnpm-workspace.yaml', '.npmrc'].includes(local);

@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { sha256, verifyIconAssets, installIconAssets } from './icon-assets.mjs';
 import { productSourceRecipeDigest } from './source-recipe.mjs';
+import { assertReversiblePatchSeries, PRODUCT_SOURCE_PATCHES } from './patch-series.mjs';
 
 const root = resolve(fileURLToPath(new URL('../..', import.meta.url)));
 const upstream = join(root, 'upstream/deepseek-harness');
@@ -15,7 +16,7 @@ const upstream = join(root, 'upstream/deepseek-harness');
 export function prepareProductSources({ kind = 'desktop', refresh = false } = {}) {
   if (!['desktop', 'server'].includes(kind)) throw new Error('Unsupported preparation kind');
   const stage = join(root, `.build/${kind}/deepseek-harness`);
-  const patchPath = join(root, 'patches/deepseek-harness/zhuma-desktop.patch');
+  const patches = PRODUCT_SOURCE_PATCHES.map((name) => join(root, name));
   const memberTransport = join(root, 'packages/dsh-adapter/src/desktop-member-cookie.ts');
   const stagedMemberTransport = join(stage, 'apps/desktop/src/zhuma-member-cookie.ts');
   const sourceVerifier = join(root, 'scripts/desktop/verify-build-source-paths.ts');
@@ -69,6 +70,7 @@ export function prepareProductSources({ kind = 'desktop', refresh = false } = {}
         'Prepared runtime verifier differs; inspect the owned build tree before resetting.',
       );
     if (stamp.digest === digest && !refresh) {
+      assertReversiblePatchSeries(stage, patches);
       console.log(`Zhuma ${kind} already prepared: ${stage}`);
       return stage;
     }
@@ -77,13 +79,15 @@ export function prepareProductSources({ kind = 'desktop', refresh = false } = {}
         'Recipe/assets changed: use --refresh-assets only if source patch matches; otherwise reset the owned worktree.',
       );
     // Do not overwrite arbitrary user edits. Refresh is restricted to generated image files.
-    run('git', ['-C', stage, 'apply', '--reverse', '--check', patchPath]);
+    assertReversiblePatchSeries(stage, patches);
   } else {
     if (existsSync(stage)) throw new Error(`Unmanaged stage exists: ${stage}`);
     mkdirSync(resolve(stage, '..'), { recursive: true });
     run('git', ['-C', upstream, 'worktree', 'add', '--detach', stage, pinned]);
-    run('git', ['-C', stage, 'apply', '--check', patchPath]);
-    run('git', ['-C', stage, 'apply', patchPath]);
+    for (const patch of patches) {
+      run('git', ['-C', stage, 'apply', '--check', patch]);
+      run('git', ['-C', stage, 'apply', patch]);
+    }
     copyFileSync(memberTransport, stagedMemberTransport);
     copyFileSync(sourceVerifier, stagedSourceVerifier);
     copyFileSync(runtimeVerifier, stagedRuntimeVerifier);
