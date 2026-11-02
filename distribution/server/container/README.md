@@ -51,7 +51,7 @@ docker --context "$BUILD_CONTEXT" build --platform linux/amd64 \
 
 镜像成功生成后，先在 Linux amd64 上以 UID 10001、只读 root、独立空 `/data` volume 和受限 `/tmp` 首启，核对实际成员 HTTP、原生动态库、来源校验和 SIGTERM；再按已授权的现有私有镜像通道交付，部署使用最终 digest。此处不自动推送镜像、创建仓库或发布版本。
 
-运行参数由同源 `start.mjs` 提供：`--data /data --host <明确IP> --port 3080 --file-uploads --independent-reviews --public-origin <明确成员根Origin>`。宿主映射端口与容器地址不同时必须显式声明实际 Origin，不接受任意 Host 或转发头。成员门监听 3080，原 SDK 操作员控制平面只在容器 loopback 3081；成员 Service 不暴露后者。操作员临时能力只保留在 `/data` 私有文件，不能写入命令参数、镜像、日志或成员链接。
+运行参数由同源 `start.mjs` 提供：`--data /data --host <明确IP> --port 3080 --operator-port 3081 --file-uploads --independent-reviews --public-origin <明确成员根Origin>`。宿主映射端口与容器地址不同时必须显式声明实际 Origin，不接受任意 Host 或转发头。成员门监听 3080，原 SDK 操作员控制平面只在容器 loopback 3081；成员 Service 不暴露后者。操作员临时能力只保留在 `/data` 私有文件，不能写入命令参数、镜像、日志或成员链接。
 
 ## 验收边界
 
