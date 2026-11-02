@@ -291,6 +291,11 @@ Windows x64 安装包、macOS arm64 DMG 与 Linux amd64 服务镜像／便携包
   await verifiedMainCI(context, api);
   const currentTag = await api(`${prefix}/git/ref/tags/${context.tag}`);
   assert.equal(currentTag.object.sha, context.source, 'Release tag moved during upload.');
+  assert.deepEqual(
+    await serverQualification(context, manifest.platforms.server.qualification.runId, api),
+    manifest.platforms.server.qualification,
+    'Linux qualification changed during asset upload; keep this release private.',
+  );
   const completed = await api(`${prefix}/releases/${release.id}`, {
     method: 'PATCH',
     body: { draft: false },

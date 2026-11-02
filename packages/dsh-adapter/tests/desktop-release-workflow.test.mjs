@@ -43,7 +43,13 @@ function fakeApi(options = {}) {
   const api = async (path, input = {}) => {
     const method = input.method ?? 'GET';
     calls.push({ path, method, ...input });
-    if (/\/actions\/runs\/77(?:$|\/)/u.test(path)) return qualificationApi(context)(path);
+    if (/\/actions\/runs\/77(?:$|\/)/u.test(path))
+      return qualificationApi(
+        context,
+        options.qualificationMovesAfterUpload && uploads.length >= 5
+          ? { artifact: { digest: `sha256:${'8'.repeat(64)}` } }
+          : {},
+      )(path);
     if (path.endsWith('/git/ref/heads/main'))
       return {
         object: {
@@ -286,7 +292,11 @@ test('release contracts: corrupt artifact/source identity refuses before writes;
     foreign = fakeApi();
   await assert.rejects(publish({ ...context, source: 'f'.repeat(40) }, other, foreign.api));
   assert.equal(foreign.calls.length, 0);
-  for (const options of [{ badDigest: true }, { moveAfterUpload: true }]) {
+  for (const options of [
+    { badDigest: true },
+    { moveAfterUpload: true },
+    { qualificationMovesAfterUpload: true },
+  ]) {
     const directory = await artifacts(t),
       refused = fakeApi(options);
     await assert.rejects(publish(context, directory, refused.api));
