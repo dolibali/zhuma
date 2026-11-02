@@ -3208,7 +3208,7 @@ index 9c8fa97..689fdc6 100644
  
 +/** Product navigation guard before retaining/following a Session. False means
 + * the guard handled task navigation or refused it; the guard owns user feedback. */
-+export type SessionNavigationGuard = (target: SessionTarget, signal: AbortSignal) => boolean | Promise<boolean>
++export type SessionNavigationGuard = (target: SessionTarget, signal: AbortSignal, intent?: 'restore' | 'explicit') => boolean | Promise<boolean>
 +
  /** Workspace archive and directory operations consumed by Client UI domains. */
  export interface UiWorkspace {
@@ -3282,7 +3282,7 @@ index 9c8fa97..689fdc6 100644
 +    const bounded = AbortSignal.any([signal, this.lifetime.signal, waiting.signal])
 +    void Promise.resolve().then(() => {
 +      bounded.throwIfAborted()
-+      return registration.guard(target, bounded)
++      return registration.guard(target, bounded, panel === 'preserve' ? 'restore' : 'explicit')
 +    }).then(allowed => {
 +      if (bounded.aborted || this.sessionNavigation !== registration || this.waitingNavigation !== waiting) return
 +      if (allowed === true) this.commitMain(target, bounded, panel, beforeOpen)
