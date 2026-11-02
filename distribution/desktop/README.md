@@ -28,6 +28,21 @@ pnpm desktop:verify:mac          # 校验安装包名称、App ID、图标、签
 
 候选 DMG 输出位于 `.build/desktop/deepseek-harness/apps/desktop/.desktop-build/targets/mac-arm64/unsigned-artifacts/`，具体名称以构建产物为准，构建成功后脚本同时复制到项目根目录下**不会提交 Git 的 `dist/`**。目录名沿用 `unsigned-artifacts`；当前验收候选采用 ad-hoc 临时签名、未公证。此为开发者测试包，正式发行状态以最终 v1.3.0 说明为准。
 
+## Windows x64 工程候选
+
+以下入口用于补齐 Windows 原生构建证据，尚不扩大上述正式发行支持范围。需要 Windows x64、Node.js `24.15.0`、根 pnpm `12.4.2` 和 Corepack。SDK 仍使用自己的固定 pnpm；脚本通过 Node 调用 Corepack 的 JavaScript 入口，不执行 `.cmd` 包装器。先冻结产品源码，保持工作树干净，再在 PowerShell 执行：
+
+```powershell
+pnpm install --frozen-lockfile --ignore-scripts
+pnpm desktop:prepare
+pnpm desktop:package:win
+pnpm desktop:verify:win --source-sha (git rev-parse HEAD)
+```
+
+脚本使用原 SDK 的 `package:desktop:win:x64:unsigned`，输出到 `dist/windows-x64/`。来源核验检查准备配方、固定 SDK、产品提交、独立产品／构建／SDK版本、x64 应用 PE、九个工作台文件，以及三个必须解包的 CodeArts 物理文件；保留许可，并生成 `SOURCE.json` 和 `SHA256SUMS`。已有来源记录拒绝覆盖，后续候选应先保存到独立证据目录。NSIS 安装器引导本身允许为 x86，不据此误判应用架构。
+
+CI 的 **CI → Run workflow** 可选择 `task=windows-package`，填写与 dispatch ref 相同的完整 `source_sha`。该模式仅在 `windows-2025` 构建并保存候选资产；普通 push／PR 的 scaffold 检查保持原流程。候选 job 只有读取权限，不创建 tag 或 Release。编译和字节核验不代替实际安装、窗口、模型、本机权限、业务链路或恢复验收；这些证据由对应 Windows 环境按准确候选另行提供。
+
 ## 本地优先，登录策略与数据隔离
 
 全新桌面外部 profile 首次创建时，仅在 `package.json` 和 `cordis.patch.yml` 均不存在的情况下写入 `deploymentMode: multi-member` 与 `localSetup: true`，进入首次成员设置。已有 profile 保留其显式或继承的模式与数据，不自动迁移；Bundle 中的 `legacy-single-user` 默认用于旧 profile 兼容，不代表全新安装的默认模式。已有 profile 的成员模式迁移需独立实施和验收。
