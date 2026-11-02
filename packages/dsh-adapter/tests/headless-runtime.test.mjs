@@ -1,7 +1,9 @@
 /** Portable provenance/launch contracts using disposable synthetic public material only. */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -12,6 +14,42 @@ import {
   runtimeInventory,
 } from '../../../scripts/server/runtime-manifest.mjs';
 import { headlessLaunchPlan, parseHeadlessArgs } from '../../../scripts/server/headless.mjs';
+
+test('producer bundling helper loads before workspace exports exist on a cold install', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'zhuma-headless-cold-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  await cp(
+    new URL('../../../scripts/server/bundle-headless.mjs', import.meta.url),
+    join(directory, 'bundle-headless.mjs'),
+  );
+  // A fresh source checkout has installed tools, but no @zhuma/* dist files.
+  // This isolated module graph has esbuild and deliberately no workspace packages.
+  const require = createRequire(import.meta.url);
+  await mkdir(join(directory, 'node_modules'));
+  await symlink(
+    fileURLToPath(new URL('.', pathToFileURL(require.resolve('esbuild/package.json')))),
+    join(directory, 'node_modules/esbuild'),
+    'dir',
+  );
+  await cp(
+    new URL('../../../scripts/server/member-routes.mjs', import.meta.url),
+    join(directory, 'member-routes.mjs'),
+  );
+  execFileSync(
+    process.execPath,
+    [
+      '--input-type=module',
+      '-e',
+      `
+    import assert from 'node:assert/strict';
+    const { bundleHeadlessLaunchers } = await import(${JSON.stringify(pathToFileURL(join(directory, 'bundle-headless.mjs')).href)});
+    assert.equal(typeof bundleHeadlessLaunchers, 'function');
+    await assert.rejects(bundleHeadlessLaunchers('.', '.'), { code: 'ERR_MODULE_NOT_FOUND' });
+  `,
+    ],
+    { stdio: 'pipe' },
+  );
+});
 
 test('emitted launchers run outside the source tree with a frozen, SDK-independent member route table', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'zhuma-headless-bundle-'));

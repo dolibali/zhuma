@@ -108,6 +108,8 @@ export function createMemberGateway({ host, port, operatorPort, authorities, rea
       upstream.once('error', reject);
     });
     try {
+      // A header-only request must reach the original authentication/body budget immediately.
+      upstream.flushHeaders();
       // pipe preserves backpressure without pipeline destroying the client socket on early 413.
       req.pipe(upstream);
       const response = await incoming;
