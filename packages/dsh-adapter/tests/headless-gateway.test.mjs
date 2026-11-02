@@ -194,3 +194,63 @@ test(
     assert.deepEqual(reply, { status: 413, body: 'fixture payload too large' });
   },
 );
+
+test(
+  'aborting a partial upload closes its upstream carrier without crashing later requests',
+  { timeout: 5_000 },
+  async (t) => {
+    const received = Promise.withResolvers();
+    const url = await fixture(t, (req, res) => {
+      req.on('error', () => undefined);
+      if (req.url.endsWith('/upload-file')) req.once('data', () => received.resolve());
+      else res.end('still serving');
+    });
+    const uploading = request(`${url}/api/zhuma-exec/upload-file`, {
+      method: 'POST',
+      headers: { host: authority },
+    });
+    uploading.on('error', () => undefined);
+    uploading.write('partial body');
+    await received.promise;
+    uploading.destroy();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assert.equal((await send(`${url}/workbench`, { headers: { host: authority } })).status, 200);
+  },
+);
+
+test(
+  'headers alone reach the original authentication immediately without waiting for a body',
+  { timeout: 5_000 },
+  async (t) => {
+    let reached = 0,
+      bytes = 0;
+    const url = await fixture(t, (req, res) => {
+      reached++;
+      req.on('data', (chunk) => {
+        bytes += chunk.length;
+      });
+      req.on('error', () => undefined);
+      res.writeHead(401);
+      res.end('original authentication refused');
+    });
+    const reply = await new Promise((resolve, reject) => {
+      const req = request(`${url}/api/zhuma-exec/upload-file`, {
+        method: 'POST',
+        headers: { host: authority, 'content-length': '32' },
+      });
+      t.after(() => req.destroy());
+      req.on('error', reject);
+      req.once('response', (res) => {
+        let body = '';
+        res.on('data', (chunk) => {
+          body += chunk;
+        });
+        res.once('end', () => resolve({ status: res.statusCode, body }));
+      });
+      req.flushHeaders(); // Deliberately never write/end the declared body.
+    });
+    assert.deepEqual(reply, { status: 401, body: 'original authentication refused' });
+    assert.equal(reached, 1);
+    assert.equal(bytes, 0);
+  },
+);

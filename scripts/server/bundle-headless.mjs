@@ -3,9 +3,11 @@ import assert from 'node:assert/strict';
 import { isBuiltin } from 'node:module';
 import { join } from 'node:path';
 import { build } from 'esbuild';
-import { MEMBER_ROUTE_TUPLES } from './member-routes.mjs';
 
 export async function bundleHeadlessLaunchers(root, stage) {
+  // The producer rebuilds workspace exports first. Importing this helper must
+  // also work immediately after a frozen install, before those exports exist.
+  const { MEMBER_ROUTE_TUPLES } = await import('./member-routes.mjs');
   for (const [entry, file] of [
     ['headless.mjs', 'start.mjs'],
     ['member-gateway.mjs', 'member-gateway.mjs'],

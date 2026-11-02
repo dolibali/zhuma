@@ -2,7 +2,6 @@
 /** Build a relocatable public Linux payload using the fixed SDK's production deploy helpers. */
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { createRequire } from 'node:module';
 import {
   access,
   cp,
@@ -20,6 +19,7 @@ import { parseArgs } from 'node:util';
 import { fileHash, HEADLESS_SDK_PIN, runtimeInventory } from './runtime-manifest.mjs';
 import { assertProductSourceRecipe } from '../desktop/source-recipe.mjs';
 import { bundleHeadlessLaunchers } from './bundle-headless.mjs';
+import { sharedPatchPackageRoot } from './shared-patch-owner.mjs';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
 const { values } = parseArgs({ options: { sdk: { type: 'string' }, out: { type: 'string' } } });
@@ -101,20 +101,8 @@ try {
   await restoreLegacyHoists(deployed, join(sdk, 'python/sdk-runtime/node_modules'));
   await materializeStagedLinks(deployed);
   await deduplicateStagedWorkspacePackages(deployed, sdk);
-  const installed = createRequire(join(sdk, 'packages/bundle/web-app/package.json'));
   for (const patch of plan.patches) {
-    let from = dirname(installed.resolve(patch.name));
-    for (;;) {
-      try {
-        if (JSON.parse(await readFile(join(from, 'package.json'), 'utf8')).name === patch.name)
-          break;
-      } catch (error) {
-        if (error.code !== 'ENOENT') throw error;
-      }
-      const parent = dirname(from);
-      assert(parent !== from, 'Qualified installed patch package is absent.');
-      from = parent;
-    }
+    const from = await sharedPatchPackageRoot(sdk, patch.name);
     const to = join(deployed, 'node_modules', patch.name);
     assert.equal(
       JSON.parse(await readFile(join(to, 'package.json'), 'utf8')).version,
