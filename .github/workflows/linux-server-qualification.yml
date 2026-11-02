@@ -276,7 +276,7 @@ jobs:
           name: linux-server-amd64-${{ needs.mode.outputs.source }}
           path: .build/qualification/artifacts/
           if-no-files-found: error
-          compression-level: 0
+          compression-level: 6
           retention-days: 7
       - name: Record bounded failed-start diagnostics from fresh test data only
         if: failure()
