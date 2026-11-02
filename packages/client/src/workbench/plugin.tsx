@@ -347,6 +347,9 @@ export function apply(ctx: Context): void {
     ctx.slots.register(
       {
         name: 'settings.launcher',
+        // Shadow the official priority-0 launcher; disposing this registration
+        // restores it without replacing the Settings owner or its actions.
+        priority: -100,
         inject: () => ({
           shell: memberShell,
           memberLifecycle: mode === 'multi-member',
