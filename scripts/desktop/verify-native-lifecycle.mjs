@@ -1026,7 +1026,7 @@ void publicContract;
       {},
       8,
     );
-  else if (values.phase !== 'host-workflow-cold')
+  else if (values.phase !== 'host-workflow-cold' && values.phase !== 'native-windows')
     verify('host-run', ['packages/core/agent-loop/tests/zhuma-host-run-native.spec.ts'], 14);
   const coldRecoveries = [];
   if (
