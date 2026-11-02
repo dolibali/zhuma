@@ -1,6 +1,12 @@
 name: Linux server qualification
 
 on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact current main source SHA to qualify
+        required: true
+        type: string
   pull_request:
     paths:
       - .github/workflows/linux-server-qualification.yml
@@ -27,7 +33,7 @@ env:
   LINUX_SERVER_MODE: qualify
 
 concurrency:
-  group: linux-server-${{ github.event.pull_request.number }}
+  group: linux-server-${{ github.event.pull_request.number || inputs.source_sha }}
   cancel-in-progress: true
 
 jobs:
@@ -35,22 +41,45 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       selected: ${{ steps.select.outputs.selected }}
+      source: ${{ steps.select.outputs.source }}
+    env:
+      EVENT_NAME: ${{ github.event_name }}
+      EVENT_REF: ${{ github.ref }}
+      EVENT_SHA: ${{ github.sha }}
+      WORKFLOW_SHA: ${{ github.workflow_sha }}
+      REQUESTED_SHA: ${{ inputs.source_sha }}
+      PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
     steps:
       - id: select
         run: |
-          case "$LINUX_SERVER_MODE" in native-probe|qualify) ;; *) exit 1 ;; esac
-          echo "selected=$LINUX_SERVER_MODE" >> "$GITHUB_OUTPUT"
+          selected="$LINUX_SERVER_MODE"
+          source="$PR_HEAD_SHA"
+          if [ "$EVENT_NAME" = workflow_dispatch ]; then
+            test "$EVENT_REF" = refs/heads/main || exit 1
+            [[ "$REQUESTED_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+            test "$REQUESTED_SHA" = "$EVENT_SHA" || exit 1
+            test "$REQUESTED_SHA" = "$WORKFLOW_SHA" || exit 1
+            test "$(git ls-remote --exit-code https://github.com/dolibali/zhuma.git refs/heads/main | cut -f1)" = "$REQUESTED_SHA" || exit 1
+            selected=qualify
+            source="$REQUESTED_SHA"
+          else
+            test "$EVENT_NAME" = pull_request || exit 1
+          fi
+          case "$selected" in native-probe|qualify) ;; *) exit 1 ;; esac
+          [[ "$source" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          echo "selected=$selected" >> "$GITHUB_OUTPUT"
+          echo "source=$source" >> "$GITHUB_OUTPUT"
   native-probe:
     needs: mode
     if: needs.mode.outputs.selected == 'native-probe'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
-      SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
+      SOURCE_SHA: ${{ needs.mode.outputs.source }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ needs.mode.outputs.source }}
           persist-credentials: false
       - name: Prepare a pure native probe with exact SDK package integrity
         run: |
@@ -164,7 +193,7 @@ jobs:
           node --input-type=module -e 'import {readFileSync} from "node:fs"; for(const name of ["tmpfs-default","tmpfs-direct","volume-default"]){const r=JSON.parse(readFileSync(`.build/native-probe/results/${name}.json`)); console.log(JSON.stringify({name,scope:r.scope,native:r.native,tmpMount:r.tmpMount}));}'
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: unqualified-native-diagnostics-${{ github.event.pull_request.head.sha }}
+          name: unqualified-native-diagnostics-${{ needs.mode.outputs.source }}
           path: .build/native-probe/results/*.json
           if-no-files-found: error
           retention-days: 7
@@ -179,11 +208,11 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
-      SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
+      SOURCE_SHA: ${{ needs.mode.outputs.source }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ needs.mode.outputs.source }}
           persist-credentials: false
       - name: Bind the definition and product candidate to the exact source
         run: |
@@ -250,6 +279,9 @@ jobs:
           printf '{"exitCode":%s,"scope":"idle process stop; no business Run drain proof"}\n' "$exit_code" > .build/qualification/artifacts/STOP.json
       - name: Export only qualified production bytes and their hashes
         run: |
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+            test "$(git ls-remote --exit-code https://github.com/dolibali/zhuma.git refs/heads/main | cut -f1)" = "$SOURCE_SHA" || exit 1
+          fi
           tar -C .build/qualification/payload -czf .build/qualification/artifacts/portable.tar.gz .
           docker save "zhuma-backend:$SOURCE_SHA" -o .build/qualification/artifacts/backend-image.tar
           cp .build/qualification/payload/SOURCE.json .build/qualification/artifacts/SOURCE.json
@@ -258,7 +290,7 @@ jobs:
           sha256sum portable.tar.gz backend-image.tar SOURCE.json IMAGE_ID STOP.json > SHA256SUMS
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: linux-server-amd64-${{ github.event.pull_request.head.sha }}
+          name: linux-server-amd64-${{ needs.mode.outputs.source }}
           path: .build/qualification/artifacts/
           if-no-files-found: error
           compression-level: 0
