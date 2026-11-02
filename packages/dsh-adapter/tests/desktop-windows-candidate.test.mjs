@@ -4,7 +4,7 @@ import test from 'node:test';
 import { execFileSync } from 'node:child_process';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { corepackPnpmInvocation } from '../../../scripts/lib/corepack-pnpm.mjs';
 import { desktopPackageTarget } from '../../../scripts/lib/desktop-package-target.mjs';
@@ -121,11 +121,12 @@ test('Windows candidate checks source metadata, all nine workbench files, physic
     sdkVersion: '0.2.1-rc.4',
     asar: {
       extractFile: (_, file) => {
+        file = file.split(sep).join('/');
         assert(entries.has(file));
         return entries.get(file);
       },
       statFile: (_, file) => ({
-        unpacked: codeArtsLaunchFiles.some((name) => file === `${packagedWorkbench}/${name}`),
+        unpacked: codeArtsLaunchFiles.some((name) => file === join(packagedWorkbench, name)),
       }),
     },
   };

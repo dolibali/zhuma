@@ -101,6 +101,8 @@ export function headlessLaunchPlan(runtime, options, path = process.env.PATH ?? 
       HOME: join(options.data, 'home'),
       DSH_HOME: join(options.data, 'dsh'),
       LANG: 'en_US.UTF-8',
+      // Use the verified immutable binary directly; /tmp remains non-executable.
+      NARB_DISABLE_NATIVE_CACHE: '1',
     },
     overlay: [
       { id: 'typert-gateway', config: { sessionAdmissionRequired: true } },

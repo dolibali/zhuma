@@ -109,8 +109,10 @@ jobs:
       - name: Prepare the pinned official desktop
         run: pnpm desktop:prepare
       - name: Build the native unsigned Windows x64 installer
+        id: package
         run: pnpm desktop:package:win
       - name: Verify packaged bytes and record the exact source
+        id: verify
         run: pnpm desktop:verify:win --source-sha $env:CANDIDATE_SOURCE_SHA
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -124,3 +126,21 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 14
+      - name: Mark a failed-verification build as unqualified
+        if: failure() && steps.package.outcome == 'success' && steps.verify.outcome == 'failure'
+        run: node -e "require('node:fs').writeFileSync('dist/windows-x64/UNQUALIFIED.json', JSON.stringify({qualification:'failed', sourceCommit:process.env.CANDIDATE_SOURCE_SHA, scope:'Debug only; not an accepted installer or release asset.'}, null, 2))"
+      - name: Preserve an explicitly unqualified build when final verification fails
+        if: failure() && steps.package.outcome == 'success' && steps.verify.outcome == 'failure'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: unqualified-windows-build-${{ inputs.source_sha }}
+          path: |
+            dist/windows-x64/*.exe
+            dist/windows-x64/UNQUALIFIED.json
+            .build/desktop/deepseek-harness/apps/desktop/.desktop-build/targets/win-x64/unsigned-artifacts/win-unpacked/
+            LICENSE
+            THIRD_PARTY_NOTICES.md
+          include-hidden-files: true
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7

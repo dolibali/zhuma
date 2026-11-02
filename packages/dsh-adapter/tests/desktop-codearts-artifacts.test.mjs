@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, rm, symlink } from 'node:fs/promises';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
   codeArtsLaunchFiles,
@@ -25,7 +25,7 @@ test('release gate requires all three same-byte regular unpacked CodeArts artifa
   }
   const asar = {
     statFile: () => ({ unpacked: true }),
-    extractFile: (_archive, entry) => bytes.get(entry.split('/').at(-1)),
+    extractFile: (_archive, entry) => bytes.get(basename(entry)),
   };
   assert.deepEqual(
     Object.keys(verifyPackagedCodeArts(resources, expected, asar)),
