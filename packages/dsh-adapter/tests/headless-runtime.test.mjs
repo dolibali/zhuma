@@ -87,6 +87,7 @@ test('headless parser separates public/private binds and admits only explicit pu
     HOME: '/data/home',
     DSH_HOME: '/data/dsh',
     LANG: 'en_US.UTF-8',
+    NARB_DISABLE_NATIVE_CACHE: '1',
   });
   assert.equal(plan.args[plan.args.indexOf('--host') + 1], '127.0.0.1');
   assert.equal(plan.args[plan.args.indexOf('--port') + 1], '3081');

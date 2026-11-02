@@ -81,12 +81,14 @@ export function verifyWindowsCandidateFiles({
     'Product patches must remain explicit SDK changes.',
   );
   const sdk = JSON.parse(
-    asar.extractFile(archive, 'dsh/node_modules/@deepseek-ai/dsh/package.json').toString(),
+    asar
+      .extractFile(archive, join('dsh', 'node_modules', '@deepseek-ai', 'dsh', 'package.json'))
+      .toString(),
   );
   assert.equal(sdk.version, sdkVersion, 'SDK and product versions must remain separate.');
   const files = Object.fromEntries(
     candidateWorkbenchFiles.map((file) => {
-      const bytes = asar.extractFile(archive, `${packagedWorkbench}/${file}`);
+      const bytes = asar.extractFile(archive, join(packagedWorkbench, file));
       assert(bytes.equals(readFileSync(join(workbench, file))), 'Packaged workbench bytes differ.');
       assert(bytes.length > 0);
       return [
@@ -96,7 +98,7 @@ export function verifyWindowsCandidateFiles({
     }),
   );
   const plugin = JSON.parse(
-    asar.extractFile(archive, `${packagedWorkbench}/package.json`).toString(),
+    asar.extractFile(archive, join(packagedWorkbench, 'package.json')).toString(),
   );
   assert.equal(plugin.name, '@zhuma/workbench');
   assert.equal(plugin.version, productVersion);

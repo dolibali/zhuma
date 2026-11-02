@@ -22,9 +22,9 @@ on:
 permissions:
   contents: read
 
-# Temporary diagnostic mode. Restoring qualify requires a new reviewed source event.
+# Source-controlled mode: native diagnostics never authorize production artifacts.
 env:
-  LINUX_SERVER_MODE: native-probe
+  LINUX_SERVER_MODE: qualify
 
 concurrency:
   group: linux-server-${{ github.event.pull_request.number }}
