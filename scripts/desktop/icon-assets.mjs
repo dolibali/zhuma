@@ -57,7 +57,7 @@ export function verifyIconAssets(root) {
   );
   return manifest;
 }
-export function installIconAssets(root, stage) {
+export function installIconAssets(root, stage, { macOS = process.platform === 'darwin' } = {}) {
   const manifest = verifyIconAssets(root);
   const brand = join(root, 'branding/default');
   for (const target of [
@@ -72,22 +72,24 @@ export function installIconAssets(root, stage) {
   mkdirSync(ui, { recursive: true });
   for (const entry of manifest.outputs)
     copyFileSync(join(brand, entry.path), join(ui, `icon-${entry.width}.png`));
-  const iconset = join(root, '.build/desktop/Zhuma.iconset');
-  mkdirSync(iconset, { recursive: true });
-  for (const size of [16, 32, 128, 256, 512])
-    for (const density of [1, 2]) {
-      copyFileSync(
-        join(brand, `icons/icon-${size * density}.png`),
-        join(iconset, `icon_${size}x${size}${density === 2 ? '@2x' : ''}.png`),
-      );
-    }
-  const result = spawnSync(
-    'iconutil',
-    ['-c', 'icns', iconset, '-o', join(stage, 'apps/desktop/resources/icon-macos.icns')],
-    { stdio: 'inherit' },
-  );
-  if (result.error || result.status !== 0)
-    throw new Error('macOS icon container conversion failed');
+  if (macOS) {
+    const iconset = join(root, '.build/desktop/Zhuma.iconset');
+    mkdirSync(iconset, { recursive: true });
+    for (const size of [16, 32, 128, 256, 512])
+      for (const density of [1, 2]) {
+        copyFileSync(
+          join(brand, `icons/icon-${size * density}.png`),
+          join(iconset, `icon_${size}x${size}${density === 2 ? '@2x' : ''}.png`),
+        );
+      }
+    const result = spawnSync(
+      'iconutil',
+      ['-c', 'icns', iconset, '-o', join(stage, 'apps/desktop/resources/icon-macos.icns')],
+      { stdio: 'inherit' },
+    );
+    if (result.error || result.status !== 0)
+      throw new Error('macOS icon container conversion failed');
+  }
   console.log(
     `Original PNG preserved; transparent native and UI sizes installed (${APPROVED_ICON_SHA256.slice(0, 12)}).`,
   );
