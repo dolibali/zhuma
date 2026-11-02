@@ -1026,7 +1026,7 @@ void publicContract;
       {},
       8,
     );
-  else if (values.phase !== 'host-workflow-cold')
+  else if (values.phase !== 'host-workflow-cold' && values.phase !== 'native-windows')
     verify('host-run', ['packages/core/agent-loop/tests/zhuma-host-run-native.spec.ts'], 14);
   const coldRecoveries = [];
   if (
@@ -1164,10 +1164,12 @@ void publicContract;
           sha256: hash(join(fixtures, `${name}.spec.ts`)),
         })),
         node: process.version,
+        platform: process.platform,
+        arch: process.arch,
         phases,
         model: 'local scripted adapter only',
         realProductGrantVerified: false,
-        emittedHostMemberRunGrantVerified: true,
+        emittedHostMemberRunGrantVerified: values.phase !== 'native-windows',
       },
       null,
       2,
