@@ -81,9 +81,10 @@ jobs:
           docker run -d --name zhuma-http --read-only --cpus 1 --memory 1g --tmpfs /tmp:rw,nosuid,nodev,size=128m --mount type=volume,source=zhuma-test-data,target=/data -p 127.0.0.1:3080:3080 --entrypoint /bin/sh "zhuma-backend:$SOURCE_SHA" -ec 'exec node /app/start.mjs --data /data --host "$(hostname -i)" --port 3080 --operator-port 3081 --public-origin http://127.0.0.1:3080 --file-uploads --independent-reviews'
           for attempt in $(seq 1 60); do
             if curl -fsS --max-time 2 http://127.0.0.1:3080/workbench > .build/qualification/member.html; then break; fi
+            test "$(docker inspect zhuma-http --format '{{.State.Running}}')" = true
             sleep 2
           done
-          rg -q zhuma-member-root .build/qualification/member.html
+          grep -Fq zhuma-member-root .build/qualification/member.html
           test "$(curl --connect-timeout 2 --max-time 5 -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:3080/workbench/app.js)" = 200
           for path in / /connect; do test "$(curl --connect-timeout 2 --max-time 5 -sS -o /dev/null -w '%{http_code}' "http://127.0.0.1:3080$path")" = 404; done
           test "$(curl --connect-timeout 2 --max-time 5 -sS -X POST -H 'Origin: http://127.0.0.1:3080' -o /dev/null -w '%{http_code}' http://127.0.0.1:3080/api/session/prompt)" = 404
@@ -114,6 +115,12 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 7
+      - name: Record bounded failed-start diagnostics from fresh test data only
+        if: failure()
+        run: |
+          if docker inspect zhuma-http --format '{{json .State}}' 2>/dev/null; then
+            docker logs --tail 80 zhuma-http 2>&1 | sed -E 's/token=[^[:space:]&]+/token=[redacted]/g'
+          fi
       - name: Dispose only this runner's containers and fresh test data
         if: always()
         run: |
