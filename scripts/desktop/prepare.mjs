@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { sha256, verifyIconAssets, installIconAssets } from './icon-assets.mjs';
+import { productSourceRecipeDigest } from './source-recipe.mjs';
 
 const root = resolve(fileURLToPath(new URL('../..', import.meta.url)));
 const upstream = join(root, 'upstream/deepseek-harness');
@@ -41,18 +42,7 @@ export function prepareProductSources({ kind = 'desktop', refresh = false } = {}
   if (output('git', ['rev-parse', 'HEAD'], upstream) !== pinned)
     throw new Error('Unexpected DSH source revision');
   const manifest = verifyIconAssets(root);
-  const digest = sha256(
-    Buffer.concat([
-      Buffer.from(kind),
-      readFileSync(patchPath),
-      readFileSync(memberTransport),
-      readFileSync(sourceVerifier),
-      readFileSync(runtimeVerifier),
-      readFileSync(join(root, 'branding/default/icon-manifest.json')),
-      readFileSync(fileURLToPath(import.meta.url)),
-      readFileSync(join(root, 'scripts/desktop/icon-assets.mjs')),
-    ]),
-  );
+  const digest = productSourceRecipeDigest(root, kind);
   if (existsSync(stampPath)) {
     const stamp = JSON.parse(readFileSync(stampPath, 'utf8'));
     if (stamp.pinned !== pinned || output('git', ['rev-parse', 'HEAD'], stage) !== pinned)
