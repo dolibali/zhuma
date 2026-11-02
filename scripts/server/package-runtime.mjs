@@ -36,6 +36,15 @@ const lock = JSON.parse(await readFile(join(root, 'runtime.lock.json'), 'utf8'))
 assert.equal(lock.upstreams.deepseekHarness.commit, HEADLESS_SDK_PIN);
 assert.equal(git(sdk, 'rev-parse', 'HEAD'), HEADLESS_SDK_PIN);
 assert.equal(git(root, 'status', '--porcelain'), '', 'Freeze product source before packaging.');
+const productIdentity = {
+  commit: git(root, 'rev-parse', 'HEAD'),
+  tree: git(root, 'rev-parse', 'HEAD^{tree}'),
+};
+// Never label a stale mutable workbench build with the current source commit.
+execFileSync(process.execPath, [join(root, 'scripts/workbench/build.mjs')], {
+  cwd: root,
+  stdio: 'inherit',
+});
 assertProductSourceRecipe(
   root,
   JSON.parse(await readFile(join(sdk, '.zhuma-prepared.json'), 'utf8')),
@@ -187,8 +196,7 @@ try {
     schemaVersion: 1,
     product: {
       version: product.version,
-      commit: git(root, 'rev-parse', 'HEAD'),
-      tree: git(root, 'rev-parse', 'HEAD^{tree}'),
+      ...productIdentity,
       lockSha256: await fileHash(join(root, 'pnpm-lock.yaml')),
     },
     sdk: {
@@ -200,6 +208,12 @@ try {
     runtime: { platform: process.platform, arch: process.arch, node: process.versions.node },
     files: await runtimeInventory(stage),
   };
+  assert.equal(
+    git(root, 'rev-parse', 'HEAD'),
+    productIdentity.commit,
+    'Product source moved during packaging.',
+  );
+  assert.equal(git(root, 'status', '--porcelain'), '', 'Product source changed during packaging.');
   await writeFile(join(stage, 'SOURCE.json'), JSON.stringify(manifest, null, 2) + '\n');
   await rename(stage, output);
   console.log(

@@ -16,13 +16,12 @@ corepack pnpm run build:native-system
 corepack pnpm run build:lib
 corepack pnpm run build:web
 cd ../../..
-pnpm workbench:build
 node scripts/server/package-runtime.mjs --sdk .build/server/deepseek-harness --out .build/backend-runtime
 ```
 
 `build:native-system` 使用当前 Node 安装的开发头与本机编译器，Linux flock 不复制 macOS 二进制。SDK Host 编译原命令预留 4 GiB V8 heap，构建资源和运行服务资源分别记录。构建还需要 Git、编译工具、Python 与冻结依赖下载通道；不需要启动 Electron、导入任何原 profile 或调用模型。
 
-打包复用 SDK 原 production closure／完整性检查、部署和链接物化，保留必需共享实例和许可证。它先核固定源码、准备摘要、运行闭包与共享补丁分类，再逐文件核部署后的补丁字节；原 legacy deploy 对明确构建期补丁的 unused 参数不替代这些检查。输出先写临时目录、完成后原子改名，拒绝覆盖已有输出。根布局固定为 `sdk/`、`workbench/`、`start.mjs`、`member-gateway.mjs`、`runtime-manifest.mjs`、`SOURCE.json`、`LICENSE`、`THIRD_PARTY_LICENSES.txt`。无 Git 检出、原数据或凭据；只保留经检查的包内相对依赖链接，不依赖构建机绝对路径。
+打包从当前干净源码重新生成工作台九文件，并核源码在构建期间未移动，不能把旧 `.build/workbench` 标成新提交。SDK 使用原 production closure／完整性检查、部署和链接物化，保留必需共享实例和许可证。先核固定源码、准备摘要、运行闭包与共享补丁分类，再逐文件核部署后的补丁字节；原 legacy deploy 对明确构建期补丁的 unused 参数不替代这些检查。输出先写临时目录、完成后原子改名，拒绝覆盖已有输出。根布局固定为 `sdk/`、`workbench/`、`start.mjs`、`member-gateway.mjs`、`runtime-manifest.mjs`、`SOURCE.json`、`LICENSE`、`THIRD_PARTY_LICENSES.txt`。无 Git 检出、原数据或凭据；只保留经检查的包内相对依赖链接，不依赖构建机绝对路径。
 
 运行只读 `/app` 和唯一可写数据目录 `/data`：
 
