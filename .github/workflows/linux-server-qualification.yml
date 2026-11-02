@@ -7,23 +7,6 @@ on:
         description: Exact current main source SHA to qualify
         required: true
         type: string
-  pull_request:
-    paths:
-      - .github/workflows/linux-server-qualification.yml
-      - distribution/server/**
-      - scripts/server/**
-      - scripts/workbench/**
-      - packages/**
-      - patches/**
-      - runtime.lock.json
-      - pnpm-lock.yaml
-      - package.json
-      - .gitmodules
-      - upstream/deepseek-harness
-      - scripts/desktop/prepare.mjs
-      - scripts/desktop/source-recipe.mjs
-      - scripts/desktop/icon-assets.mjs
-      - branding/default/**
 
 permissions:
   contents: read
