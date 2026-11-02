@@ -21,7 +21,7 @@ node scripts/server/package-runtime.mjs --sdk .build/server/deepseek-harness --o
 
 `build:native-system` 使用当前 Node 安装的开发头与本机编译器，Linux flock 不复制 macOS 二进制。SDK Host 编译原命令预留 4 GiB V8 heap，构建资源和运行服务资源分别记录。构建还需要 Git、编译工具、Python 与冻结依赖下载通道；不需要启动 Electron、导入任何原 profile 或调用模型。
 
-打包从当前干净源码重新生成工作台九文件，并核源码在构建期间未移动，不能把旧 `.build/workbench` 标成新提交。SDK 使用原 production closure／完整性检查、部署和链接物化，保留必需共享实例和许可证。先核固定源码、准备摘要、运行闭包与共享补丁分类，再逐文件核部署后的补丁字节；原 legacy deploy 对明确构建期补丁的 unused 参数不替代这些检查。输出先写临时目录、完成后原子改名，拒绝覆盖已有输出。根布局固定为 `sdk/`、`workbench/`、`start.mjs`、`member-gateway.mjs`、`runtime-manifest.mjs`、`SOURCE.json`、`LICENSE`、`THIRD_PARTY_LICENSES.txt`。无 Git 检出、原数据或凭据；只保留经检查的包内相对依赖链接，不依赖构建机绝对路径。
+打包从当前干净源码重新生成工作台九文件，并核源码在构建期间未移动，不能把旧 `.build/workbench` 标成新提交。SDK 复用原 production closure／完整性检查和 isolated deploy，保留固定锁中的私有依赖版本与共享实例；只将指向原 SDK workspace 的链接复制为各自唯一模块，其余链接保持包内相对路径。先核固定源码、准备摘要、运行闭包与共享补丁分类，再沿真实 CLI 依赖链逐文件核版本和补丁字节，不把根目录中的同名包当作实际使用版本。原 legacy deploy 对明确构建期补丁的 unused 参数不替代这些检查。输出先写临时目录、完成后原子改名，拒绝覆盖已有输出。根布局固定为 `sdk/`、`workbench/`、`start.mjs`、`member-gateway.mjs`、`runtime-manifest.mjs`、`SOURCE.json`、`LICENSE`、`THIRD_PARTY_LICENSES.txt`。保留许可，不含 Git 检出、原数据或凭据；绝对／逃逸链接拒绝，运行不依赖构建机路径。
 
 运行只读 `/app` 和唯一可写数据目录 `/data`：
 

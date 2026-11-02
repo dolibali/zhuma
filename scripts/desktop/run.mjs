@@ -40,12 +40,16 @@ const git = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8'
 const provenance =
   task === 'package'
     ? {
-        DSH_DESKTOP_BUILD_COMMIT: git('rev-parse', 'HEAD'),
-        DSH_DESKTOP_BUILD_DIRTY: git('status', '--porcelain') ? '1' : '0',
+        ZHUMA_DESKTOP_SOURCE_COMMIT: git('rev-parse', 'HEAD'),
+        ZHUMA_DESKTOP_SOURCE_DIRTY: git('status', '--porcelain') ? '1' : '0',
       }
     : {};
 if (target?.name === 'win-x64')
-  assert.equal(provenance.DSH_DESKTOP_BUILD_DIRTY, '0', 'Freeze Windows candidate sources first.');
+  assert.equal(
+    provenance.ZHUMA_DESKTOP_SOURCE_DIRTY,
+    '0',
+    'Freeze Windows candidate sources first.',
+  );
 const candidateRecord = join(root, 'dist/windows-x64/SOURCE.json');
 if (target?.name === 'win-x64')
   assert(
@@ -99,7 +103,7 @@ if (task === 'dev') {
   if (target.name === 'win-x64') {
     assert.equal(
       git('rev-parse', 'HEAD'),
-      provenance.DSH_DESKTOP_BUILD_COMMIT,
+      provenance.ZHUMA_DESKTOP_SOURCE_COMMIT,
       'Windows candidate source moved.',
     );
     assert.equal(git('status', '--porcelain'), '', 'Windows candidate source changed.');

@@ -77,8 +77,10 @@ test('Windows candidate checks source metadata, all nine workbench files, physic
     name: '@deepseek-ai/dsh-desktop',
     version: '1.4.0',
     dshDesktopAppId: 'dev.zhuma.app',
-    dshBuildCommit: 'a'.repeat(40),
-    dshBuildDirty: false,
+    dshBuildCommit: 'c'.repeat(40),
+    dshBuildDirty: true,
+    zhumaSourceCommit: 'a'.repeat(40),
+    zhumaSourceDirty: false,
   };
   entries.set('package.json', Buffer.from(JSON.stringify(application)));
   entries.set(
@@ -114,7 +116,8 @@ test('Windows candidate checks source metadata, all nine workbench files, physic
     workbench,
     buildVersion: '1.4.0',
     productVersion: '1.4.0',
-    source: application.dshBuildCommit,
+    source: application.zhumaSourceCommit,
+    sdkPin: application.dshBuildCommit,
     sdkVersion: '0.2.1-rc.4',
     asar: {
       extractFile: (_, file) => {
@@ -131,7 +134,10 @@ test('Windows candidate checks source metadata, all nine workbench files, physic
     () => verifyWindowsCandidateFiles({ ...options, source: 'b'.repeat(40) }),
     /commit differs/u,
   );
-  entries.set('package.json', Buffer.from(JSON.stringify({ ...application, dshBuildDirty: true })));
+  entries.set(
+    'package.json',
+    Buffer.from(JSON.stringify({ ...application, zhumaSourceDirty: true })),
+  );
   assert.throws(() => verifyWindowsCandidateFiles(options), /source was dirty/u);
   entries.set('package.json', Buffer.from(JSON.stringify(application)));
   const client = entries.get(`${packagedWorkbench}/client.js`);

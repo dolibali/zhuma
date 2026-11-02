@@ -41,6 +41,7 @@ const material = verifyWindowsCandidateFiles({
   buildVersion,
   productVersion: product.version,
   source,
+  sdkPin: sdk.commit,
   sdkVersion: sdk.version,
   asar,
 });

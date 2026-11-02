@@ -18,6 +18,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import { fileHash, HEADLESS_SDK_PIN, runtimeInventory } from './runtime-manifest.mjs';
 import { assertProductSourceRecipe } from '../desktop/source-recipe.mjs';
+import { assertReversiblePatchSeries, PRODUCT_SOURCE_PATCHES } from '../desktop/patch-series.mjs';
 import { bundleHeadlessLaunchers } from './bundle-headless.mjs';
 import { deployedSharedPatchPackageRoot, sharedPatchPackageRoot } from './shared-patch-owner.mjs';
 import {
@@ -55,10 +56,9 @@ assertProductSourceRecipe(
   JSON.parse(await readFile(join(sdk, '.zhuma-prepared.json'), 'utf8')),
   'server',
 );
-execFileSync(
-  'git',
-  ['apply', '--reverse', '--check', join(root, 'patches/deepseek-harness/zhuma-desktop.patch')],
-  { cwd: sdk },
+assertReversiblePatchSeries(
+  sdk,
+  PRODUCT_SOURCE_PATCHES.map((name) => join(root, name)),
 );
 await assert.rejects(access(output), { code: 'ENOENT' });
 await mkdir(dirname(output), { recursive: true });

@@ -6,6 +6,7 @@ import { join } from 'node:path';
 
 export const SDK_SOURCE_RECIPE_FILES = Object.freeze([
   'patches/deepseek-harness/zhuma-desktop.patch',
+  'patches/deepseek-harness/zhuma-ui-branding.patch',
   'packages/dsh-adapter/src/desktop-member-cookie.ts',
   'scripts/desktop/verify-build-source-paths.ts',
   'scripts/desktop/verify-runtime-privacy.ts',
@@ -13,6 +14,7 @@ export const SDK_SOURCE_RECIPE_FILES = Object.freeze([
   'scripts/desktop/prepare.mjs',
   'scripts/desktop/icon-assets.mjs',
   'scripts/desktop/source-recipe.mjs',
+  'scripts/desktop/patch-series.mjs',
 ]);
 export function productSourceRecipeDigest(root, kind) {
   assert(['desktop', 'server'].includes(kind), 'Unsupported preparation kind.');

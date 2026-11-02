@@ -62,6 +62,7 @@ export function verifyWindowsCandidateFiles({
   buildVersion,
   productVersion,
   source,
+  sdkPin,
   sdkVersion,
   asar,
 }) {
@@ -71,8 +72,14 @@ export function verifyWindowsCandidateFiles({
   assert.equal(application.name, '@deepseek-ai/dsh-desktop');
   assert.equal(application.version, buildVersion, 'Wrong packaged build version.');
   assert.equal(application.dshDesktopAppId, 'dev.zhuma.app');
-  assert.equal(application.dshBuildCommit, source, 'Packaged product commit differs.');
-  assert.equal(application.dshBuildDirty, false, 'Packaged product source was dirty.');
+  assert.equal(application.zhumaSourceCommit, source, 'Packaged product commit differs.');
+  assert.equal(application.zhumaSourceDirty, false, 'Packaged product source was dirty.');
+  assert.equal(application.dshBuildCommit, sdkPin, 'Packaged SDK commit differs.');
+  assert.equal(
+    application.dshBuildDirty,
+    true,
+    'Product patches must remain explicit SDK changes.',
+  );
   const sdk = JSON.parse(
     asar.extractFile(archive, 'dsh/node_modules/@deepseek-ai/dsh/package.json').toString(),
   );
@@ -105,5 +112,11 @@ export function verifyWindowsCandidateFiles({
     installer: candidateFileRecord(installer),
     workbench: files,
     physicalCodeArts: codeArts,
+    provenance: {
+      productCommit: application.zhumaSourceCommit,
+      productDirty: application.zhumaSourceDirty,
+      sdkCommit: application.dshBuildCommit,
+      sdkDirty: application.dshBuildDirty,
+    },
   };
 }
