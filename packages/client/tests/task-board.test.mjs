@@ -22,19 +22,50 @@ test('board projection uses authoritative progress and keeps unknown/cancelled d
     ready(unknown()),
   ])
     assert.equal(taskBoardColumn(task, true, progress), 'unknown');
-  assert.equal(taskBoardColumn(task, true, ready(row())), 'review');
+  assert.equal(taskBoardColumn(task, true, ready(row())), 'running');
   assert.equal(taskBoardColumn(task, true, ready(row({ facts: 'not-started' }))), 'attention');
+  const idle = {
+    byStatus: { ...row().byStatus, running: 0 },
+    resources: { authorHeld: 0, reviewHeld: 1, stopRequested: 0 },
+    workflow: 'inactive',
+  };
+  assert.equal(taskBoardColumn(task, true, ready(row(idle))), 'review');
   const counts = { ...row().byStatus, 'in-review': 0 };
   assert.equal(taskBoardColumn(task, true, ready(row({ byStatus: counts }))), 'running');
   assert.equal(
-    taskBoardColumn(task, true, ready(row({ byStatus: { ...counts, 'needs-revision': 1 } }))),
+    taskBoardColumn(
+      task,
+      true,
+      ready(
+        row({
+          byStatus: { ...counts, running: 0, 'needs-revision': 1, completed: 4 },
+          resources: { authorHeld: 0, reviewHeld: 0, stopRequested: 0 },
+          workflow: 'inactive',
+        }),
+      ),
+    ),
     'attention',
+  );
+  assert.equal(
+    taskBoardColumn(
+      task,
+      true,
+      ready(
+        row({
+          byStatus: { ...row().byStatus, running: 0, 'in-review': 0, ready: 1, blocked: 2 },
+          resources: { authorHeld: 0, reviewHeld: 0, stopRequested: 0 },
+          workflow: 'running',
+        }),
+      ),
+    ),
+    'running',
   );
   for (const delivery of ['cancelled', 'mixed-terminal', 'all-accepted'])
     assert.equal(taskBoardColumn(task, true, ready(row({ delivery }))), 'ended');
   // Editing a next draft never overwrites the previous confirmed plan's facts.
   const draft = { status: 'draft' };
-  assert.equal(taskBoardColumn(draft, true, ready(row())), 'review');
+  assert.equal(taskBoardColumn(draft, true, ready(row())), 'running');
+  assert.equal(taskBoardColumn(draft, true, ready(row(idle))), 'review');
   assert.equal(taskBoardColumn(draft, true, ready(row({ byStatus: counts }))), 'running');
   assert.equal(taskBoardColumn(draft, true, ready(row({ delivery: 'all-accepted' }))), 'ended');
   assert.equal(taskBoardColumn(draft, true, undefined), 'unknown');

@@ -34,7 +34,9 @@ import {
   useTaskProgress,
   type TaskProgressState,
 } from '../execution/useTaskProgress.js';
+import { confirmedNodeTitles } from '../execution/progress-focus.js';
 import { TaskProgressSummary } from '../execution/TaskProgressSummary.js';
+import { taskHeading } from './task-heading.js';
 import { KnowledgePanel, type KnowledgePanelProps } from '../knowledge/KnowledgePanel.js';
 import type { ProjectKnowledgeApi } from '../knowledge/project-knowledge-api.js';
 import { useLeaveConfirmation } from './useLeaveConfirmation.js';
@@ -1113,6 +1115,7 @@ export function WorkbenchPage({
                 projects={state.projects}
                 participants={state.participants}
                 progress={progressFor}
+                nodeTitles={(id) => confirmedNodeTitles(state.appliedPlans, progressFor(id))}
                 confirmed={(id) => state.appliedPlans.some((plan) => plan.taskId === id)}
                 openTask={setActiveTaskId}
               />
@@ -1127,7 +1130,7 @@ export function WorkbenchPage({
                 {tasks.map((t) => (
                   <button className="zm-task-row" key={t.id} onClick={() => setActiveTaskId(t.id)}>
                     <span>
-                      <strong>{t.title}</strong>
+                      <strong title={t.title || t.goal}>{taskHeading(t)}</strong>
                       <small>
                         {state.projects.find((p) => p.id === t.projectId)?.name}
                         <span className="zm-meta-dot">·</span>
@@ -1169,6 +1172,7 @@ export function WorkbenchPage({
                       <TaskProgressSummary
                         progress={progressFor(t.id)}
                         confirmed={state.appliedPlans.some((plan) => plan.taskId === t.id)}
+                        nodeTitles={confirmedNodeTitles(state.appliedPlans, progressFor(t.id))}
                         compact
                       />
                       <span className={`zm-status ${t.status}`}>
@@ -1741,7 +1745,9 @@ export function WorkbenchPage({
                         )}
                       </>
                     )}
-                    {member && <PlanningReadiness value={planningReadiness} />}
+                    {member && dialog.planning === 'ai' && (
+                      <PlanningReadiness value={planningReadiness} />
+                    )}
                     <fieldset className="zm-create-modes">
                       <legend>规划方式</legend>
                       <label>

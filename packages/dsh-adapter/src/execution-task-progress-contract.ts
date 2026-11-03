@@ -30,11 +30,22 @@ export interface TaskProgressResources {
   readonly reviewHeld: number;
   readonly stopRequested: number;
 }
+/** Per-node phase already read for the counts. Titles stay on the confirmed plan. */
+export interface TaskProgressNodeState {
+  readonly nodeId: string;
+  readonly status: NodeStatus;
+  readonly authorHeld: number;
+}
+/** Persisted workflow intent only. A live arm is not part of this read. */
+export type TaskProgressWorkflow = 'inactive' | 'running' | 'stopping' | 'paused' | 'completed';
 interface KnownCounts {
   readonly target: TaskProgressTarget;
   readonly expectedNodes: number;
   readonly acceptedNodes: number;
   readonly byStatus: Readonly<Record<NodeStatus, number>>;
+  readonly nodeStatuses: readonly TaskProgressNodeState[];
+  /** Null until a plan receipt exists. */
+  readonly workflow: TaskProgressWorkflow | null;
   readonly assigneeCounts: { readonly human: number; readonly expert: number };
   readonly resources: TaskProgressResources;
 }
@@ -66,6 +77,8 @@ export type TaskProgressRow =
       /** No partial ratio, execution counts or cleanup claims on incomplete facts. */
       readonly acceptedNodes: null;
       readonly byStatus: null;
+      readonly nodeStatuses: null;
+      readonly workflow: null;
       readonly assigneeCounts: null;
       readonly resources: null;
     };

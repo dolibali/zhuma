@@ -36,6 +36,8 @@ const { createRoot } = await import('react-dom/client');
 const { renderToStaticMarkup } = await import('react-dom/server');
 const { TaskProgressSummary, taskProgressFacts } =
   await import('../dist/execution/TaskProgressSummary.js');
+const { NodeStatusMark } = await import('../dist/workbench/NodeStatusMark.js');
+const { taskHeading } = await import('../dist/workbench/task-heading.js');
 const { useTaskProgress } = await import('../dist/execution/useTaskProgress.js');
 const { ProjectHub } = await import('../dist/workbench/ProjectHub.js');
 const tick = () => new Promise(setImmediate);
@@ -80,6 +82,78 @@ test('task progress UI: execution, review, current acceptance and held resources
     }),
   );
   assert.match(project, /产物全部已接受 5\/5/);
+  const running = row({
+    expectedNodes: 3,
+    acceptedNodes: 0,
+    byStatus: { ...row().byStatus, running: 1, 'in-review': 0, completed: 0, blocked: 2 },
+    assigneeCounts: { human: 3, expert: 0 },
+    resources: { authorHeld: 1, reviewHeld: 0, stopRequested: 0 },
+    nodeStatuses: [
+      { nodeId: 'node-login', status: 'running', authorHeld: 1 },
+      { nodeId: 'node-wait', status: 'blocked', authorHeld: 0 },
+      { nodeId: 'node-next', status: 'blocked', authorHeld: 0 },
+    ],
+    workflow: 'running',
+  });
+  const named = renderToStaticMarkup(
+    el(ProjectHub, {
+      project: data.state.projects[0],
+      state: {
+        ...data.state,
+        appliedPlans: [
+          {
+            id: 'plan',
+            taskId: 'task',
+            revision: 2,
+            sourceWorkbenchRevision: 1,
+            task: {
+              ...data.task,
+              status: 'ready',
+              workflows: [
+                {
+                  ...data.task.workflows[0],
+                  nodes: [{ ...data.node, id: 'node-login', title: '设计登录接口' }],
+                },
+              ],
+            },
+            participants: data.state.participants,
+            assets: data.state.assets,
+          },
+        ],
+      },
+      tab: 'work',
+      changeTab() {},
+      openTask() {},
+      createTask() {},
+      edit() {},
+      taskProgress: () => ({ state: 'ready', row: running }),
+    }),
+  );
+  assert.match(named, /执行中 · 设计登录接口/);
+  assert.doesNotMatch(named, /待处理 1/);
+  assert.equal(
+    taskHeading({ title: '登录改造', goal: '把会话超时从 30 分钟改成 15 分钟' }),
+    '登录改造',
+  );
+  const goal = '把会话超时从 30 分钟改成 15 分钟，并补齐错误提示'.repeat(3);
+  assert.equal(taskHeading({ title: goal.slice(0, 60), goal }), `${goal.slice(0, 36)}…`);
+  assert.equal(taskHeading({ title: '', goal: '' }), '未命名任务');
+  const marks = renderToStaticMarkup(
+    el(
+      'div',
+      {},
+      el(NodeStatusMark, { status: 'running' }),
+      el(NodeStatusMark, { status: 'ready', executing: true }),
+      el(NodeStatusMark, { status: 'completed' }),
+      el(NodeStatusMark, { status: 'blocked' }),
+      el(NodeStatusMark, { status: 'ready' }),
+    ),
+  );
+  assert.equal((marks.match(/zm-flow-status-running/g) ?? []).length, 2);
+  assert.match(marks, /zm-spinner/);
+  assert.match(marks, /aria-label="已完成"/);
+  assert.match(marks, /aria-label="等待前置"/);
+  assert.match(marks, /aria-label="待处理"/);
   assert.match(project, /计划草稿/); // A newer draft does not erase an earlier confirmed delivery.
   assert.doesNotMatch(project, /分配：|人工 3|专家 2/);
   const compact = renderToStaticMarkup(

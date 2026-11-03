@@ -18,11 +18,13 @@ import { readExecutionRunState } from './execution-run-state.js';
 import { readExecutionReviewState } from './execution-review-state.js';
 import {
   TASK_PROGRESS_LIMITS as limits,
+  type TaskProgressNodeState,
   type TaskProgressQuery,
   type TaskProgressRow,
   type TaskProgressTarget,
   type TaskProgressUnknownReason,
   type TaskProgressValue,
+  type TaskProgressWorkflow,
 } from './execution-task-progress-contract.js';
 
 const refuse = (code: 'not-found' | 'conflict' | 'quota-exceeded'): never => {
@@ -116,9 +118,19 @@ const unknown = (
   expectedNodes,
   acceptedNodes: null,
   byStatus: null,
+  nodeStatuses: null,
+  workflow: null,
   assigneeCounts: null,
   resources: null,
 });
+function workflowDrive(status: string | undefined): TaskProgressWorkflow {
+  return status === 'running' ||
+    status === 'stopping' ||
+    status === 'paused' ||
+    status === 'completed'
+    ? status
+    : 'inactive';
+}
 
 /** Metadata comparison excludes only the original downstream materialization. */
 function sameHandoff(actual: NodeHandoff, expected: NodeHandoff) {
@@ -218,6 +230,7 @@ export function taskProgressProjection(
       return source.readNode({ ...target, nodeId: handoff.nodeId });
     });
     const byStatus = zero();
+    const nodeStatuses: TaskProgressNodeState[] = [];
     const assigneeCounts = { human: 0, expert: 0 };
     for (const handoff of expected) assigneeCounts[handoff.assignee.kind]++;
     const resources = { authorHeld: 0, reviewHeld: 0, stopRequested: 0 };
@@ -229,6 +242,8 @@ export function taskProgressProjection(
         expectedNodes: count,
         acceptedNodes: 0,
         byStatus,
+        nodeStatuses,
+        workflow: null,
         assigneeCounts,
         resources,
       };
@@ -276,10 +291,17 @@ export function taskProgressProjection(
         assertExecutionRunStoreCompatibility(source.global, [node]);
         const author = readExecutionRunState(node);
         const reviews = readExecutionReviewState(node);
+        let authorHeld = 0;
         for (const run of author?.runs ?? []) {
-          resources.authorHeld += Number(run.resources === 'held');
+          authorHeld += Number(run.resources === 'held');
           resources.stopRequested += Number(run.attempt.stopPhase === 'requested');
         }
+        resources.authorHeld += authorHeld;
+        nodeStatuses.push({
+          nodeId: node.nodeId,
+          status: node.command.status,
+          authorHeld,
+        });
         for (const attempt of reviews?.attempts ?? []) {
           resources.reviewHeld += Number(attempt.resources === 'held');
           resources.stopRequested += Number(
@@ -311,6 +333,8 @@ export function taskProgressProjection(
       expectedNodes: count,
       acceptedNodes,
       byStatus,
+      nodeStatuses,
+      workflow: workflowDrive(parsed.data.workflowExecution?.status),
       assigneeCounts,
       resources,
     };

@@ -480,6 +480,7 @@ export const INBOX_ACTIONS = [
   'retry-or-take-back',
   'review',
   'confirm',
+  'wait',
 ] as const;
 
 export type InboxAction = (typeof INBOX_ACTIONS)[number];
@@ -494,7 +495,9 @@ export type DerivedInboxReason =
   | 'parent-confirmation'
   | 'explicit-confirmation'
   | 'owner-input-required'
-  | 'owner-take-back';
+  | 'owner-take-back'
+  | 'waiting-on-prerequisites'
+  | 'owner-waiting';
 
 export interface InboxItem {
   readonly id: string;
@@ -558,6 +561,8 @@ function deliveryTodo(
       return { reason: 'input-required', action: 'provide-input' };
     case 'failed':
       return { reason: 'retry-or-take-back', action: 'retry-or-take-back' };
+    case 'blocked':
+      return { reason: 'waiting-on-prerequisites', action: 'wait' };
     default:
       return undefined;
   }
@@ -622,7 +627,11 @@ export function deriveInbox(input: {
         ? { reason: 'owner-input-required' as const, action: 'provide-input' as const }
         : node.status === 'failed'
           ? { reason: 'owner-take-back' as const, action: 'retry-or-take-back' as const }
-          : undefined;
+          : node.status === 'blocked'
+            ? { reason: 'owner-waiting' as const, action: 'wait' as const }
+            : node.status === 'running'
+              ? { reason: 'agent-assisted-delivery' as const, action: 'continue-handling' as const }
+              : undefined;
     if (!ownerTodo) continue;
     items.push({
       id: `deliver:${node.nodeId}:${input.actorId}`,
@@ -663,6 +672,20 @@ export function deriveInbox(input: {
     });
   }
   items.push(...reviewByNode.values());
+  for (const node of input.nodes) {
+    if (node.ownerId !== input.actorId) continue;
+    if (items.some((item) => item.nodeId === node.nodeId)) continue;
+    if (node.status !== 'blocked' && node.status !== 'waiting-for-input') continue;
+    items.push({
+      id: `wait:${node.nodeId}:${input.actorId}`,
+      kind: 'deliver',
+      actorId: input.actorId,
+      nodeId: node.nodeId,
+      taskId: node.taskId,
+      reason: 'owner-waiting',
+      action: 'wait',
+    });
+  }
   for (const confirmation of input.confirmations) {
     if (
       confirmation.actorId !== input.actorId ||

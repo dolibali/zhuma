@@ -42,7 +42,18 @@ test('task filters combine project, participant and search with stable recent-up
     'Stage must not hide plans from progress loading',
   );
   assert.equal(taskBoardColumn(task, true, { state: 'loading' }), 'unknown');
-  assert.equal(taskBoardColumn(task, true, { state: 'ready', row: row() }), 'review');
+  assert.equal(taskBoardColumn(task, true, { state: 'ready', row: row() }), 'running');
+  assert.equal(
+    taskBoardColumn(task, true, {
+      state: 'ready',
+      row: row({
+        byStatus: { ...row().byStatus, running: 0 },
+        resources: { authorHeld: 0, reviewHeld: 1, stopRequested: 0 },
+        workflow: 'inactive',
+      }),
+    }),
+    'review',
+  );
   assert.equal(
     taskBoardColumn(task, true, { state: 'ready', row: row({ delivery: 'cancelled' }) }),
     'ended',

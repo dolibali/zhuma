@@ -16,11 +16,19 @@ export interface TaskProgressResources {
   readonly reviewHeld: number;
   readonly stopRequested: number;
 }
+export interface TaskProgressNodeState {
+  readonly nodeId: string;
+  readonly status: NodeStatus;
+  readonly authorHeld: number;
+}
+export type TaskProgressWorkflow = 'inactive' | 'running' | 'stopping' | 'paused' | 'completed';
 interface KnownCounts {
   readonly target: TaskProgressTarget;
   readonly expectedNodes: number;
   readonly acceptedNodes: number;
   readonly byStatus: Readonly<Record<NodeStatus, number>>;
+  readonly nodeStatuses: readonly TaskProgressNodeState[];
+  readonly workflow: TaskProgressWorkflow | null;
   readonly assigneeCounts: { readonly human: number; readonly expert: number };
   readonly resources: TaskProgressResources;
 }
@@ -48,6 +56,8 @@ export type TaskProgressRow =
       readonly expectedNodes: number | null;
       readonly acceptedNodes: null;
       readonly byStatus: null;
+      readonly nodeStatuses: null;
+      readonly workflow: null;
       readonly assigneeCounts: null;
       readonly resources: null;
     };
@@ -98,6 +108,8 @@ function row(raw: unknown, expected: TaskProgressTarget): TaskProgressRow {
     'expectedNodes',
     'acceptedNodes',
     'byStatus',
+    'nodeStatuses',
+    'workflow',
     'assigneeCounts',
     'resources',
   ]);
@@ -108,6 +120,8 @@ function row(raw: unknown, expected: TaskProgressTarget): TaskProgressRow {
       value.delivery !== 'unknown' ||
       value.acceptedNodes !== null ||
       value.byStatus !== null ||
+      value.nodeStatuses !== null ||
+      value.workflow !== null ||
       value.assigneeCounts !== null ||
       value.resources !== null
     )
@@ -129,6 +143,8 @@ function row(raw: unknown, expected: TaskProgressTarget): TaskProgressRow {
       expectedNodes: value.expectedNodes === null ? null : count(value.expectedNodes),
       acceptedNodes: null,
       byStatus: null,
+      nodeStatuses: null,
+      workflow: null,
       assigneeCounts: null,
       resources: null,
     };
@@ -170,18 +186,34 @@ function row(raw: unknown, expected: TaskProgressTarget): TaskProgressRow {
     if (
       value.delivery !== 'pending' ||
       value.reason !== undefined ||
+      value.workflow !== null ||
+      !Array.isArray(value.nodeStatuses) ||
+      value.nodeStatuses.length > 0 ||
       total ||
       acceptedNodes ||
       Object.values(resources).some(Boolean)
     )
       invalid();
-    return { ...common, facts, delivery: 'pending' };
+    return { ...common, nodeStatuses: [], workflow: null, facts, delivery: 'pending' };
   }
   if (
     total !== expectedNodes ||
     (value.reason !== undefined && value.reason !== 'upstream-affected')
   )
     invalid();
+  const nodeStatuses = readNodeStatuses(
+    value.nodeStatuses,
+    expectedNodes,
+    byStatus,
+    resources.authorHeld,
+  );
+  const workflow = oneOf(value.workflow, [
+    'inactive',
+    'running',
+    'stopping',
+    'paused',
+    'completed',
+  ]);
   const delivery = oneOf(value.delivery, [
     'pending',
     'all-accepted',
@@ -196,10 +228,40 @@ function row(raw: unknown, expected: TaskProgressTarget): TaskProgressRow {
   if (value.reason === 'upstream-affected' && delivery !== 'pending') invalid();
   return {
     ...common,
+    nodeStatuses,
+    workflow,
     facts,
     delivery,
     ...(value.reason === 'upstream-affected' ? { reason: value.reason } : {}),
   };
+}
+function readNodeStatuses(
+  raw: unknown,
+  expectedNodes: number,
+  byStatus: Readonly<Record<NodeStatus, number>>,
+  authorHeld: number,
+): TaskProgressNodeState[] {
+  if (!Array.isArray(raw) || raw.length !== expectedNodes) invalid();
+  const seen = new Set<string>();
+  const tallies = Object.fromEntries(NODE_STATUSES.map((status) => [status, 0])) as Record<
+    NodeStatus,
+    number
+  >;
+  let held = 0;
+  const items = raw.map((item) => {
+    const value = object(item, ['nodeId', 'status', 'authorHeld']);
+    const nodeId = id(value.nodeId);
+    if (seen.has(nodeId)) invalid();
+    seen.add(nodeId);
+    const status = oneOf(value.status, NODE_STATUSES);
+    const runs = count(value.authorHeld, 512);
+    tallies[status]++;
+    held += runs;
+    return { nodeId, status, authorHeld: runs };
+  });
+  if (held !== authorHeld) invalid();
+  for (const status of NODE_STATUSES) if (tallies[status] !== byStatus[status]) invalid();
+  return items;
 }
 /** Pure member wire codec. Neither a latest-plan resolver nor an authorization cache. */
 export function createTaskProgressApi(
