@@ -208,9 +208,11 @@ test('项目内打开任务清单只显示当前项目，离开项目后再打�
   await expect(page.getByLabel('筛选项目', { exact: true })).toContainText('所有项目');
 
   await openProject('空项目');
-  await expect(page.getByRole('region', { name: '项目详情' })).toContainText(
-    '从项目目标开始一项工作。',
+  await expect(button(page.getByRole('navigation', { name: '项目导航' }), '工作')).toHaveAttribute(
+    'aria-current',
+    'page',
   );
+  await expect(page.getByRole('region', { name: '项目详情' })).toContainText('项目中还没有任务。');
   await tasksTab.click();
   await expect(rows).toHaveCount(0);
   await expect(page.getByRole('heading', { name: '没有匹配的任务' })).toBeVisible();
