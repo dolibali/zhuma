@@ -1,0 +1,146 @@
+[
+  {
+    "name": "after-canvas-dark.png",
+    "bytes": 120316,
+    "sha256": "3ffeeec2829948c30b222f20f5869483ebe994846e880a9ddb09d77a1407ed52",
+    "size": [
+      1440,
+      900
+    ]
+  },
+  {
+    "name": "after-canvas-light.png",
+    "bytes": 124309,
+    "sha256": "bef22f0495b5264f2a1dcd9f962e122d905e6a525484828d695c0783e934c909",
+    "size": [
+      1440,
+      900
+    ]
+  },
+  {
+    "name": "after-inbox-dark.png",
+    "bytes": 72404,
+    "sha256": "6b06544a3b3d8e02be0611fdf10ed89dc05671c08e2f2b7aa6b51463c969b9bc",
+    "size": [
+      1440,
+      900
+    ]
+  },
+  {
+    "name": "after-inbox-light.png",
+    "bytes": 74576,
+    "sha256": "528b644630909c7ccc3086c2026e01e654e5e4e6f69e54722a7b75acb75ed607",
+    "size": [
+      1440,
+      900
+    ]
+  },
+  {
+    "name": "after-list-dark.png",
+    "bytes": 45858,
+    "sha256": "ace6e7b6ef3370693f599df45c068b4980e6b0a8da4bc4546c802457486fbd03",
+    "size": [
+      1440,
+      900
+    ]
+  },
+  {
+    "name": "after-list-light.png",
+    "bytes": 46974,
+    "sha256": "7817adb53a3da4466ac6da8866fb4996d507c9aac10ff1f723437ad6adfbd835",
+    "size": [
+      1440,
+      900
+    ]
+  },
+  {
+    "name": "after-manual-dark.png",
+    "bytes": 90044,
+    "sha256": "ae1cea7defecd23b716b9bdddacebfe021d78344f36dd1638c159a12a39987e2",
+    "size": [
+      1440,
+      900
+    ]
+  },
+  {
+    "name": "after-manual-light.png",
+    "bytes": 97728,
+    "sha256": "8881e9480b475e29cd3c179796068b8cb56b8c4bf00d153d816fac592d21240b",
+    "size": [
+      1440,
+      900
+    ]
+  },
+  {
+    "name": "base-canvas-dark.png",
+    "bytes": 116963,
+    "sha256": "a95750b980a72a5ba782fca72490f23727b483d0ff91c3000685106c11d294c0",
+    "size": [
+      1440,
+      900
+    ]
+  },
+  {
+    "name": "base-canvas-light.png",
+    "bytes": 120971,
+    "sha256": "faf26cdac542e2f9edc3b117a232c52ba074b82d8eea25c6d01bd4dc8d6d9573",
+    "size": [
+      1440,
+      900
+    ]
+  },
+  {
+    "name": "base-inbox-dark.png",
+    "bytes": 39835,
+    "sha256": "f760d5267e6e8a6fb174ee921fb6d91d26b5e9bfb06b1b639d2c2cb6faec2216",
+    "size": [
+      1440,
+      900
+    ]
+  },
+  {
+    "name": "base-inbox-light.png",
+    "bytes": 41561,
+    "sha256": "d997744f6907c10a6f218026217db53afe0b21174e9dcc4f51e0a3dc4328a003",
+    "size": [
+      1440,
+      900
+    ]
+  },
+  {
+    "name": "base-list-dark.png",
+    "bytes": 43400,
+    "sha256": "c8c0d00d8cab3b123a2a4127413ad0ab423c5e383cd1627fda268504b0db92f5",
+    "size": [
+      1440,
+      900
+    ]
+  },
+  {
+    "name": "base-list-light.png",
+    "bytes": 44433,
+    "sha256": "1178efa6b761fc574f36fd6268519682eccff4239509206fe9ced417a7615ce6",
+    "size": [
+      1440,
+      900
+    ]
+  },
+  {
+    "name": "base-manual-dark.png",
+    "bytes": 92328,
+    "sha256": "cfec4f533d9153db1449e0acc906a52ec2fb19e67c82ced1f0d5bc0e03716049",
+    "size": [
+      1440,
+      900
+    ]
+  },
+  {
+    "name": "base-manual-light.png",
+    "bytes": 98489,
+    "sha256": "61d598efe09d4d5e9172c86521c7429f1d374e343c6ae36f62f2fb623ad6ee34",
+    "size": [
+      1440,
+      900
+    ]
+  }
+]
