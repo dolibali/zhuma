@@ -1870,7 +1870,7 @@ html[data-platform='darwin'] .zhuma .zm-space-bar {
   border-bottom: 1px solid var(--zm-line);
 }
 .zm-project-directory .zm-directory-row {
-  grid-template-columns: 32px minmax(0, 1fr) 70px auto;
+  grid-template-columns: 18px minmax(0, 1fr) 70px auto;
 }
 .zm-member-directory .zm-directory-row,
 .zm-member-directory .zm-directory-heading {
@@ -1881,8 +1881,11 @@ html[data-platform='darwin'] .zhuma .zm-space-bar {
   grid-template-columns: 82px minmax(0, 1fr) 72px 48px;
 }
 .zm-directory-symbol {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
   color: var(--zm-muted);
-  font-size: 28px;
 }
 .zm-directory-identity {
   display: flex;
@@ -3508,7 +3511,7 @@ html[data-platform='darwin'] .zhuma .zm-space-bar {
     grid-column: 2;
   }
   .zm-project-directory .zm-directory-row {
-    grid-template-columns: 28px minmax(0, 1fr);
+    grid-template-columns: 18px minmax(0, 1fr);
   }
   .zm-project-directory .zm-directory-content {
     grid-column: 2;

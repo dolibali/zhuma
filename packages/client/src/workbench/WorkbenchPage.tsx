@@ -23,7 +23,7 @@ import { AssetImportDialog } from './AssetImportDialog.js';
 import { ResourceSourceDialog } from './SourceFiles.js';
 import { ExpertBrowser, type ExpertBrowserView } from './ExpertBrowser.js';
 import type { NativeRunApi } from '../run/api.js';
-import { ControlIcon } from './ControlIcon.js';
+import { ControlIcon, ProjectIcon } from './ControlIcon.js';
 import { TaskBoard } from './TaskBoard.js';
 import { taskBoardColumn, taskBoardColumns } from './task-board.js';
 import { emptyTaskFilters, taskFilterCandidates } from './task-filters.js';
@@ -1059,7 +1059,7 @@ export function WorkbenchPage({
                   }}
                 >
                   <span className="zm-directory-symbol" aria-hidden>
-                    ▱
+                    <ProjectIcon />
                   </span>
                   <div className="zm-directory-content">
                     <Button

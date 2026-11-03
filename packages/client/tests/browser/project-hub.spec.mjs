@@ -17,10 +17,13 @@ async function openProject(page) {
     .getByRole('navigation', { name: '工作台导航' })
     .getByRole('button', { name: /^项目/ })
     .click();
-  await page
-    .getByRole('article', { name: '订单门户', exact: true })
-    .getByRole('button', { name: '订单门户', exact: true })
-    .click();
+  const row = page.getByRole('article', { name: '订单门户', exact: true });
+  const mark = row.locator('.zm-directory-symbol');
+  await expect(mark).toHaveAttribute('aria-hidden', 'true');
+  await expect(mark.locator('svg')).toHaveAttribute('width', '18');
+  await expect(mark.locator('svg')).toHaveAttribute('stroke-width', '1.7');
+  await expect(row).not.toContainText('▱');
+  await row.getByRole('button', { name: '订单门户', exact: true }).click();
 }
 async function togglePerson(page, label, name, checked) {
   await button(page, `选择${label}`).click();
