@@ -103,6 +103,8 @@ export interface TaskProgressFactsSource {
   readonly global: unknown;
   readPlan(target: TaskProgressTarget): unknown;
   readNode(target: TaskProgressTarget & { readonly nodeId: string }): unknown;
+  /** True only when this process still holds a live workflow arm. */
+  workflowLive?(target: TaskProgressTarget): boolean;
 }
 const zero = () =>
   Object.fromEntries(NODE_STATUSES.map((status) => [status, 0])) as Record<NodeStatus, number>;
@@ -110,6 +112,7 @@ const unknown = (
   target: TaskProgressTarget,
   reason: TaskProgressUnknownReason,
   expectedNodes: number | null = null,
+  detail = false,
 ): TaskProgressRow => ({
   target: { ...target },
   facts: 'unknown',
@@ -118,16 +121,13 @@ const unknown = (
   expectedNodes,
   acceptedNodes: null,
   byStatus: null,
-  nodeStatuses: null,
-  workflow: null,
+  ...(detail ? { nodeStatuses: null, workflow: null } : {}),
   assigneeCounts: null,
   resources: null,
 });
-function workflowDrive(status: string | undefined): TaskProgressWorkflow {
-  return status === 'running' ||
-    status === 'stopping' ||
-    status === 'paused' ||
-    status === 'completed'
+function workflowFact(status: string | undefined, live: boolean): TaskProgressWorkflow {
+  if (status === 'running') return live ? 'running' : 'requires-resume';
+  return status === 'stopping' || status === 'paused' || status === 'completed'
     ? status
     : 'inactive';
 }
@@ -202,27 +202,29 @@ function accepted(node: ExecutionNodeRecord) {
 export function taskProgressProjection(
   selection: TaskProgressSelection,
   source: TaskProgressFactsSource,
+  options: { readonly detail?: boolean } = {},
 ): TaskProgressValue {
+  const detail = options.detail === true;
   let reads = 0;
   if (selection.plans.length > limits.plans) return refuse('quota-exceeded');
   const items = selection.plans.map(({ plan, target }): TaskProgressRow => {
     try {
       assertExecutionRunStoreCompatibility(source.global, []);
     } catch {
-      return unknown(target, 'invalid-state');
+      return unknown(target, 'invalid-state', null, detail);
     }
     if (plan.task.workflows.length !== 1 || plan.task.workflows[0]?.parentNodeId !== null)
-      return unknown(target, 'unsupported-child-workflow');
+      return unknown(target, 'unsupported-child-workflow', null, detail);
     const width = plan.task.workflows[0].nodes.length;
-    if (width > limits.nodesPerPlan) return unknown(target, 'node-limit');
-    if (width === 0) return unknown(target, 'empty-plan', 0);
+    if (width > limits.nodesPerPlan) return unknown(target, 'node-limit', null, detail);
+    if (width === 0) return unknown(target, 'empty-plan', 0, detail);
     let expected: NodeHandoff[];
     try {
       expected = createNodeHandoffs(plan);
     } catch {
-      return unknown(target, 'invalid-plan');
+      return unknown(target, 'invalid-plan', null, detail);
     }
-    if (!expected.length) return unknown(target, 'empty-plan', 0);
+    if (!expected.length) return unknown(target, 'empty-plan', 0, detail);
     const count = expected.length;
     const receipt = source.readPlan(target);
     const raw = expected.map((handoff) => {
@@ -242,8 +244,7 @@ export function taskProgressProjection(
         expectedNodes: count,
         acceptedNodes: 0,
         byStatus,
-        nodeStatuses,
-        workflow: null,
+        ...(detail ? { nodeStatuses, workflow: null } : {}),
         assigneeCounts,
         resources,
       };
@@ -254,7 +255,7 @@ export function taskProgressProjection(
       Array.isArray(receipt.nodeIds) &&
       receipt.nodeIds.length > limits.nodesPerPlan
     )
-      return unknown(target, 'incomplete-plan', count);
+      return unknown(target, 'incomplete-plan', count, detail);
     const parsed = executionPlanReceiptSchema.safeParse(receipt);
     if (
       !parsed.success ||
@@ -264,7 +265,7 @@ export function taskProgressProjection(
       !expected.every((node) => parsed.data.nodeIds.includes(node.nodeId)) ||
       raw.some((node) => node === undefined)
     )
-      return unknown(target, 'incomplete-plan', count);
+      return unknown(target, 'incomplete-plan', count, detail);
     let acceptedNodes = 0,
       affected = false;
     for (const [index, value] of raw.entries()) {
@@ -277,16 +278,16 @@ export function taskProgressProjection(
         'childTaskId' in value.handoff &&
         value.handoff.childTaskId !== undefined
       )
-        return unknown(target, 'unsupported-child-workflow', count);
+        return unknown(target, 'unsupported-child-workflow', count, detail);
       let node: ExecutionNodeRecord | undefined;
       try {
         node = nodeAt(value, target, expected[index]!, plan.task.ownerId);
       } catch {
-        return unknown(target, 'invalid-node', count);
+        return unknown(target, 'invalid-node', count, detail);
       }
-      if (!node) return unknown(target, 'invalid-node', count);
+      if (!node) return unknown(target, 'invalid-node', count, detail);
       if (node.handoff.childTaskId !== undefined)
-        return unknown(target, 'unsupported-child-workflow', count);
+        return unknown(target, 'unsupported-child-workflow', count, detail);
       try {
         assertExecutionRunStoreCompatibility(source.global, [node]);
         const author = readExecutionRunState(node);
@@ -301,6 +302,7 @@ export function taskProgressProjection(
           nodeId: node.nodeId,
           status: node.command.status,
           authorHeld,
+          assignee: expected[index]!.assignee.kind,
         });
         for (const attempt of reviews?.attempts ?? []) {
           resources.reviewHeld += Number(attempt.resources === 'held');
@@ -309,14 +311,22 @@ export function taskProgressProjection(
           );
         }
         if (node.command.status === 'completed') {
-          if (!accepted(node)) return unknown(target, 'invalid-accepted', count);
+          if (!accepted(node)) return unknown(target, 'invalid-accepted', count, detail);
           if (!node.command.upstreamAffected) acceptedNodes++;
         }
       } catch {
-        return unknown(target, 'invalid-state', count);
+        return unknown(target, 'invalid-state', count, detail);
       }
       byStatus[node.command.status]++;
       affected ||= node.command.upstreamAffected;
+    }
+    let live = false;
+    if (detail && source.workflowLive) {
+      try {
+        live = source.workflowLive(target) === true;
+      } catch {
+        live = false;
+      }
     }
     return {
       target: { ...target },
@@ -333,8 +343,12 @@ export function taskProgressProjection(
       expectedNodes: count,
       acceptedNodes,
       byStatus,
-      nodeStatuses,
-      workflow: workflowDrive(parsed.data.workflowExecution?.status),
+      ...(detail
+        ? {
+            nodeStatuses,
+            workflow: workflowFact(parsed.data.workflowExecution?.status, live),
+          }
+        : {}),
       assigneeCounts,
       resources,
     };

@@ -36,7 +36,7 @@ import {
 } from '../execution/useTaskProgress.js';
 import { confirmedNodeTitles } from '../execution/progress-focus.js';
 import { TaskProgressSummary } from '../execution/TaskProgressSummary.js';
-import { taskHeading } from './task-heading.js';
+import { AUTOMATIC_TASK_TITLE_LIMIT, taskHeading } from './task-heading.js';
 import { KnowledgePanel, type KnowledgePanelProps } from '../knowledge/KnowledgePanel.js';
 import type { ProjectKnowledgeApi } from '../knowledge/project-knowledge-api.js';
 import { useLeaveConfirmation } from './useLeaveConfirmation.js';
@@ -445,7 +445,7 @@ export function WorkbenchPage({
     const task = {
       ...draft.value,
       goal,
-      title: draft.value.title.trim() || goal.split('\n')[0]!.slice(0, 60),
+      title: draft.value.title.trim() || goal.split('\n')[0]!.slice(0, AUTOMATIC_TASK_TITLE_LIMIT),
     };
     if (draft.planning === 'template' && !draft.template) {
       setDialogError('请选择要使用的工作流。');

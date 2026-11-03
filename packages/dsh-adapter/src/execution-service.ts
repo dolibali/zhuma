@@ -6709,12 +6709,23 @@ export class ExecutionService {
           if (current.fingerprint !== selection.fingerprint)
             throw new WorkbenchError('conflict', '当前计划已变化，请刷新。');
         };
-        const value = taskProgressProjection(selection, {
-          global: this.storage.readGlobal ? this.storage.readGlobal() : { schemaVersion: 1 },
-          readPlan: (target) =>
-            this.storage.readPlan(planKey(target.taskId, target.planId, target.revision)),
-          readNode: (target) => this.storage.readNode(nodeRecordKey(target)),
-        });
+        const value = taskProgressProjection(
+          selection,
+          {
+            global: this.storage.readGlobal ? this.storage.readGlobal() : { schemaVersion: 1 },
+            readPlan: (target) =>
+              this.storage.readPlan(planKey(target.taskId, target.planId, target.revision)),
+            readNode: (target) => this.storage.readNode(nodeRecordKey(target)),
+            workflowLive: (target) =>
+              this.workflowIntents?.observesRunning({
+                spaceId: query.spaceId,
+                taskId: target.taskId,
+                planId: target.planId,
+                revision: target.revision,
+              }) ?? false,
+          },
+          { detail: query.detail === 'nodes' },
+        );
         check();
         return { ok: true, value };
       });

@@ -7,7 +7,7 @@ function markers(byStatus, authorHeld) {
   let index = 0;
   for (const status of NODE_STATUSES)
     for (let count = 0; count < (byStatus?.[status] ?? 0); count++)
-      items.push({ nodeId: `n-${index++}`, status, authorHeld: 0 });
+      items.push({ nodeId: `n-${index++}`, status, authorHeld: 0, assignee: 'expert' });
   let left = authorHeld ?? 0;
   for (const item of items) {
     if (!left) break;

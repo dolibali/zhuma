@@ -20,14 +20,18 @@ export interface TaskProgressNodeState {
   readonly nodeId: string;
   readonly status: NodeStatus;
   readonly authorHeld: number;
+  readonly assignee: 'human' | 'expert';
 }
-export type TaskProgressWorkflow = 'inactive' | 'running' | 'stopping' | 'paused' | 'completed';
+export type TaskProgressWorkflow =
+  'inactive' | 'running' | 'stopping' | 'paused' | 'completed' | 'requires-resume';
 interface KnownCounts {
   readonly target: TaskProgressTarget;
   readonly expectedNodes: number;
   readonly acceptedNodes: number;
   readonly byStatus: Readonly<Record<NodeStatus, number>>;
-  readonly nodeStatuses: readonly TaskProgressNodeState[];
+  /** Null when the server did not opt into node detail. Never synthesized from counts. */
+  readonly nodeStatuses: readonly TaskProgressNodeState[] | null;
+  /** Null when node detail was not returned. */
   readonly workflow: TaskProgressWorkflow | null;
   readonly assigneeCounts: { readonly human: number; readonly expert: number };
   readonly resources: TaskProgressResources;
@@ -99,6 +103,13 @@ function oneOf<T extends string>(raw: unknown, values: readonly T[]): T {
 function same(a: TaskProgressTarget, b: TaskProgressTarget) {
   return a.taskId === b.taskId && a.planId === b.planId && a.revision === b.revision;
 }
+/** Node detail is one optional pair. A single new key, or any other key, is rejected. */
+function detailPair(value: Record<string, unknown>): boolean {
+  const nodes = Object.hasOwn(value, 'nodeStatuses');
+  const workflow = Object.hasOwn(value, 'workflow');
+  if (nodes !== workflow) invalid();
+  return nodes;
+}
 function row(raw: unknown, expected: TaskProgressTarget): TaskProgressRow {
   const value = object(raw, [
     'target',
@@ -120,10 +131,9 @@ function row(raw: unknown, expected: TaskProgressTarget): TaskProgressRow {
       value.delivery !== 'unknown' ||
       value.acceptedNodes !== null ||
       value.byStatus !== null ||
-      value.nodeStatuses !== null ||
-      value.workflow !== null ||
       value.assigneeCounts !== null ||
-      value.resources !== null
+      value.resources !== null ||
+      (detailPair(value) && (value.nodeStatuses !== null || value.workflow !== null))
     )
       invalid();
     return {
@@ -182,38 +192,46 @@ function row(raw: unknown, expected: TaskProgressTarget): TaskProgressRow {
     resources,
   };
   const total = Object.values(byStatus).reduce((a, b) => a + b, 0);
+  const detailed = detailPair(value);
   if (facts === 'not-started') {
     if (
       value.delivery !== 'pending' ||
       value.reason !== undefined ||
-      value.workflow !== null ||
-      !Array.isArray(value.nodeStatuses) ||
-      value.nodeStatuses.length > 0 ||
       total ||
       acceptedNodes ||
-      Object.values(resources).some(Boolean)
+      Object.values(resources).some(Boolean) ||
+      (detailed &&
+        (value.workflow !== null ||
+          !Array.isArray(value.nodeStatuses) ||
+          value.nodeStatuses.length > 0))
     )
       invalid();
-    return { ...common, nodeStatuses: [], workflow: null, facts, delivery: 'pending' };
+    return {
+      ...common,
+      nodeStatuses: detailed ? [] : null,
+      workflow: null,
+      facts,
+      delivery: 'pending',
+    };
   }
   if (
     total !== expectedNodes ||
     (value.reason !== undefined && value.reason !== 'upstream-affected')
   )
     invalid();
-  const nodeStatuses = readNodeStatuses(
-    value.nodeStatuses,
-    expectedNodes,
-    byStatus,
-    resources.authorHeld,
-  );
-  const workflow = oneOf(value.workflow, [
-    'inactive',
-    'running',
-    'stopping',
-    'paused',
-    'completed',
-  ]);
+  const nodeStatuses = detailed
+    ? readNodeStatuses(value.nodeStatuses, expectedNodes, byStatus, resources.authorHeld)
+    : null;
+  const workflow = detailed
+    ? oneOf(value.workflow, [
+        'inactive',
+        'running',
+        'stopping',
+        'paused',
+        'completed',
+        'requires-resume',
+      ])
+    : null;
   const delivery = oneOf(value.delivery, [
     'pending',
     'all-accepted',
@@ -249,15 +267,16 @@ function readNodeStatuses(
   >;
   let held = 0;
   const items = raw.map((item) => {
-    const value = object(item, ['nodeId', 'status', 'authorHeld']);
+    const value = object(item, ['nodeId', 'status', 'authorHeld', 'assignee']);
     const nodeId = id(value.nodeId);
     if (seen.has(nodeId)) invalid();
     seen.add(nodeId);
     const status = oneOf(value.status, NODE_STATUSES);
+    const assignee = oneOf(value.assignee, ['human', 'expert']);
     const runs = count(value.authorHeld, 512);
     tallies[status]++;
     held += runs;
-    return { nodeId, status, authorHeld: runs };
+    return { nodeId, status, authorHeld: runs, assignee };
   });
   if (held !== authorHeld) invalid();
   for (const status of NODE_STATUSES) if (tallies[status] !== byStatus[status]) invalid();
@@ -265,7 +284,10 @@ function readNodeStatuses(
 }
 /** Pure member wire codec. Neither a latest-plan resolver nor an authorization cache. */
 export function createTaskProgressApi(
-  call: (query: TaskProgressQuery, signal: AbortSignal) => Promise<unknown>,
+  call: (
+    query: TaskProgressQuery & { readonly detail?: 'nodes' },
+    signal: AbortSignal,
+  ) => Promise<unknown>,
   spaceId: string,
 ): TaskProgressApi {
   return {
@@ -282,8 +304,16 @@ export function createTaskProgressApi(
       const plans = query.plans.map(target);
       if (new Set(plans.map((plan) => plan.taskId)).size !== plans.length) invalid();
       const clean = { spaceId: id(spaceId), plans };
-      if (new TextEncoder().encode(JSON.stringify(clean)).byteLength > 8192) invalid();
-      const response = await call(clean, signal);
+      const detailed = { ...clean, detail: 'nodes' as const };
+      if (new TextEncoder().encode(JSON.stringify(detailed)).byteLength > 8192) invalid();
+      let response: unknown;
+      try {
+        response = await call(detailed, signal);
+      } catch (error) {
+        signal.throwIfAborted();
+        if (!(error instanceof ExecutionError) || error.code !== 'unknown-field') throw error;
+        response = await call(clean, signal);
+      }
       signal.throwIfAborted();
       const value = object(response, ['actorId', 'spaceId', 'coverage', 'items']);
       if (
