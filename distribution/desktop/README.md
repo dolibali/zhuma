@@ -41,6 +41,8 @@ pnpm desktop:verify:win --source-sha (git rev-parse HEAD)
 
 脚本使用原 SDK 的 `package:desktop:win:x64:unsigned`，输出到 `dist/windows-x64/`。产品 unsigned 配方沿用原本地环境隔离，不读取 `.env.windows`、签名凭据或供应商更新策略；signed 原门禁保留。来源核验检查准备配方、固定 SDK、独立产品来源字段 `zhumaSourceCommit`／`zhumaSourceDirty`、原 SDK 构建来源、产品／构建／SDK版本、x64 应用 PE、九个工作台文件，以及三个必须解包的 CodeArts 物理文件；保留许可，并生成 `SOURCE.json` 和 `SHA256SUMS`。已有来源记录拒绝覆盖，后续候选应先保存到独立证据目录。NSIS 安装器引导本身允许为 x86，不据此误判应用架构。
 
+从本次命名调整后的后续候选和发行起，产品安装包统一命名为 `zhuma-<版本>-windows-x64-unsigned.exe`，完整标明 Windows、x64 和未签名状态。原 SDK 内部 `win-x64` target 和安装器名称不变，产品导出只复制原字节；候选校验和、总来源清单与 Release 资产使用公开名称。已发布 v1.4.0 继续保留真实原名 `zhuma-1.4.0-win-x64-unsigned.exe` 及原摘要，参见[历史版本说明](../../docs/release-v1.4.md)，不回改或重发。
+
 CI 的 **CI → Run workflow** 可选择 `task=windows-package`，填写与 dispatch ref 相同的完整 `source_sha`。该模式仅在 `windows-2025` 构建并保存候选资产；普通 push／PR 的 scaffold 检查保持原流程。候选 job 只有读取权限，不创建 tag 或 Release。编译和字节核验不代替实际安装、窗口、模型、本机权限、业务链路或恢复验收；这些证据由对应 Windows 环境按准确候选另行提供。
 
 ## 本地优先，登录策略与数据隔离

@@ -320,6 +320,13 @@ test('release workflow contract: manual default artifact build, fixed actions, a
   assert.deepEqual(workflow.jobs.assemble.needs, ['build', 'windows']);
   assert.equal(workflow.jobs.assemble.permissions.contents, 'read');
   assert.equal(workflow.jobs.publish.needs, 'assemble');
+  const ci = parse(await readFile(join(root, '.github/workflows/ci.yml'), 'utf8'));
+  for (const job of [workflow.jobs.windows, ci.jobs['windows-candidate']]) {
+    const uploads = job.steps.filter((step) => step.uses?.startsWith('actions/upload-artifact@'));
+    assert(uploads.length > 0);
+    for (const step of uploads)
+      assert(step.with.path.split('\n').includes('dist/windows-x64/*-windows-x64-unsigned.exe'));
+  }
   for (const job of Object.values(workflow.jobs))
     for (const step of job.steps) if (step.uses) assert.match(step.uses, /^[\w/-]+@[a-f0-9]{40}$/);
   const runs = workflow.jobs.build.steps.map((step) => step.run ?? '').join('\n');

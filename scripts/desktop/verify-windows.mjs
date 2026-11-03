@@ -8,7 +8,11 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { assertProductSourceRecipe } from './source-recipe.mjs';
-import { candidateFileRecord, verifyWindowsCandidateFiles } from '../lib/windows-candidate.mjs';
+import {
+  candidateFileRecord,
+  verifyWindowsCandidateFiles,
+  windowsInstallerNames,
+} from '../lib/windows-candidate.mjs';
 
 const { values } = parseArgs({ options: { 'source-sha': { type: 'string' } } });
 assert.equal(process.platform, 'win32', 'Verify a Windows candidate on Windows.');
@@ -45,7 +49,7 @@ const material = verifyWindowsCandidateFiles({
   sdkVersion: sdk.version,
   asar,
 });
-const filename = `zhuma-${buildVersion}-win-x64-unsigned.exe`;
+const filename = windowsInstallerNames(buildVersion).product;
 const output = join(root, 'dist/windows-x64');
 assert.deepEqual(candidateFileRecord(join(output, filename)), material.installer);
 assert(
