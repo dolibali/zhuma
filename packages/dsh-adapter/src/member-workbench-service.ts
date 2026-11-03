@@ -22,6 +22,7 @@ import {
 import {
   MemberWorkbenchCommandSchema,
   MemberWorkbenchPlanSchema,
+  MemberPlanningModelSelectSchema,
   MemberWorkbenchScopeSchema,
   type MemberWorkbenchCatalog,
   type MemberWorkbenchCommand,
@@ -1008,5 +1009,31 @@ export class MemberWorkbenchService {
     await read();
     signal.throwIfAborted();
     return { actorId: initial.actorId, spaceId, proposal };
+  }
+
+  private async planningSource(spaceId: string, signal: AbortSignal) {
+    const initial = await this.scope(spaceId);
+    signal.throwIfAborted();
+    const source = this.options.planningModels;
+    if (!source) fail('model-unavailable', '规划模型目录暂不可用。');
+    return { initial, source };
+  }
+
+  async planningModels(raw: unknown, signal: AbortSignal) {
+    const { spaceId } = MemberWorkbenchScopeSchema.parse(raw);
+    const { initial, source } = await this.planningSource(spaceId, signal);
+    const catalog = await source.catalog(signal);
+    await this.scope(spaceId, initial.actorId);
+    signal.throwIfAborted();
+    return { actorId: initial.actorId, spaceId, ...catalog };
+  }
+
+  async selectPlanningModel(raw: unknown, signal: AbortSignal) {
+    const { spaceId, provider, model } = MemberPlanningModelSelectSchema.parse(raw);
+    const { initial, source } = await this.planningSource(spaceId, signal);
+    const catalog = await source.select({ provider, model }, signal);
+    await this.scope(spaceId, initial.actorId);
+    signal.throwIfAborted();
+    return { actorId: initial.actorId, spaceId, ...catalog };
   }
 }

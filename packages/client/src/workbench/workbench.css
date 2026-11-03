@@ -5175,6 +5175,18 @@ html[data-platform='darwin'] .zhuma .zm-space-bar {
   margin: 4px 0 0;
   color: var(--zm-muted);
 }
+.zm-planning-readiness .zm-planning-model {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.zm-planning-readiness .zm-planning-model > .zm-single-select {
+  flex: 1 1 180px;
+  min-width: 0;
+  max-width: 100%;
+}
 .zm-planning-readiness > .zm-button {
   flex-shrink: 0;
 }

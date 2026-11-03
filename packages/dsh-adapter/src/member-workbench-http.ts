@@ -9,7 +9,13 @@ import type { MemberWorkbenchOptions } from './member-workbench-dto.js';
 import type { WorkbenchService } from './workbench-service.js';
 import { readWorkbenchBody, WORKBENCH_HTTP_LIMITS, WorkbenchBodyError } from './workbench-http.js';
 
-export const memberWorkbenchEndpoints = ['snapshot', 'command', 'plan'] as const;
+export const memberWorkbenchEndpoints = [
+  'snapshot',
+  'command',
+  'plan',
+  'planning-models',
+  'select-planning-model',
+] as const;
 export interface MemberWorkbenchMountOptions extends Omit<MemberWorkbenchOptions, 'resolve'> {
   readonly workbench: WorkbenchService;
 }
@@ -106,12 +112,15 @@ export function openMemberWorkbenchHttp(
       const service = new MemberWorkbenchService(options.workbench, { ...options, resolve });
       const payload = envelope.data.payload;
       signal.throwIfAborted();
-      const value =
-        endpoint === 'snapshot'
-          ? await service.snapshot(payload)
-          : endpoint === 'command'
-            ? await service.command(payload, signal)
-            : await service.plan(payload, signal);
+      const value = await (endpoint === 'snapshot'
+        ? service.snapshot(payload)
+        : endpoint === 'command'
+          ? service.command(payload, signal)
+          : endpoint === 'plan'
+            ? service.plan(payload, signal)
+            : endpoint === 'planning-models'
+              ? service.planningModels(payload, signal)
+              : service.selectPlanningModel(payload, signal));
       signal.throwIfAborted();
       return Response.json(
         { type: 'server-response', rpcId, result: { ok: true, value } },

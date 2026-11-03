@@ -1,8 +1,6 @@
 import type { Context } from '@deepseek-ai/cordis';
 import { clientRequestSchema } from '@deepseek-ai/dsh-client-connection';
 import type {} from '@deepseek-ai/dsh-storage-domain';
-import type {} from '@deepseek-ai/dsh-llm';
-import type {} from '@deepseek-ai/dsh-agent-default-model';
 import { z } from 'zod';
 import {
   emptyWorkbench,
@@ -13,6 +11,7 @@ import {
   AssetImportError,
 } from '@zhuma/agent-core';
 import { WorkbenchService, type PlanningModel } from './workbench-service.js';
+import { createPlanningModels, type PlanningModelCatalog } from './planning-model.js';
 import { createHostRunSkillPolicies } from './host-run-skill-policy.js';
 import { openHostTeamCatalog } from './host-team-catalog.js';
 import {
@@ -64,92 +63,6 @@ const packageDomainSpec = {
 
 export const inject = ['connection', 'storageDomain'];
 
-/** SDK-normalized stable facts only. Never surface provider messages, endpoints
- * or request identities; this classification does not retry or change routing. */
-function planningFailure(failure: { readonly code: string; readonly status?: number }) {
-  const mapped: Record<string, readonly [string, string]> = {
-    MISSING_CREDENTIAL: [
-      'model-credentials-missing',
-      '规划服务未配置所选模型的凭据，请检查当前服务的模型设置。',
-    ],
-    INVALID_CREDENTIAL: [
-      'model-credentials-invalid',
-      '所选模型的凭据格式无效，请联系管理员检查模型设置。',
-    ],
-    AUTH: ['model-access-denied', '模型服务拒绝了请求，请联系管理员检查凭据与访问权限。'],
-    QUOTA: ['model-quota', '模型服务额度不足，请联系管理员检查账户额度。'],
-    ACCOUNT_QUOTA: ['model-quota', '模型服务额度不足，请联系管理员检查账户额度。'],
-    RATE_LIMIT: ['model-rate-limit', '模型服务请求过于频繁，请稍后再发起规划。'],
-    TIMEOUT: ['model-timeout', '模型请求超时，请检查服务连接后再发起规划。'],
-    TRANSPORT: ['model-connection', '无法连接模型服务，请联系管理员检查网络与服务连接。'],
-    SERVER: ['model-service', '模型服务暂不可用，请稍后再发起规划。'],
-    NO_ADAPTER: ['model-unavailable', '所选模型适配器不可用，请联系管理员检查模型设置。'],
-    CONTEXT_WINDOW_EXCEEDED: [
-      'model-context-limit',
-      '任务材料超出模型容量，请缩小任务范围或减少材料。',
-    ],
-    INVALID_REQUEST: [
-      'model-request-rejected',
-      '模型服务不接受本次请求，请检查任务材料与所选模型设置。',
-    ],
-  };
-  let value = Object.hasOwn(mapped, failure.code) ? mapped[failure.code] : undefined;
-  const status = failure.status;
-  if (!value && typeof status === 'number' && Number.isInteger(status)) {
-    if (status === 401 || status === 403) value = mapped.AUTH;
-    else if (status === 402) value = mapped.QUOTA;
-    else if (status === 429) value = mapped.RATE_LIMIT;
-    else if (status === 408 || status === 504) value = mapped.TIMEOUT;
-    else if (status >= 500 && status <= 599) value = mapped.SERVER;
-  }
-  return new WorkbenchError(
-    ...(value ??
-      (['model-incomplete', '模型请求未正常结束，请检查模型连接或缩小任务后重试。'] as const)),
-  );
-}
-
-/** Reading and manual editing do not require a configured model service. */
-function planningModel(ctx: Context): PlanningModel | undefined {
-  const llm = ctx.get('llm');
-  const defaults = ctx.get('agentDefaultModel');
-  if (!llm || !defaults) return undefined;
-  let route: ReturnType<typeof defaults.currentSelection>;
-  try {
-    route = defaults.currentSelection();
-  } catch {
-    return undefined;
-  }
-  return {
-    name: `${route.provider} / ${route.model}`,
-    generate: async (system, input, abort) => {
-      const call = await llm.prepareCall({ ...route, maxTokens: 12000 }, abort);
-      let text = '';
-      let stopped = false;
-      for await (const chunk of call.stream({
-        ...call.config,
-        system,
-        messages: [{ role: 'user', content: [{ type: 'text', text: input }] }],
-        signal: abort,
-      })) {
-        abort.throwIfAborted();
-        if (chunk.type === 'text-delta') text += chunk.text;
-        if (text.length > 150000)
-          throw new WorkbenchError('output-limit', '模型输出过长，请缩小任务范围。');
-        if (chunk.type === 'finish') {
-          if (chunk.reason.kind === 'error') throw planningFailure(chunk.reason.failure);
-          stopped = chunk.reason.kind === 'stop';
-        }
-      }
-      if (!stopped)
-        throw new WorkbenchError(
-          'model-incomplete',
-          '模型请求未正常结束，请检查模型连接或缩小任务后重试。',
-        );
-      return text;
-    },
-  };
-}
-
 export interface OpenedWorkbench {
   openTeamCatalog(
     options: Pick<
@@ -162,6 +75,10 @@ export interface OpenedWorkbench {
   ): ReturnType<typeof createHostRunSkillPolicies>;
   readWorkbench(): ReturnType<WorkbenchService['snapshot']>;
   planningModel(): PlanningModel | undefined;
+  planningModels: {
+    catalog(signal: AbortSignal): Promise<PlanningModelCatalog>;
+    select(input: unknown, signal: AbortSignal): Promise<PlanningModelCatalog>;
+  };
   /** Facade over this already-opened Workbench and the same member catalog. */
   openMemberAssets(
     ctx: Context,
@@ -181,7 +98,12 @@ export async function openWorkbench(
 ): Promise<OpenedWorkbench> {
   let service: WorkbenchService | undefined;
   const lifetime = new AbortController();
+  const models = createPlanningModels(ctx);
   ctx.effect(() => () => lifetime.abort());
+  function planningModel(): PlanningModel | undefined {
+    if (lifetime.signal.aborted) return undefined;
+    return models.planningModel();
+  }
   async function handle(endpoint: string, payload: unknown, callerSignal: AbortSignal) {
     const signal = AbortSignal.any([callerSignal, lifetime.signal, AbortSignal.timeout(120000)]);
     try {
@@ -210,14 +132,14 @@ export async function openWorkbench(
             ok: true,
             value: {
               state: active.snapshot(),
-              model: planningModel(ctx)?.name ?? '未配置模型',
+              model: planningModel()?.name ?? '未配置模型',
             },
           };
         }
         case 'command':
           return { ok: true, value: await active.command(payload, signal) };
         case 'plan': {
-          const model = planningModel(ctx);
+          const model = planningModel();
           if (!model) throw new WorkbenchError('model-unavailable', '请先配置规划模型。');
           return { ok: true, value: await active.plan(payload, model, signal) };
         }
@@ -340,9 +262,16 @@ export async function openWorkbench(
         readPackage: (versionId) => packageDomain.table('versions').get(versionId),
       });
     },
-    planningModel: () => {
-      if (lifetime.signal.aborted) return undefined;
-      return planningModel(ctx);
+    planningModel,
+    planningModels: {
+      async catalog(signal) {
+        if (lifetime.signal.aborted) throw new WorkbenchError('unavailable', '工作台已关闭。');
+        return models.catalog(AbortSignal.any([signal, lifetime.signal]));
+      },
+      async select(input, signal) {
+        if (lifetime.signal.aborted) throw new WorkbenchError('unavailable', '工作台已关闭。');
+        return models.select(input, AbortSignal.any([signal, lifetime.signal]));
+      },
     },
     openMemberAssets: (memberCtx, options) => {
       if (lifetime.signal.aborted || !service)

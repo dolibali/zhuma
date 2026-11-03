@@ -13,7 +13,11 @@ import {
   type PlanningAdjustment,
 } from '@zhuma/agent-core';
 import type { ClientConnectionRpc } from '@deepseek-ai/dsh-client-connection/client';
-import type { MemberWorkbenchSnapshot, MemberTemplateSaveInput } from './member-api.js';
+import type {
+  MemberWorkbenchSnapshot,
+  MemberTemplateSaveInput,
+  PlanningModelChoices,
+} from './member-api.js';
 
 export type WorkbenchWriteIntent =
   'create-project' | 'update-project' | 'create-task' | 'update-task' | 'confirm-task';
@@ -22,6 +26,7 @@ export interface WorkbenchMemberAccess {
   capabilities(): MemberWorkbenchSnapshot['capabilities'] | undefined;
 }
 
+export type { PlanningModelChoices, PlanningModelOption } from './member-api.js';
 export interface WorkbenchApi {
   readonly member?: WorkbenchMemberAccess;
   /** Member templates capture the authoritative saved task, never browser content. */
@@ -51,6 +56,13 @@ export interface WorkbenchApi {
     baseProposalId?: string,
     adjustment?: PlanningAdjustment,
   ): Promise<PlanProposal>;
+  /** Host catalog for the planning panel. Owner workbench callers omit it. */
+  planningModels?(signal?: AbortSignal): Promise<PlanningModelChoices>;
+  selectPlanningModel?(
+    provider: string,
+    model: string,
+    signal?: AbortSignal,
+  ): Promise<PlanningModelChoices>;
 }
 export function createWorkbenchApi(rpc: ClientConnectionRpc): WorkbenchApi {
   async function call(endpoint: string, payload: object, signal?: AbortSignal): Promise<unknown> {

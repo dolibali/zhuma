@@ -11,6 +11,7 @@ import {
 import type { AuthorizedSpace, SpaceDirectory, SpaceDirectoryWriter } from './space-directory.js';
 import type { MemberResolution } from './member-session.js';
 import type { PlanningModel } from './workbench-service.js';
+import type { PlanningModelCatalog } from './planning-model.js';
 import type { MemberWorkbenchOperations } from './member-workbench-operation.js';
 
 const id = z
@@ -19,6 +20,10 @@ const id = z
   .max(100)
   .regex(/^[\w-]+$/u);
 export const MemberWorkbenchScopeSchema = z.strictObject({ spaceId: id });
+export const MemberPlanningModelSelectSchema = MemberWorkbenchScopeSchema.extend({
+  provider: z.string().trim().min(1).max(200),
+  model: z.string().trim().min(1).max(200),
+}).strict();
 // The server owns status, timestamps and fixed template provenance.
 export const MemberTaskInputSchema = WorkTaskSchema.omit({
   status: true,
@@ -79,6 +84,14 @@ export interface MemberWorkbenchOptions {
   /** Absent means no authorized experts/assets; never fall back to the global legacy catalog. */
   readonly catalog?: (spaceId: string) => Promise<MemberWorkbenchCatalog>;
   readonly model?: () => PlanningModel | undefined;
+  /** Same Host catalog and planning route as `model`. Absent means the chooser is not mounted. */
+  readonly planningModels?: {
+    catalog(signal: AbortSignal): Promise<PlanningModelCatalog>;
+    select(
+      input: { readonly provider: string; readonly model: string },
+      signal: AbortSignal,
+    ): Promise<PlanningModelCatalog>;
+  };
   readonly now?: () => string;
   readonly operations?: MemberWorkbenchOperations;
 }

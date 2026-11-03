@@ -530,6 +530,7 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
             return { assignProjectSpace: current.assignProjectSpace.bind(current) };
           },
           model: workbench.planningModel,
+          planningModels: workbench.planningModels,
           catalog,
           ...(operations ? { operations: operations.journal } : {}),
         };
