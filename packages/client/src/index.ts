@@ -34,6 +34,8 @@ export type {
   TaskProgressTarget,
   TaskProgressQuery,
   TaskProgressResources,
+  TaskProgressNodeState,
+  TaskProgressWorkflow,
   TaskProgressRow,
   TaskProgressValue,
   TaskProgressUnknownReason,

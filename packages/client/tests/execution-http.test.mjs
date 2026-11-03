@@ -31,7 +31,7 @@ test('member execution uses same-origin Fetch and the exact RPC envelope without
   assert.equal(options.redirect, 'error');
   assert.equal(options.cache, 'no-store');
   assert.equal(request.type, 'client-request');
-  assert.deepEqual(request.payload, {});
+  assert.deepEqual(request.payload, { detail: 'waiting' });
 });
 
 test('HTTP401 invalidates only the current member session and preserves a fixed public error', async () => {

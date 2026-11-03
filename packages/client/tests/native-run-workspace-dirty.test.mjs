@@ -337,11 +337,11 @@ if (!domModule) {
         );
         input.dispatchEvent(new window.Event('input', { bubbles: true }));
       });
-      await click('检查模型');
+      await click('刷新模型');
       assert.ok(node.textContent.includes('暂时无法确认规划模型'));
       assert.ok(input.isConnected);
       assert.equal(input.value, '保留这份补充要求');
-      await click('检查模型');
+      await click('刷新模型');
       assert.ok(node.textContent.includes('service / configured'));
       const generate = node.querySelector('.zm-planning-actions button');
       assert.ok(generate && !generate.disabled);

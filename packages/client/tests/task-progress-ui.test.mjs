@@ -37,6 +37,10 @@ const { createRoot } = await import('react-dom/client');
 const { renderToStaticMarkup } = await import('react-dom/server');
 const { TaskProgressSummary, taskProgressFacts } =
   await import('../dist/execution/TaskProgressSummary.js');
+const { NodeStatusMark } = await import('../dist/workbench/NodeStatusMark.js');
+const { taskHeading } = await import('../dist/workbench/task-heading.js');
+const { focusNodes, progressIsExecuting, progressNodeMarks } =
+  await import('../dist/execution/progress-focus.js');
 const { useTaskProgress } = await import('../dist/execution/useTaskProgress.js');
 const { ProjectHub } = await import('../dist/workbench/ProjectHub.js');
 const { ProjectIcon } = await import('../dist/workbench/ControlIcon.js');
@@ -99,6 +103,82 @@ test('task progress UI: execution, review, current acceptance and held resources
     }),
   );
   assert.match(project, /产物全部已接受 5\/5/);
+  const running = row({
+    expectedNodes: 3,
+    acceptedNodes: 0,
+    byStatus: { ...row().byStatus, running: 1, 'in-review': 0, completed: 0, blocked: 2 },
+    assigneeCounts: { human: 3, expert: 0 },
+    resources: { authorHeld: 1, reviewHeld: 0, stopRequested: 0 },
+    nodeStatuses: [
+      { nodeId: 'node-login', status: 'running', authorHeld: 1, assignee: 'expert' },
+      { nodeId: 'node-wait', status: 'blocked', authorHeld: 0, assignee: 'expert' },
+      { nodeId: 'node-next', status: 'blocked', authorHeld: 0, assignee: 'human' },
+    ],
+    workflow: 'running',
+  });
+  const named = renderToStaticMarkup(
+    el(ProjectHub, {
+      project: data.state.projects[0],
+      state: {
+        ...data.state,
+        appliedPlans: [
+          {
+            id: 'plan',
+            taskId: 'task',
+            revision: 2,
+            sourceWorkbenchRevision: 1,
+            task: {
+              ...data.task,
+              status: 'ready',
+              workflows: [
+                {
+                  ...data.task.workflows[0],
+                  nodes: [{ ...data.node, id: 'node-login', title: '设计登录接口' }],
+                },
+              ],
+            },
+            participants: data.state.participants,
+            assets: data.state.assets,
+          },
+        ],
+      },
+      tab: 'work',
+      changeTab() {},
+      openTask() {},
+      createTask() {},
+      edit() {},
+      taskProgress: () => ({ state: 'ready', row: running }),
+    }),
+  );
+  assert.match(named, /执行中 · 设计登录接口/);
+  assert.doesNotMatch(named, /待处理 1/);
+  assert.equal(
+    taskHeading({ title: '登录改造', goal: '把会话超时从 30 分钟改成 15 分钟' }),
+    '登录改造',
+  );
+  const goal = '把会话超时从 30 分钟改成 15 分钟，并补齐错误提示'.repeat(3);
+  assert.equal(taskHeading({ title: goal.slice(0, 60), goal }), `${goal.slice(0, 36)}…`);
+  assert.equal(taskHeading({ title: '', goal: '' }), '未命名任务');
+  assert.equal(
+    taskHeading({ title: '订单导出', goal: '订单导出需要支持 CSV 和权限校验' }),
+    '订单导出',
+  );
+  const marks = renderToStaticMarkup(
+    el(
+      'div',
+      {},
+      el(NodeStatusMark, { status: 'running' }),
+      el(NodeStatusMark, { status: 'ready', executing: true }),
+      el(NodeStatusMark, { status: 'completed' }),
+      el(NodeStatusMark, { status: 'blocked' }),
+      el(NodeStatusMark, { status: 'ready' }),
+    ),
+  );
+  assert.equal((marks.match(/zm-flow-status-running/g) ?? []).length, 2);
+  assert.match(marks, /zm-spinner/);
+  assert.match(marks, /aria-label="已完成"/);
+  assert.match(marks, /aria-label="等待前置"/);
+  assert.match(marks, /aria-label="待处理"/);
   assert.match(project, /计划草稿/); // A newer draft does not erase an earlier confirmed delivery.
   assert.doesNotMatch(project, /分配：|人工 3|专家 2/);
   const compact = renderToStaticMarkup(
@@ -106,6 +186,71 @@ test('task progress UI: execution, review, current acceptance and held resources
   );
   assert.match(compact, /进度未知/);
   assert.doesNotMatch(compact, /\d+\s*\/\s*\d+|100%|分配：/);
+});
+
+test('task progress focus: unclaimed reopen does not spin ready humans; queued and held work still does', () => {
+  const counts = row().byStatus;
+  const quiet = { authorHeld: 0, reviewHeld: 0, stopRequested: 0 };
+  const nodes = [
+    { nodeId: 'first', status: 'ready', authorHeld: 0, assignee: 'expert' },
+    { nodeId: 'second', status: 'ready', authorHeld: 0, assignee: 'expert' },
+    { nodeId: 'human', status: 'ready', authorHeld: 0, assignee: 'human' },
+    { nodeId: 'join', status: 'blocked', authorHeld: 0, assignee: 'expert' },
+  ];
+  const shape = {
+    expectedNodes: 4,
+    acceptedNodes: 0,
+    byStatus: { ...counts, running: 0, 'in-review': 0, completed: 0, ready: 3, blocked: 1 },
+    assigneeCounts: { human: 1, expert: 3 },
+    resources: quiet,
+    nodeStatuses: nodes,
+  };
+  const reopened = row({ ...shape, workflow: 'requires-resume' });
+  assert.deepEqual(focusNodes(reopened), []);
+  assert.equal(progressIsExecuting(reopened), false);
+  const coldMarks = progressNodeMarks({ state: 'ready', row: reopened });
+  assert.equal(coldMarks.get('human').executing, false);
+  assert.equal(coldMarks.get('first').executing, false);
+  const coldHtml = renderToStaticMarkup(
+    el(NodeStatusMark, { status: 'ready', executing: coldMarks.get('human').executing }),
+  );
+  assert.doesNotMatch(coldHtml, /zm-spinner/);
+  const waiting = row({ ...shape, workflow: 'inactive' });
+  assert.deepEqual(focusNodes(waiting), []);
+  assert.equal(progressIsExecuting(waiting), false);
+  const queued = row({ ...shape, workflow: 'running' });
+  assert.deepEqual(
+    focusNodes(queued).map((node) => node.nodeId),
+    ['first', 'second'],
+  );
+  assert.equal(progressIsExecuting(queued), true);
+  const queuedMarks = progressNodeMarks({ state: 'ready', row: queued });
+  assert.equal(queuedMarks.get('human').executing, false);
+  assert.equal(queuedMarks.get('first').executing, true);
+  const held = row({
+    ...shape,
+    workflow: 'requires-resume',
+    resources: { authorHeld: 1, reviewHeld: 0, stopRequested: 0 },
+    nodeStatuses: nodes.map((node) =>
+      node.nodeId === 'first' ? { ...node, authorHeld: 1 } : node,
+    ),
+  });
+  assert.deepEqual(
+    focusNodes(held).map((node) => node.nodeId),
+    ['first'],
+  );
+  const summary = row({
+    nodeStatuses: null,
+    workflow: null,
+    byStatus: { ...counts, running: 0, ready: 2 },
+    resources: quiet,
+  });
+  assert.equal(summary.nodeStatuses, null);
+  assert.deepEqual(focusNodes(summary), []);
+  assert.equal(progressIsExecuting(summary), false);
+  const runningSummary = row({ nodeStatuses: null, workflow: null });
+  assert.equal(progressIsExecuting(runningSummary), true);
+  assert.deepEqual(focusNodes(runningSummary), []);
 });
 
 test(

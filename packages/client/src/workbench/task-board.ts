@@ -1,4 +1,5 @@
 import type { WorkTask } from '@zhuma/agent-core';
+import { progressIsExecuting } from '../execution/progress-focus.js';
 import type { TaskProgressState } from '../execution/useTaskProgress.js';
 
 export const taskBoardColumns = [
@@ -22,10 +23,11 @@ export function taskBoardColumn(
   const row = progress.row;
   if (row.facts === 'not-started') return 'attention';
   if (row.delivery !== 'pending') return 'ended';
+  if (progressIsExecuting(row)) return 'running';
   if (row.byStatus['in-review']) return 'review';
   if (row.byStatus['needs-revision'] || row.byStatus['waiting-for-input'] || row.byStatus.failed)
     return 'attention';
-  return row.byStatus.running ? 'running' : 'attention';
+  return 'attention';
 }
 
 /** Pipeline order for detecting a drag that jumps past review. */

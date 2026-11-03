@@ -9,6 +9,7 @@ import {
   taskBoardColumns,
   type TaskBoardColumn,
 } from './task-board.js';
+import { taskHeading } from './task-heading.js';
 
 const BOARD_TASK_MIME = 'application/x-zhuma-board-task';
 
@@ -17,6 +18,7 @@ export function TaskBoard({
   projects,
   participants,
   progress,
+  nodeTitles,
   confirmed,
   openTask,
 }: {
@@ -24,6 +26,7 @@ export function TaskBoard({
   projects: readonly Project[];
   participants: readonly Participant[];
   progress(taskId: string): TaskProgressState | undefined;
+  nodeTitles?: ((taskId: string) => ReadonlyMap<string, string> | undefined) | undefined;
   confirmed(taskId: string): boolean;
   openTask(taskId: string): void;
 }) {
@@ -129,10 +132,11 @@ export function TaskBoard({
                 onClick={() => openTask(task.id)}
               >
                 <small>{projects.find((project) => project.id === task.projectId)?.name}</small>
-                <strong>{task.title}</strong>
+                <strong title={task.title || task.goal}>{taskHeading(task)}</strong>
                 <TaskProgressSummary
                   progress={taskProgress}
                   confirmed={confirmed(task.id)}
+                  nodeTitles={nodeTitles?.(task.id)}
                   compact
                 />
                 <span className="zm-board-card-footer">

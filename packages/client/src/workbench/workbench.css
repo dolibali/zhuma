@@ -3304,6 +3304,35 @@ html[data-platform='darwin'] .zhuma .zm-space-bar {
   border-color: var(--zm-accent);
   box-shadow: 0 0 0 1px var(--zm-accent);
 }
+.zm-flow-status {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 1;
+}
+.zm-flow-status-running .zm-spinner {
+  display: block;
+  width: 14px;
+  height: 14px;
+  color: var(--zm-accent);
+}
+.zm-flow-status-completed,
+.zm-flow-status-waiting {
+  display: block;
+  width: 8px;
+  height: 8px;
+  margin-top: 3px;
+  border-radius: 50%;
+}
+.zm-flow-status-completed {
+  background: var(--zm-success);
+}
+.zm-flow-status-waiting {
+  background: var(--zm-warning);
+}
+.zm-flow-node-status strong {
+  padding-right: 18px;
+}
 .zm-flow-context {
   display: block;
   font-size: 12px;
@@ -4628,6 +4657,22 @@ html[data-platform='darwin'] .zhuma .zm-space-bar {
 .zhuma .zm-task-progress-compact > span {
   white-space: nowrap;
 }
+.zhuma .zm-task-progress-running {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  color: var(--zm-accent);
+  font-weight: 650;
+}
+.zhuma .zm-task-progress-running > b {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 650;
+}
+.zhuma .zm-task-progress-running .zm-spinner {
+  flex: none;
+}
 .zhuma .zm-task-state-cell > .zm-status,
 .zhuma .zm-task-state-cell > .zm-badge {
   color: var(--zm-muted);
@@ -5239,6 +5284,10 @@ html[data-platform='darwin'] .zhuma .zm-space-bar {
   font-size: 14px;
   font-weight: 600;
   overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
 }
 .zm-board-card small,
 .zm-board-card-footer,

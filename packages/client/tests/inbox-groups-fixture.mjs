@@ -9,6 +9,7 @@ export function groupedInbox() {
     { ...deliveryNode, nodeId: 'input', goal: '补充发票处理规则', status: 'waiting-for-input' },
     { ...deliveryNode, nodeId: 'confirm', goal: '确认子流程交付', status: 'ready' },
     { ...deliveryNode, nodeId: 'running', goal: '正在生成帮助文案', status: 'running' },
+    { ...deliveryNode, nodeId: 'blocked', goal: '等待上游交付', status: 'blocked' },
     {
       ...deliveryNode,
       nodeId: 'no-item',
@@ -23,6 +24,7 @@ export function groupedInbox() {
     ['deliver', 'input-required', 'provide-input'],
     ['confirm', 'parent-confirmation', 'confirm'],
     ['deliver', 'agent-assisted-delivery', 'continue-handling'],
+    ['deliver', 'waiting-on-prerequisites', 'wait'],
   ];
   const items = facts.map(([kind, reason, action], i) => ({
     id: `item-${i}`,

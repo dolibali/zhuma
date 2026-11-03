@@ -516,6 +516,17 @@ export class ExecutionWorkflowIntents {
       }),
     );
   }
+  /** Live arm only. A cold process has none. This does not fence, claim, or read rows. */
+  observesRunning(location: WorkflowLocation): boolean {
+    let key: string;
+    try {
+      key = keyOf(locationOf(location));
+    } catch {
+      return false;
+    }
+    const arm = this.arms.get(key);
+    return arm !== undefined && !arm.fenced && !arm.signal.aborted;
+  }
   read(request: MemberRequest, raw: unknown) {
     return this.operate(request, raw, workflowLocationSchema, (location, member) =>
       this.source.enqueue(async () => ok(this.view(location, member))),
