@@ -13,6 +13,7 @@ import {
   StoredAssetPackageSchema,
   type StoredAssetPackage,
   type Workbench,
+  type MemberAssetFolderRecord,
   type PlanProposal,
 } from '@zhuma/agent-core';
 import type {
@@ -103,6 +104,9 @@ export class WorkbenchService {
   memberAssetRecords(): readonly MemberAssetRecord[] {
     return structuredClone(this.storage.read().memberAssets ?? []);
   }
+  memberAssetFolderRecords(): readonly MemberAssetFolderRecord[] {
+    return structuredClone(this.storage.read().memberAssetFolders ?? []);
+  }
 
   /** Small byte-boundary guard without cloning whole definitions on every chunk. */
   memberAssetVersion(spaceId: string, assetId: string): number | undefined {
@@ -142,8 +146,12 @@ export class WorkbenchService {
   memberAssetCommand<T>(
     signal: AbortSignal,
     authorize: () => void | Promise<void>,
-    apply: (records: readonly MemberAssetRecord[]) => Promise<{
+    apply: (
+      records: readonly MemberAssetRecord[],
+      folders: readonly MemberAssetFolderRecord[],
+    ) => Promise<{
       readonly records?: readonly MemberAssetRecord[];
+      readonly folders?: readonly MemberAssetFolderRecord[];
       readonly value: T;
     }>,
   ): Promise<T> {
@@ -151,15 +159,16 @@ export class WorkbenchService {
       signal.throwIfAborted();
       await authorize();
       const state = this.snapshot();
-      const result = await apply(state.memberAssets ?? []);
+      const result = await apply(state.memberAssets ?? [], state.memberAssetFolders ?? []);
       signal.throwIfAborted();
       await authorize();
       signal.throwIfAborted();
-      if (result.records) {
+      if (result.records || result.folders) {
         const next = WorkbenchSchema.parse({
           ...state,
           revision: state.revision + 1,
-          memberAssets: result.records,
+          ...(result.records ? { memberAssets: result.records } : {}),
+          ...(result.folders ? { memberAssetFolders: result.folders } : {}),
         });
         signal.throwIfAborted();
         await this.storage.write(next);

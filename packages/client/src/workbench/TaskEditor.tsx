@@ -39,6 +39,8 @@ import type { WorkflowView } from '../workflow/api.js';
 import { latestTaskPlan, type TaskProgressState } from '../execution/useTaskProgress.js';
 import { TaskProgressSummary } from '../execution/TaskProgressSummary.js';
 import { expertResources, prepareExpertProposal } from './expert-resources.js';
+import { MemberAssetFilePicker } from '../assets/MemberAssetFilePicker.js';
+import type { MemberAssetApi } from '../assets/api.js';
 
 // Started only by the create-form submit handler. The parent owns cancellation on task exit.
 export type InitialPlanning = {
@@ -78,6 +80,7 @@ export function TaskEditor({
   nativeRun,
   progress,
   refreshProgress,
+  memberAssets,
 }: {
   original: WorkTask;
   state: Workbench;
@@ -92,6 +95,7 @@ export function TaskEditor({
   nativeRun?: { api: NativeRunApi; spaceId: string };
   progress?: TaskProgressState | undefined;
   refreshProgress?: (() => void) | undefined;
+  memberAssets?: { api: MemberAssetApi; spaceId: string };
 }) {
   const [task, setTask] = useState(() => structuredClone(original));
   const planningReadiness = usePlanningReadiness(api, model);
@@ -829,6 +833,14 @@ export function TaskEditor({
             />
           )}
         </details>
+        {memberAssets && (
+          <MemberAssetFilePicker
+            {...memberAssets}
+            value={task.fileRefs}
+            disabled={locked}
+            change={(fileRefs) => edit({ ...task, fileRefs })}
+          />
+        )}
       </div>
       {nativeRun?.api.workflow &&
         api.member &&

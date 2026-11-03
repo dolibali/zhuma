@@ -2,6 +2,7 @@ import { symbols, type Context } from '@deepseek-ai/cordis';
 import type {} from '@deepseek-ai/dsh-llm';
 import { z } from 'zod';
 import { ExecutionRunError } from './execution-run-state.js';
+import { readPreparedCodeArtsRoute } from './host-codearts-policy.js';
 
 export type HostRunModel = {
   provider: string;
@@ -129,6 +130,18 @@ export async function readHostRunModels(
         cancelled,
       ]);
       active(signal);
+      const codeArts = readPreparedCodeArtsRoute(ctx);
+      if (
+        codeArts &&
+        external.has(codeArts.provider) &&
+        providers.some((provider) => provider.id === codeArts.provider)
+      ) {
+        items.push({
+          id: JSON.stringify([codeArts.provider, codeArts.capability.id]),
+          label: `CodeArts · ${codeArts.capability.name}`,
+          value: { provider: codeArts.provider, model: codeArts.capability.id, maxTokens: 4096 },
+        });
+      }
       models = {
         kind: 'ready',
         items,

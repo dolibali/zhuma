@@ -4,9 +4,16 @@ import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, copyFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { verifyPackagedCodeArts } from '../lib/desktop-codearts-artifacts.mjs';
+import {
+  assemblePlatformAssets,
+  serverQualification,
+  unpackServerArtifact,
+  verifyPlatformAssets,
+} from '../lib/release-platforms.mjs';
 
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const backendLaunchers = ['packaged-backend.sh', 'packaged-backend.mjs'];
@@ -18,9 +25,11 @@ export function releaseContext(root, env) {
   assert.equal(env.GITHUB_REF, 'refs/heads/main', 'Dispatch must run from main.');
   assert.equal(env.GITHUB_SHA, source, 'Workflow and verified source SHA differ.');
   assert.equal(git(root, 'rev-parse', 'HEAD'), source, 'Checkout differs from verified source.');
+  assert.equal(git(root, 'status', '--porcelain'), '', 'Release source is dirty.');
   assert.match(env.GITHUB_REPOSITORY ?? '', /^[\w.-]+\/[\w.-]+$/);
   const product = readJson(join(root, 'package.json'));
-  const sdkPin = readJson(join(root, 'runtime.lock.json')).upstreams.deepseekHarness.commit;
+  const sdk = readJson(join(root, 'runtime.lock.json')).upstreams.deepseekHarness;
+  const sdkPin = sdk.commit;
   assert.equal(git(root, 'rev-parse', 'HEAD:upstream/deepseek-harness'), sdkPin);
   const brand = readJson(join(root, 'branding/default/brand.json'));
   assert.match(product.version, /^\d+\.\d+\.\d+(?:-[\da-zA-Z.-]+)?$/);
@@ -32,6 +41,7 @@ export function releaseContext(root, env) {
     repository: env.GITHUB_REPOSITORY,
     version: product.version,
     sdkPin,
+    sdkVersion: sdk.version,
     rootLockSha256: sha256(readFileSync(join(root, 'pnpm-lock.yaml'))),
     tag: `v${product.version}`,
     filename: `zhuma-${product.version}-mac-arm64-unsigned.dmg`,
@@ -125,12 +135,7 @@ export function writeManifest(context, gate) {
   const client = asar.extractFile(archive, plugin + 'client.js');
   assert(host.equals(readFileSync(join(root, '.build/workbench/index.js'))));
   assert(client.equals(readFileSync(join(root, '.build/workbench/client.js'))));
-  for (const file of ['codearts-acp.js', 'codearts-acp.manifest.json', 'codearts-policy.js'])
-    assert(
-      asar
-        .extractFile(archive, plugin + file)
-        .equals(readFileSync(join(root, '.build/workbench', file))),
-    );
+  verifyPackagedCodeArts(join(app, 'Contents/Resources'), join(root, '.build/workbench'), asar);
   const dmg = readFileSync(join(root, 'dist', filename));
   const launchers = backendLaunchers.map((name) => {
     const bytes = readFileSync(join(root, 'scripts/server', name));
@@ -182,7 +187,7 @@ export function writeManifest(context, gate) {
   );
   return manifest;
 }
-export async function publish(context, directory, api) {
+export function verifyMacMaterial(context, directory, additionalAssets = []) {
   const manifest = readJson(join(directory, 'SOURCE.json'));
   assert.equal(manifest.sourceCommit, context.source);
   assert.equal(manifest.sourceTree, context.tree);
@@ -218,8 +223,21 @@ export async function publish(context, directory, api) {
   }
   const sums =
     `${sha256(dmg)}  ${context.filename}\n${sha256(readFileSync(join(directory, 'SOURCE.json')))}  SOURCE.json\n` +
-    manifest.artifacts.backendLaunchers.map((item) => `${item.sha256}  ${item.name}\n`).join('');
+    [...manifest.artifacts.backendLaunchers, ...additionalAssets]
+      .map((item) => `${item.sha256}  ${item.name}\n`)
+      .join('');
   assert.equal(readFileSync(join(directory, 'SHA256SUMS'), 'utf8'), sums);
+  return manifest;
+}
+export async function publish(context, directory, api) {
+  const manifest = readJson(join(directory, 'SOURCE.json'));
+  const extra = await verifyPlatformAssets(context, directory, manifest.platforms);
+  verifyMacMaterial(context, directory, extra);
+  assert.deepEqual(
+    await serverQualification(context, manifest.platforms.server.qualification.runId, api),
+    manifest.platforms.server.qualification,
+    'The exact Linux qualification or artifact changed before publication.',
+  );
   await preflight(context, api); // Fresh exact source/CI/conflict checks before the first write.
   const prefix = `repos/${context.repository}`;
   const tag = await api(`${prefix}/git/refs`, {
@@ -235,28 +253,15 @@ export async function publish(context, directory, api) {
       name: `Zhuma ${context.version}`,
       draft: true,
       prerelease: context.version.includes('-'),
-      body: `## 核心能力
-- 成员明确授权本机运行工作流，只接续自己获准的节点；其他成员各自授权，离线等待，后端不代跑成员 Agent。
-- 固定文字／真实文件自动交付、指定独立 Agent 评审及 0／1／2 轮有界返工；真人评审与上限耗尽等待人工，全部通过且原运行收口后接续。手工交付与逐节点使用 Agent 保留。
-- 任务按参与真人／专家、阶段、项目与搜索联合筛选，列表／看板共用结果与计数。
-- 项目关联必需／可选的固定版本知识，运行沿原授权工具按需读取；引用清单和工具注册不代表正文已读。
-- 共享后端 AI 规划读取实际模型可用状态，提案可继续编辑，失败保留输入；规划与成员本机执行分别配置模型。
-- 同机共享后端与两个隔离成员 Host 的真实 HTTP 接续、停止、未知回执与冷恢复；保留原工作区／Session 导航及历史交付。
+      body: `Zhuma ${context.version}
 
-## 安装与首次使用
-1. 下载 DMG、SOURCE.json、SHA256SUMS 和两个 packaged-backend 启动文件，放在同一目录，执行 shasum -a 256 -c SHA256SUMS 核验。
-2. 打开 DMG，将 Zhuma 拖入 Applications。首次被系统拦截时，核对来源后按 [macOS 正常允许打开流程](https://support.apple.com/zh-cn/102445)操作；不要全局关闭系统保护。
-3. 成员自行在桌面模型页配置本机执行模型；共享 AI 规划由服务操作者在后端官方 Settings → Models 中单独配置。凭据不自动复制，模型调用费用由供应商计费。
-4. 需要共享后端时，用同目录脚本运行 sh packaged-backend.sh --app /Applications/Zhuma.app --data /path/to/backend-data --file-uploads --independent-reviews，启用文件交付和独立 Agent 评审。保留两个启动文件同目录，使用本版 App；成员在桌面选择该后端并正常登录。
+Windows x64 安装包、macOS arm64 DMG 与 Linux amd64 服务镜像／便携包来自同一准确 main 提交。
+安装、签名、配置、数据与验证边界见 [本版说明](https://github.com/${context.repository}/blob/${context.source}/docs/release-v1.4.md)。
 
-## 支持与边界
-仅 macOS Apple Silicon（arm64）；ad-hoc 签名、未公证，无自动更新。Intel Mac、Windows、Linux 尚未认证。
-非空 MCP、资产／工作流发布版本、批量反馈、复杂子流程与完整工作树执行、效能统计、个人专家直接使用与导入、外部 CLI 和完整跨会话通信后置。
-多成员恢复以同机隔离模拟为边界，不认证实体异机网络、休眠或平台差异；真实模型与知识正文实际读取须按准确候选分别留证。共享后端为本地部署，集群部署后置。
+下载所需平台文件与 SOURCE.json、SHA256SUMS，先核对摘要。macOS 为 ad-hoc、未公证；Windows 未签名；无自动更新。服务镜像压缩包使用 docker load，部署模板须先填写自己的入口和持久卷，不含凭据。
 
-## 许可与来源
-自有代码采用 [MIT License](https://github.com/${context.repository}/blob/${context.source}/LICENSE)，第三方许可保留在安装包中。
-源码：${context.source}。来源与产物摘要见 SOURCE.json、SHA256SUMS。
+自有代码采用 [MIT License](https://github.com/${context.repository}/blob/${context.source}/LICENSE)，保留第三方许可和真实供应商信息。
+来源：${context.source}；SDK：${context.sdkPin}；各平台原始来源与全部上传字节摘要见 SOURCE.json、SHA256SUMS。
 `,
     },
   });
@@ -266,7 +271,13 @@ export async function publish(context, directory, api) {
   assert.equal(release.target_commitish, context.source);
   // A partial failure intentionally leaves the new draft/tag for inspection.
   // Never delete a tag/release, clobber an asset, or silently retry publication.
-  for (const name of [context.filename, 'SOURCE.json', 'SHA256SUMS', ...backendLaunchers]) {
+  for (const name of [
+    context.filename,
+    'SOURCE.json',
+    'SHA256SUMS',
+    ...backendLaunchers,
+    ...extra.map((item) => item.name),
+  ]) {
     const bytes = readFileSync(join(directory, name));
     const asset = await api(
       `${prefix}/releases/${release.id}/assets?name=${encodeURIComponent(name)}`,
@@ -280,6 +291,11 @@ export async function publish(context, directory, api) {
   await verifiedMainCI(context, api);
   const currentTag = await api(`${prefix}/git/ref/tags/${context.tag}`);
   assert.equal(currentTag.object.sha, context.source, 'Release tag moved during upload.');
+  assert.deepEqual(
+    await serverQualification(context, manifest.platforms.server.qualification.runId, api),
+    manifest.platforms.server.qualification,
+    'Linux qualification changed during asset upload; keep this release private.',
+  );
   const completed = await api(`${prefix}/releases/${release.id}`, {
     method: 'PATCH',
     body: { draft: false },
@@ -300,10 +316,69 @@ async function main() {
       appendFileSync(process.env.GITHUB_OUTPUT, `tag=${context.tag}\nversion=${context.version}\n`);
   } else if (mode === 'manifest') {
     writeManifest(context, readJson(join(root, '.build/release/preflight.json')));
+  } else if (mode === 'server-preflight') {
+    await preflight(context, githubApi(process.env.GH_TOKEN));
+    const receipt = await serverQualification(
+      context,
+      process.env.SERVER_RUN_ID,
+      githubApi(process.env.GH_TOKEN),
+    );
+    mkdirSync(join(root, '.build/release'), { recursive: true });
+    writeFileSync(
+      join(root, '.build/release/server-preflight.json'),
+      JSON.stringify(receipt) + '\n',
+    );
+    assert(process.env.GITHUB_OUTPUT);
+    appendFileSync(process.env.GITHUB_OUTPUT, `artifact_id=${receipt.artifactId}\n`);
+  } else if (mode === 'server-unpack') {
+    const server = join(root, '.build/release-input/server');
+    mkdirSync(server, { recursive: true });
+    unpackServerArtifact(
+      context,
+      readJson(join(root, '.build/release/server-preflight.json')),
+      join(root, '.build/release/server.zip'),
+      join(server, 'payload'),
+    );
+    copyFileSync(
+      join(root, '.build/release/server-preflight.json'),
+      join(server, 'server-preflight.json'),
+    );
+  } else if (mode === 'assemble') {
+    const inputs = join(root, '.build/release-input'),
+      output = join(root, '.build/release-combined');
+    const mac = join(inputs, 'macos'),
+      windows = join(inputs, 'windows'),
+      server = join(inputs, 'server');
+    const manifest = verifyMacMaterial(context, mac);
+    mkdirSync(output); // A fresh output only; preserve any earlier candidate.
+    for (const name of [context.filename, ...backendLaunchers])
+      copyFileSync(join(mac, name), join(output, name));
+    manifest.platforms = await assemblePlatformAssets(
+      context,
+      windows,
+      join(server, 'payload'),
+      readJson(join(server, 'server-preflight.json')),
+      output,
+    );
+    await verifyPlatformAssets(context, output, manifest.platforms);
+    const bytes = Buffer.from(JSON.stringify(manifest, null, 2) + '\n');
+    writeFileSync(join(output, 'SOURCE.json'), bytes, { flag: 'wx' });
+    writeFileSync(
+      join(output, 'SHA256SUMS'),
+      `${sha256(readFileSync(join(output, context.filename)))}  ${context.filename}\n${sha256(bytes)}  SOURCE.json\n` +
+        [...manifest.artifacts.backendLaunchers, ...manifest.platforms.assets]
+          .map((item) => `${item.sha256}  ${item.name}\n`)
+          .join(''),
+      { flag: 'wx' },
+    );
+    verifyMacMaterial(context, output, manifest.platforms.assets);
   } else if (mode === 'publish') {
     console.log(
       await publish(context, join(root, '.build/release-input'), githubApi(process.env.GH_TOKEN)),
     );
-  } else throw new Error('Expected preflight, manifest or publish.');
+  } else
+    throw new Error(
+      'Expected preflight, manifest, server-preflight, server-unpack, assemble or publish.',
+    );
 }
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) await main();

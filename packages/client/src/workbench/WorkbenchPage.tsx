@@ -23,7 +23,7 @@ import { AssetImportDialog } from './AssetImportDialog.js';
 import { ResourceSourceDialog } from './SourceFiles.js';
 import { ExpertBrowser, type ExpertBrowserView } from './ExpertBrowser.js';
 import type { NativeRunApi } from '../run/api.js';
-import { ControlIcon } from './ControlIcon.js';
+import { ControlIcon, ProjectIcon } from './ControlIcon.js';
 import { TaskBoard } from './TaskBoard.js';
 import { taskBoardColumn, taskBoardColumns } from './task-board.js';
 import {
@@ -42,6 +42,10 @@ import { TaskProgressSummary } from '../execution/TaskProgressSummary.js';
 import { KnowledgePanel, type KnowledgePanelProps } from '../knowledge/KnowledgePanel.js';
 import type { ProjectKnowledgeApi } from '../knowledge/project-knowledge-api.js';
 import { useLeaveConfirmation } from './useLeaveConfirmation.js';
+import { MemberAssetsPanel } from '../assets/MemberAssetsPanel.js';
+import { MemberAssetFilePicker } from '../assets/MemberAssetFilePicker.js';
+import type { MemberAssetApi } from '../assets/api.js';
+import type { MemberSpaceLifetime } from '../identity/MemberSpaceBoundary.js';
 import {
   ProjectHub,
   ProjectFields,
@@ -84,6 +88,7 @@ export function WorkbenchPage({
   projectExecution,
   legacyMode = false,
   knowledge,
+  memberAssets,
 }: {
   api: WorkbenchApi;
   initialSection: Section;
@@ -103,15 +108,17 @@ export function WorkbenchPage({
   legacyMode?: boolean;
   knowledge?:
     (Omit<KnowledgePanelProps, 'onDirtyChange'> & { projectApi?: ProjectKnowledgeApi }) | undefined;
+  memberAssets?: { api: MemberAssetApi; spaceId: string; lifetime: MemberSpaceLifetime };
 }) {
   const [state, setState] = useState<Workbench>(emptyWorkbench);
   const [model, setModel] = useState('尚未读取');
   const [section, setSection] = useState(initialSection);
   const [knowledgeDirty, setKnowledgeDirty] = useState(false);
+  const [assetsDirty, setAssetsDirty] = useState(false);
   const [projectKnowledgeDirty, setProjectKnowledgeDirty] = useState(false);
   const knowledgeLeave = useLeaveConfirmation(() => knowledge?.lifetime.isCurrent() ?? true);
   function leaveKnowledge(action: () => void) {
-    knowledgeLeave.request(action, knowledgeDirty || projectKnowledgeDirty);
+    knowledgeLeave.request(action, knowledgeDirty || projectKnowledgeDirty || assetsDirty);
   }
   const [loading, setLoading] = useState(true);
   const [loaded, setLoaded] = useState(false);
@@ -329,8 +336,8 @@ export function WorkbenchPage({
       </section>
     );
   }
-  async function refresh(signal?: AbortSignal) {
-    setLoading(true);
+  async function refresh(signal?: AbortSignal, keepView = false) {
+    if (!keepView) setLoading(true);
     setError('');
     try {
       const result = await api.snapshot(signal);
@@ -340,7 +347,7 @@ export function WorkbenchPage({
     } catch (e) {
       if (!signal?.aborted) setError(e instanceof Error ? e.message : '读取工作台失败。');
     } finally {
-      if (!signal?.aborted) setLoading(false);
+      if (!signal?.aborted && !keepView) setLoading(false);
     }
   }
   useEffect(() => {
@@ -646,6 +653,37 @@ export function WorkbenchPage({
     (task) => !taskFilters.stage || stageFor(task) === taskFilters.stage,
   );
   const stageLoading = taskCandidates.some((task) => progressFor(task.id)?.state === 'loading');
+  const catalogHeading =
+    !activeProject && !expertLibrary && ['projects', 'tasks', 'assets'].includes(section);
+  const pageActions = (
+    <div className="zm-actions">
+      <Appearance store={appearance} />
+      {!(memberAssets && section === 'assets') && (
+        <Button variant="quiet" onClick={() => void refresh()}>
+          刷新
+        </Button>
+      )}
+      {activeProject && (!member || capabilities?.createProject) && (
+        <Button onClick={() => openDialog({ kind: 'project', value: activeProject })}>
+          编辑项目
+        </Button>
+      )}
+      {!member && section === 'assets' && (
+        <Button onClick={() => setImportOpen(true)}>
+          {expertLibrary ? '导入专家' : '导入定义'}
+        </Button>
+      )}
+      {!(memberAssets && section === 'assets') && (
+        <Button
+          variant="primary"
+          disabled={!!member && (loading || saving || !canCreate)}
+          onClick={() => leaveKnowledge(createCatalogItem)}
+        >
+          ＋ {createLabel}
+        </Button>
+      )}
+    </div>
+  );
   if (loading)
     return (
       <div className="zhuma zm-loading" role="status">
@@ -680,6 +718,7 @@ export function WorkbenchPage({
           {...(initialPlanning ? { initialPlanning } : {})}
           {...(openWork ? { openWork } : {})}
           {...(nativeRun ? { nativeRun } : {})}
+          {...(memberAssets ? { memberAssets } : {})}
         />
       </div>
     );
@@ -687,7 +726,12 @@ export function WorkbenchPage({
     <div className="zhuma">
       {knowledgeLeave.dialog}
       <div className={`zm-page${activeProject ? ' zm-project-page' : ''}`}>
-        {section !== 'knowledge' && (
+        {catalogHeading && (
+          <h1 className="zm-catalog-heading">
+            {section === 'assets' && memberAssets ? '资产' : labels[section]}
+          </h1>
+        )}
+        {section !== 'knowledge' && !catalogHeading && (
           <header className="zm-page-heading">
             <div className="zm-page-title">
               {activeProject && (
@@ -698,38 +742,23 @@ export function WorkbenchPage({
                   <ControlIcon direction="left" /> 全部项目
                 </Button>
               )}
-              <h1>{expertLibrary ? '专家' : (activeProject?.name ?? labels[section])}</h1>
-              <span>
+              <h1>
                 {expertLibrary
-                  ? state.participants.filter((p) => p.kind === 'expert').length
-                  : activeProject
-                    ? undefined
-                    : total}
-              </span>
-            </div>
-            <div className="zm-actions">
-              <Appearance store={appearance} />
-              <Button variant="quiet" onClick={() => void refresh()}>
-                刷新
-              </Button>
-              {activeProject && (!member || capabilities?.createProject) && (
-                <Button onClick={() => openDialog({ kind: 'project', value: activeProject })}>
-                  编辑项目
-                </Button>
+                  ? '专家'
+                  : (activeProject?.name ??
+                    (section === 'assets' && memberAssets ? '资产' : labels[section]))}
+              </h1>
+              {!(memberAssets && section === 'assets') && (
+                <span>
+                  {expertLibrary
+                    ? state.participants.filter((p) => p.kind === 'expert').length
+                    : activeProject
+                      ? undefined
+                      : total}
+                </span>
               )}
-              {!member && section === 'assets' && (
-                <Button onClick={() => setImportOpen(true)}>
-                  {expertLibrary ? '导入专家' : '导入定义'}
-                </Button>
-              )}
-              <Button
-                variant="primary"
-                disabled={!!member && (loading || saving || !canCreate)}
-                onClick={() => leaveKnowledge(createCatalogItem)}
-              >
-                ＋ {createLabel}
-              </Button>
             </div>
+            {pageActions}
           </header>
         )}
         {legacyMode && (
@@ -740,12 +769,21 @@ export function WorkbenchPage({
             <nav className="zm-tabs" aria-label="工作台导航">
               {(Object.keys(labels) as Section[])
                 .filter((s) =>
-                  s === 'knowledge' ? !!knowledge : !member || s === 'projects' || s === 'tasks',
+                  s === 'knowledge'
+                    ? !!knowledge && !memberAssets
+                    : !member ||
+                      s === 'projects' ||
+                      s === 'tasks' ||
+                      (s === 'assets' && !!memberAssets),
                 )
                 .map((s) => (
                   <button
                     key={s}
-                    aria-current={s === section ? 'page' : undefined}
+                    aria-current={
+                      s === section || (s === 'assets' && section === 'knowledge' && memberAssets)
+                        ? 'page'
+                        : undefined
+                    }
                     onClick={() => {
                       if (s === section && !activeProject) return;
                       leaveKnowledge(() => {
@@ -761,8 +799,8 @@ export function WorkbenchPage({
                       });
                     }}
                   >
-                    {labels[s]}
-                    {s !== 'knowledge' && (
+                    {s === 'assets' && memberAssets ? '资产' : labels[s]}
+                    {s !== 'knowledge' && !(s === 'assets' && memberAssets) && (
                       <span>
                         {s === 'projects'
                           ? state.projects.length
@@ -794,6 +832,7 @@ export function WorkbenchPage({
                 </Button>
               </div>
             )}
+            {catalogHeading && <div className="zm-catalog-actions">{pageActions}</div>}
             {section === 'tasks' && (
               <div className="zm-filter zm-task-filters">
                 <input
@@ -861,47 +900,66 @@ export function WorkbenchPage({
                 </div>
               </div>
             )}
-            {section !== 'tasks' && section !== 'knowledge' && !activeProject && (
-              <div className="zm-filter">
-                <input
-                  type="search"
-                  aria-label={
-                    section === 'projects'
-                      ? '搜索项目'
-                      : section === 'members'
-                        ? '搜索成员与专家'
-                        : '搜索资产'
-                  }
-                  placeholder={
-                    section === 'projects'
-                      ? '搜索项目…'
-                      : section === 'members'
-                        ? '搜索姓名、职责或能力…'
-                        : '搜索资产…'
-                  }
-                  value={search}
-                  onChange={(event) => setSearch(event.target.value)}
-                />
-                {section === 'members' && (
-                  <SingleSelect
-                    label="成员类型"
-                    value={memberKind}
-                    onValueChange={setMemberKind}
-                    options={[
-                      { value: 'all', label: '所有成员与专家' },
-                      { value: 'human', label: '团队成员' },
-                      { value: 'expert', label: 'Agent 专家' },
-                    ]}
+            {section !== 'tasks' &&
+              section !== 'knowledge' &&
+              !(section === 'assets' && memberAssets) &&
+              !activeProject && (
+                <div className="zm-filter">
+                  <input
+                    type="search"
+                    aria-label={
+                      section === 'projects'
+                        ? '搜索项目'
+                        : section === 'members'
+                          ? '搜索成员与专家'
+                          : '搜索资产'
+                    }
+                    placeholder={
+                      section === 'projects'
+                        ? '搜索项目…'
+                        : section === 'members'
+                          ? '搜索姓名、职责或能力…'
+                          : '搜索资产…'
+                    }
+                    value={search}
+                    onChange={(event) => setSearch(event.target.value)}
                   />
-                )}
-              </div>
-            )}
+                  {section === 'members' && (
+                    <SingleSelect
+                      label="成员类型"
+                      value={memberKind}
+                      onValueChange={setMemberKind}
+                      options={[
+                        { value: 'all', label: '所有成员与专家' },
+                        { value: 'human', label: '团队成员' },
+                        { value: 'expert', label: 'Agent 专家' },
+                      ]}
+                    />
+                  )}
+                </div>
+              )}
           </div>
         )}
         {section === 'knowledge' && knowledge && (
           <KnowledgePanel {...knowledge} onDirtyChange={setKnowledgeDirty} />
         )}
-        {!expertLibrary && section === 'assets' && (
+        {section === 'assets' && memberAssets && (
+          <MemberAssetsPanel
+            key={memberAssets.spaceId}
+            api={memberAssets.api}
+            spaceId={memberAssets.spaceId}
+            lifetime={memberAssets.lifetime}
+            {...(loaded ? { authoringState: state } : {})}
+            {...(knowledge
+              ? { knowledge: knowledge.api, onOpenKnowledge: () => setSection('knowledge') }
+              : {})}
+            onDirtyChange={setAssetsDirty}
+            onChanged={() => {
+              void refresh(undefined, true);
+            }}
+          />
+        )}
+        {!memberAssets && !expertLibrary && section === 'assets' && (
           <nav className="zm-asset-categories" aria-label="资产分类">
             {[
               ['all', '全部'],
@@ -988,50 +1046,73 @@ export function WorkbenchPage({
         )}
         {section === 'projects' && !activeProject && !!projects.length && (
           <div className="zm-directory zm-project-directory">
-            {projects.map((p) => (
-              <article className="zm-directory-row" key={p.id} aria-label={p.name}>
-                <span className="zm-directory-symbol" aria-hidden>
-                  ▱
-                </span>
-                <div className="zm-directory-content">
-                  <Button
-                    variant="quiet"
-                    className="zm-directory-title"
-                    onClick={() => {
-                      setActiveProjectId(p.id);
-                      setProjectTab('overview');
-                      setSearch('');
-                    }}
+            {projects.map((p) => {
+              const openProject = () => {
+                setActiveProjectId(p.id);
+                setProjectTab('work');
+                setSearch('');
+              };
+              return (
+                <article
+                  className="zm-directory-row"
+                  key={p.id}
+                  aria-label={p.name}
+                  tabIndex={0}
+                  onClick={openProject}
+                  onKeyDown={(event) => {
+                    // Nested 编辑／创建任务 must keep Enter／Space; only the row itself opens.
+                    if (event.target !== event.currentTarget) return;
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault();
+                      openProject();
+                    }
+                  }}
+                >
+                  <span className="zm-directory-symbol" aria-hidden>
+                    <ProjectIcon />
+                  </span>
+                  <div className="zm-directory-content">
+                    <Button
+                      variant="quiet"
+                      className="zm-directory-title"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        openProject();
+                      }}
+                    >
+                      {p.name}
+                    </Button>
+                    <p title={p.description}>{p.description || '暂无项目背景'}</p>
+                  </div>
+                  <span className="zm-directory-meta">
+                    {state.tasks.filter((t) => t.projectId === p.id).length} 项任务
+                  </span>
+                  <div
+                    className="zm-directory-actions"
+                    onClick={(event) => event.stopPropagation()}
                   >
-                    {p.name}
-                  </Button>
-                  <p title={p.description}>{p.description || '暂无项目背景'}</p>
-                </div>
-                <span className="zm-directory-meta">
-                  {state.tasks.filter((t) => t.projectId === p.id).length} 项任务
-                </span>
-                <div className="zm-directory-actions">
-                  <Button
-                    variant="quiet"
-                    disabled={!!member && !capabilities?.createProject}
-                    onClick={() => openDialog({ kind: 'project', value: p })}
-                  >
-                    编辑
-                  </Button>
-                  <Button
-                    disabled={!!member && !capabilities?.createTask}
-                    onClick={() => {
-                      setActiveProjectId(p.id);
-                      setProjectTab('work');
-                      setSearch('');
-                      newTask(p.id);
-                    }}
-                  >
-                    创建任务
-                  </Button>
-                </div>
-              </article>
-            ))}
+                    <Button
+                      variant="quiet"
+                      disabled={!!member && !capabilities?.createProject}
+                      onClick={() => openDialog({ kind: 'project', value: p })}
+                    >
+                      编辑
+                    </Button>
+                    <Button
+                      disabled={!!member && !capabilities?.createTask}
+                      onClick={() => {
+                        setActiveProjectId(p.id);
+                        setProjectTab('work');
+                        setSearch('');
+                        newTask(p.id);
+                      }}
+                    >
+                      创建任务
+                    </Button>
+                  </div>
+                </article>
+              );
+            })}
           </div>
         )}
         {section === 'tasks' && (
@@ -1171,7 +1252,7 @@ export function WorkbenchPage({
             ))}
           </div>
         )}
-        {!expertLibrary && section === 'assets' && !!assets.length && (
+        {!memberAssets && !expertLibrary && section === 'assets' && !!assets.length && (
           <div className="zm-directory zm-asset-directory">
             <div className="zm-directory-heading">
               <span>类型</span>
@@ -1232,6 +1313,7 @@ export function WorkbenchPage({
           !activeProject &&
           section !== 'tasks' &&
           section !== 'knowledge' &&
+          !(section === 'assets' && memberAssets) &&
           !visibleCount && (
             <div className="zm-empty zm-directory-empty">
               <h3>{directoryTotal ? `没有匹配的${labels[section]}` : `暂无${labels[section]}`}</h3>
@@ -1308,6 +1390,7 @@ export function WorkbenchPage({
                       project={dialog.value}
                       state={state}
                       change={(value) => setDialog({ ...dialog, value })}
+                      {...(memberAssets ? { memberAssets } : {})}
                     />
                   </>
                 )}
@@ -1634,6 +1717,40 @@ export function WorkbenchPage({
                         />
                       </div>
                     </div>
+                    {memberAssets && (
+                      <>
+                        <MemberAssetFilePicker
+                          key={dialog.value.id}
+                          api={memberAssets.api}
+                          spaceId={memberAssets.spaceId}
+                          value={
+                            dialog.value.fileRefs ??
+                            state.projects.find((project) => project.id === dialog.value.projectId)
+                              ?.fileRefs
+                          }
+                          label="任务资料"
+                          hint={
+                            dialog.value.fileRefs === undefined
+                              ? '创建时沿用项目资料并固定版本。'
+                              : '仅此任务使用所选版本。'
+                          }
+                          change={(fileRefs) =>
+                            setDialog({ ...dialog, value: { ...dialog.value, fileRefs } })
+                          }
+                        />
+                        {dialog.value.fileRefs !== undefined && (
+                          <Button
+                            variant="quiet"
+                            onClick={() => {
+                              const { fileRefs: _fileRefs, ...value } = dialog.value;
+                              setDialog({ ...dialog, value });
+                            }}
+                          >
+                            使用项目资料
+                          </Button>
+                        )}
+                      </>
+                    )}
                     {member && <PlanningReadiness value={planningReadiness} />}
                     <fieldset className="zm-create-modes">
                       <legend>规划方式</legend>

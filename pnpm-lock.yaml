@@ -172,6 +172,9 @@ importers:
       '@types/node':
         specifier: 24.19.2
         version: 24.19.2
+      '@zhuma/agent-core':
+        specifier: workspace:*
+        version: link:packages/agent-core
       esbuild:
         specifier: 0.25.12
         version: 0.25.12
