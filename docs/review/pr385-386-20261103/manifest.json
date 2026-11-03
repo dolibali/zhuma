@@ -1,0 +1,92 @@
+[
+  {
+    "name": "after-empty-project-board-dark.png",
+    "bytes": 46911,
+    "sha256": "b13d0099b43687385b2e2a8cbfb716192a15cab267cccb29f2e32beacc13e208",
+    "size": [
+      1440,
+      900
+    ]
+  },
+  {
+    "name": "after-empty-project-board-light.png",
+    "bytes": 47644,
+    "sha256": "b1743a944e5f783932cf782502440be0e4e36bec0ce6b29da7a89a0dac1155f9",
+    "size": [
+      1440,
+      900
+    ]
+  },
+  {
+    "name": "after-project-tasks-dark.png",
+    "bytes": 45029,
+    "sha256": "910fbd5a103d5ed2cff0dc61c90a6c82666b327f1c8d2bb71f96b9e3c395934d",
+    "size": [
+      1440,
+      900
+    ]
+  },
+  {
+    "name": "after-project-tasks-light.png",
+    "bytes": 45987,
+    "sha256": "25b5279491791569d6a5bad6172d9224b6574a49499ab677fdfdde116fb3c67d",
+    "size": [
+      1440,
+      900
+    ]
+  },
+  {
+    "name": "after-projects-dark.png",
+    "bytes": 48449,
+    "sha256": "9d1d0807112b38e83534722d56337a69d3d3aeaec5bcfee64540b0caf5e73ce6",
+    "size": [
+      1440,
+      900
+    ]
+  },
+  {
+    "name": "after-projects-light.png",
+    "bytes": 49428,
+    "sha256": "c5d0bce6cb8d960056c218d37ad38aa10da6fa002f22883a46f1cc80706d580f",
+    "size": [
+      1440,
+      900
+    ]
+  },
+  {
+    "name": "base-project-tasks-dark.png",
+    "bytes": 51686,
+    "sha256": "a668c332048adbde7539fa7d5f3575680bd52bc8b0be2424a96ad99f85dcca3d",
+    "size": [
+      1440,
+      900
+    ]
+  },
+  {
+    "name": "base-project-tasks-light.png",
+    "bytes": 52912,
+    "sha256": "c27c0025aa5509e00d8baefa33ad532f43e411c3e38964a2edfda482848943ed",
+    "size": [
+      1440,
+      900
+    ]
+  },
+  {
+    "name": "base-projects-dark.png",
+    "bytes": 48771,
+    "sha256": "6cb16138ff3c2386b3498c8db45d33e6646eccefb568b13a41e4cb5b077f97c8",
+    "size": [
+      1440,
+      900
+    ]
+  },
+  {
+    "name": "base-projects-light.png",
+    "bytes": 49728,
+    "sha256": "8082a772024e703276cf7c11bdf9732a428d8bb4c7d9953fca5f9f83db0ac5c8",
+    "size": [
+      1440,
+      900
+    ]
+  }
+]
