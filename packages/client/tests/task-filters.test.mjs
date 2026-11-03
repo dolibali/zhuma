@@ -5,6 +5,7 @@ import {
   createTaskFilterStore,
   emptyTaskFilters,
   taskFilterCandidates,
+  taskFiltersForNavigation,
 } from '../dist/workbench/task-filters.js';
 import { taskBoardColumn } from '../dist/workbench/task-board.js';
 import { row } from './task-progress-fixture.mjs';
@@ -47,6 +48,65 @@ test('task filters combine project, participant and search with stable recent-up
     taskBoardColumn(task, true, { state: 'ready', row: row({ delivery: 'cancelled' }) }),
     'ended',
   );
+});
+
+test('opening tasks from the active project lists only that project, including an empty one', () => {
+  const { task } = fixture();
+  const tasks = [
+    {
+      ...task,
+      id: 'a1',
+      projectId: 'project-a',
+      title: '门户甲',
+      updatedAt: '2026-10-01T00:00:00.000Z',
+    },
+    {
+      ...task,
+      id: 'a2',
+      projectId: 'project-a',
+      title: '门户乙',
+      updatedAt: '2026-10-03T00:00:00.000Z',
+    },
+    {
+      ...task,
+      id: 'a3',
+      projectId: 'project-a',
+      title: '门户丙',
+      updatedAt: '2026-10-02T00:00:00.000Z',
+    },
+    {
+      ...task,
+      id: 'other',
+      projectId: 'project-b',
+      title: '门户其他',
+      updatedAt: '2026-10-04T00:00:00.000Z',
+    },
+  ];
+  const before = structuredClone(tasks);
+  const emptyProject = taskFiltersForNavigation(emptyTaskFilters, 'tasks', 'empty-project');
+  assert.equal(emptyProject.projectId, 'empty-project');
+  assert.deepEqual(taskFilterCandidates(tasks, emptyProject), []);
+  const projectA = taskFiltersForNavigation(
+    { ...emptyTaskFilters, participantId: 'chen', search: '门户' },
+    'tasks',
+    'project-a',
+  );
+  assert.equal(projectA.participantId, 'chen');
+  assert.equal(projectA.search, '门户');
+  assert.deepEqual(
+    taskFilterCandidates(tasks, projectA).map((item) => item.id),
+    ['a2', 'a3', 'a1'],
+  );
+  assert.equal(taskFiltersForNavigation(emptyTaskFilters, 'tasks', null), emptyTaskFilters);
+  const explicit = { ...emptyTaskFilters, projectId: 'project-b', view: 'board' };
+  assert.equal(taskFiltersForNavigation(explicit, 'tasks', null), explicit);
+  assert.equal(taskFiltersForNavigation(explicit, 'projects', 'project-a'), explicit);
+  assert.deepEqual(
+    taskFilterCandidates(tasks, explicit).map((item) => item.id),
+    ['other'],
+  );
+  assert.equal(taskFiltersForNavigation(projectA, 'tasks', 'project-a'), projectA);
+  assert.deepEqual(tasks, before);
 });
 
 test('task view preferences isolate both account and space and ignore corrupt or unavailable storage', () => {
