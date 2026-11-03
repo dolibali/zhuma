@@ -1,6 +1,7 @@
 /** React/SSR + explicit in-memory DOM contracts, not browser or native GUI proof. */
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { resolve } from 'node:path';
 import { fixture } from '../../../tests/fixtures/workbench.mjs';
@@ -38,7 +39,25 @@ const { TaskProgressSummary, taskProgressFacts } =
   await import('../dist/execution/TaskProgressSummary.js');
 const { useTaskProgress } = await import('../dist/execution/useTaskProgress.js');
 const { ProjectHub } = await import('../dist/workbench/ProjectHub.js');
+const { ProjectIcon } = await import('../dist/workbench/ControlIcon.js');
 const tick = () => new Promise(setImmediate);
+
+test('project directory leading mark is a folder stroke icon', () => {
+  const page = readFileSync(new URL('../src/workbench/WorkbenchPage.tsx', import.meta.url), 'utf8');
+  assert.doesNotMatch(page, /▱/);
+  assert.match(page, /aria-label=\{p\.name\}/);
+  assert.match(page, /className="zm-directory-symbol" aria-hidden>\s*<ProjectIcon \/>/);
+  const html = renderToStaticMarkup(el(ProjectIcon));
+  assert.match(html, /width="18"/);
+  assert.match(html, /height="18"/);
+  assert.match(html, /stroke="currentColor"/);
+  assert.match(html, /stroke-width="1\.7"/);
+  assert.match(html, /stroke-linecap="round"/);
+  assert.match(html, /stroke-linejoin="round"/);
+  assert.match(html, /aria-hidden="true"/);
+  assert.match(html, /<path /);
+  assert.doesNotMatch(html, /▱/);
+});
 
 test('task progress UI: execution, review, current acceptance and held resources remain independent facts', () => {
   const html = renderToStaticMarkup(
@@ -154,6 +173,11 @@ test(
     assert.equal(search.value, '客户门户');
     const project = container.querySelector('article[aria-label="客户门户"]');
     assert.ok(project);
+    assert.equal(project.getAttribute('aria-label'), '客户门户');
+    const mark = project.querySelector('.zm-directory-symbol');
+    assert.equal(mark?.getAttribute('aria-hidden'), 'true');
+    assert.equal(mark?.querySelectorAll('svg').length, 1);
+    assert.equal(project.textContent.includes('▱'), false);
     await act(async () => {
       [...project.querySelectorAll('button')]
         .find(
