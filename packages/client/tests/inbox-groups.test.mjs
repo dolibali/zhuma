@@ -204,7 +204,9 @@ test('places approved inbox projection is consumed without adding counts or even
   });
   const value = await api.inbox();
   assert.deepEqual(value.places, readInboxPlaces(groupedInbox().places));
-  assert.deepEqual(calls, [{ channel: '/api', endpoint: 'zhuma-exec/inbox', payload: {} }]);
+  assert.deepEqual(calls, [
+    { channel: '/api', endpoint: 'zhuma-exec/inbox', payload: { detail: 'waiting' } },
+  ]);
   assert.equal('inboxCounts' in api, false);
   assert.equal('events' in api, false);
 });

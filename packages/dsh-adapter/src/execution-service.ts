@@ -615,7 +615,12 @@ export const executionMemberRequestSchemas = Object.freeze({
   draftRead: draftReadSchema,
   draftWrite: draftWriteSchema,
 });
-const inboxSchema = z.strictObject({ spaceId: id.optional() });
+/** Opt-in for non-executable wait rows. Absent requests keep the original inbox. */
+const INBOX_WAITING_DETAIL = 'waiting' as const;
+const inboxSchema = z.strictObject({
+  spaceId: id.optional(),
+  detail: z.literal(INBOX_WAITING_DETAIL).optional(),
+});
 const startableSchema = z.strictObject({ spaceId: id.optional() });
 const eventsSchema = z.strictObject({
   taskId: id,
@@ -7874,7 +7879,11 @@ export class ExecutionService {
     if (!Array.isArray(records)) return records;
     const refreshed = this.checkListActor(caller, body, actor.value);
     if (!refreshed.ok) return refreshed;
-    const items = executionInbox({ actorId: actor.value.actorId, records });
+    const derived = executionInbox({ actorId: actor.value.actorId, records });
+    const items =
+      parsed.value?.detail === INBOX_WAITING_DETAIL
+        ? derived
+        : derived.filter((item) => item.action !== 'wait');
     const nodes = records
       .filter((record) =>
         items.some((item) => item.nodeId === record.nodeId && item.taskId === record.taskId),

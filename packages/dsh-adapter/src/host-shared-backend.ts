@@ -406,7 +406,7 @@ const descriptors = {
     auth: false,
   },
   'execution.inbox': {
-    schema: z.strictObject({ spaceId: id }),
+    schema: z.strictObject({ spaceId: id, detail: z.literal('waiting').optional() }),
     path: '/api/zhuma-exec/inbox',
     verb: 'POST',
     auth: false,
