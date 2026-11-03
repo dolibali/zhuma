@@ -26,7 +26,11 @@ import type { NativeRunApi } from '../run/api.js';
 import { ControlIcon } from './ControlIcon.js';
 import { TaskBoard } from './TaskBoard.js';
 import { taskBoardColumn, taskBoardColumns } from './task-board.js';
-import { emptyTaskFilters, taskFilterCandidates } from './task-filters.js';
+import {
+  emptyTaskFilters,
+  taskFilterCandidates,
+  taskFiltersForNavigation,
+} from './task-filters.js';
 import { useTaskFilters } from './useTaskFilters.js';
 import { PlanningReadiness, usePlanningReadiness } from './PlanningReadiness.js';
 import {
@@ -745,6 +749,12 @@ export function WorkbenchPage({
                     onClick={() => {
                       if (s === section && !activeProject) return;
                       leaveKnowledge(() => {
+                        const filters = taskFiltersForNavigation(
+                          taskFilters,
+                          s,
+                          activeProject?.id ?? null,
+                        );
+                        if (filters !== taskFilters) setTaskFilters(filters);
                         setSection(s);
                         setSearch('');
                         setActiveProjectId(null);

@@ -173,6 +173,75 @@ test('项目内 AI 创建只用默认参与者，规划失败仍返回同一项�
   expect(plans(replay)).toHaveLength(1);
 });
 
+test('项目内打开任务清单只显示当前项目，离开项目后再打开仍可看全部', async ({ page, replay }) => {
+  replay.state.projects.push({
+    id: 'empty-project',
+    name: '空项目',
+    description: '还没有任务',
+    defaultParticipantIds: [],
+  });
+  const portal = replay.state.tasks.filter((task) => task.projectId === 'project');
+  const total = replay.state.tasks.length;
+  const nav = page.getByRole('navigation', { name: '工作台导航' });
+  const tasksTab = nav.getByRole('button', { name: /^任务清单/ });
+  const projectsTab = nav.getByRole('button', { name: /^项目/ });
+  const rows = page.locator('.zm-task-row');
+  const openProject = async (name) => {
+    await projectsTab.click();
+    await page
+      .getByRole('article', { name, exact: true })
+      .getByRole('button', { name, exact: true })
+      .click();
+    await expect(page.getByRole('heading', { name, exact: true })).toBeVisible();
+  };
+
+  await page.goto('/');
+  await expect(rows).toHaveCount(total);
+
+  await openProject('空项目');
+  await button(page, '全部项目').click();
+  await tasksTab.click();
+  await expect(rows).toHaveCount(total);
+  await expect(page.getByLabel('筛选项目', { exact: true })).toContainText('所有项目');
+
+  await openProject('空项目');
+  await expect(page.getByRole('region', { name: '项目详情' })).toContainText(
+    '从项目目标开始一项工作。',
+  );
+  await tasksTab.click();
+  await expect(rows).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: '没有匹配的任务' })).toBeVisible();
+  await expect(page.getByLabel('筛选项目', { exact: true })).toContainText('空项目');
+  await button(page, '看板').click();
+  await expect(page.locator('.zm-board-card')).toHaveCount(0);
+  await expect(page.locator('.zm-board-column')).toHaveCount(6);
+  await expect(page.locator('.zm-board-empty')).toHaveCount(6);
+  await expect(page.getByLabel('任务看板')).not.toContainText('订单协作改进');
+  await expect(page.getByLabel('任务看板')).not.toContainText('研究列表空状态');
+
+  await openProject('订单门户');
+  await tasksTab.click();
+  await expect(page.locator('.zm-board-card')).toHaveCount(portal.length);
+  await expect(page.getByLabel('任务看板')).toContainText('订单协作改进');
+  await expect(page.getByLabel('任务看板')).toContainText('订单导出字段核对');
+  await expect(page.getByLabel('任务看板')).not.toContainText('研究列表空状态');
+  await expect(page.getByLabel('筛选项目', { exact: true })).toContainText('订单门户');
+  await button(page, '列表').click();
+  await expect(rows).toHaveCount(portal.length);
+  await rows.filter({ hasText: '订单协作改进' }).click();
+  await expect(page.locator('.zm-editor-project')).toHaveText('订单门户');
+  await button(page, '任务清单').click();
+  await expect(rows).toHaveCount(portal.length);
+  await expect(page.getByLabel('筛选项目', { exact: true })).toContainText('订单门户');
+
+  await button(page, '清除筛选').click();
+  await expect(rows).toHaveCount(total);
+  await expect(page.getByLabel('筛选项目', { exact: true })).toContainText('所有项目');
+  await projectsTab.click();
+  await tasksTab.click();
+  await expect(rows).toHaveCount(total);
+});
+
 test('长项目、资料和小窗口不横溢；取消编辑不修改项目', async ({ page, replay }, info) => {
   const project = replay.state.projects[0];
   project.name = '跨团队订单协作与接口兼容检查'.repeat(4);
