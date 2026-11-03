@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { execFileSync } from 'node:child_process';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -14,7 +14,10 @@ import {
 } from '../../../scripts/lib/desktop-codearts-artifacts.mjs';
 import {
   candidateWorkbenchFiles,
+  candidateFileRecord,
+  copyWindowsInstaller,
   verifyWindowsCandidateFiles,
+  windowsInstallerNames,
 } from '../../../scripts/lib/windows-candidate.mjs';
 
 test('Windows Corepack uses its installed JavaScript entry with Unicode/spaces/ampersands as literal argv', () => {
@@ -130,7 +133,20 @@ test('Windows candidate checks source metadata, all nine workbench files, physic
       }),
     },
   };
-  assert.equal(Object.keys(verifyWindowsCandidateFiles(options).workbench).length, 9);
+  const material = verifyWindowsCandidateFiles(options);
+  assert.equal(Object.keys(material.workbench).length, 9);
+  const output = join(directory, 'output');
+  await mkdir(output);
+  const filename = copyWindowsInstaller(artifacts, output, options.buildVersion);
+  assert.equal(filename, 'zhuma-1.4.0-windows-x64-unsigned.exe');
+  assert.deepEqual(await readdir(output), [filename]);
+  assert.deepEqual(candidateFileRecord(join(output, filename)), material.installer);
+  const nativeInstaller = join(artifacts, 'zhuma-1.4.0-win-x64-unsigned.exe');
+  assert.deepEqual(await readFile(join(output, filename)), await readFile(nativeInstaller));
+  // The new public filename must not replace the SDK's internal recipe output.
+  await rename(nativeInstaller, join(artifacts, filename));
+  assert.throws(() => verifyWindowsCandidateFiles(options), { code: 'ENOENT' });
+  await rename(join(artifacts, filename), nativeInstaller);
   assert.throws(
     () => verifyWindowsCandidateFiles({ ...options, source: 'b'.repeat(40) }),
     /commit differs/u,
@@ -150,6 +166,14 @@ test('Windows candidate checks source metadata, all nine workbench files, physic
   await writeFile(executable, pe(0x8664, 0x20b));
   await rm(join(resources, 'app.asar.unpacked', packagedWorkbench, 'codearts-acp.js'));
   assert.throws(() => verifyWindowsCandidateFiles(options), /ENOENT/u);
+});
+
+test('Windows public naming retains version, architecture and unsigned status at the export boundary', () => {
+  assert.deepEqual(windowsInstallerNames('1.5.0-beta.2'), {
+    sdk: 'zhuma-1.5.0-beta.2-win-x64-unsigned.exe',
+    product: 'zhuma-1.5.0-beta.2-windows-x64-unsigned.exe',
+  });
+  assert.throws(() => windowsInstallerNames('../1.5.0'));
 });
 
 test(

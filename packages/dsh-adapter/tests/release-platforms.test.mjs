@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -87,6 +87,26 @@ test('release assembly contracts: retain original platform sources, qualify ever
     fixture = await rawPlatformFixture(context, base),
     output = join(base, 'output');
   await mkdir(output);
+  const installer = `zhuma-${context.version}-windows-x64-unsigned.exe`,
+    legacyInstaller = `zhuma-${context.version}-win-x64-unsigned.exe`,
+    sumsPath = join(fixture.windows, 'SHA256SUMS'),
+    originalSums = await readFile(sumsPath, 'utf8');
+  // Even a self-consistent legacy-named intake is not a future public candidate.
+  await rename(join(fixture.windows, installer), join(fixture.windows, legacyInstaller));
+  await writeFile(sumsPath, originalSums.replace(installer, legacyInstaller));
+  await assert.rejects(
+    assemblePlatformAssets(
+      context,
+      fixture.windows,
+      fixture.server,
+      serverReceipt(context),
+      output,
+    ),
+    { code: 'ENOENT' },
+  );
+  assert.deepEqual(await readdir(output), []);
+  await rename(join(fixture.windows, legacyInstaller), join(fixture.windows, installer));
+  await writeFile(sumsPath, originalSums);
   const platforms = await assemblePlatformAssets(
     context,
     fixture.windows,
@@ -98,6 +118,16 @@ test('release assembly contracts: retain original platform sources, qualify ever
     (await verifyPlatformAssets(context, output, platforms)).map((item) => item.name),
     platformNames(context),
   );
+  assert.equal(platforms.windows.installer, installer);
+  assert.deepEqual(
+    await readFile(join(output, installer)),
+    await readFile(join(fixture.windows, installer)),
+  );
+  const legacyPlatforms = structuredClone(platforms);
+  legacyPlatforms.windows.installer = legacyInstaller;
+  legacyPlatforms.assets[0].name = legacyInstaller;
+  await writeFile(join(output, legacyInstaller), await readFile(join(output, installer)));
+  await assert.rejects(verifyPlatformAssets(context, output, legacyPlatforms));
   assert.equal(
     (await readFile(join(output, 'server-SOURCE.json'))).equals(
       await readFile(join(fixture.server, 'SOURCE.json')),
