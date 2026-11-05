@@ -1074,17 +1074,6 @@ function withExecutionEvent(
     },
   });
   if (!appended.ok || !appended.emitted) return undefined;
-  noteExecutionFact({
-    taskId: record.taskId,
-    planId: record.planId,
-    revision: record.revision,
-    nodeId: record.nodeId,
-    assigneeKind: record.handoff.assignee.kind,
-    eventType: type,
-    occurredAt,
-    status: record.command.status,
-    version: record.command.version,
-  });
   return { ...record, events: appended.log };
 }
 
@@ -5377,37 +5366,50 @@ export class ExecutionService {
   }
 
   /**
-   * 已记录的效率事实。未知历时保持空值。指定任务时，非参与者与不存在同一份 not-found。
+   * 已落盘的效率事实。未知历时保持空值。
+   * 可见性和收件箱相同：当前成员目录、任务参与关系，以及任务所属空间。
+   * 指定了无权任务时与不存在同一份 not-found。目录故障是 unavailable，不返回部分指标。
    */
   exportEfficiency(caller: ExecutionCaller, body: unknown) {
     return this.enqueue(async () => {
-      const actor = this.actor(caller, body);
+      const actor = this.listActor(caller, body);
       if (!actor.ok) return actor;
       const parsed = parseBody(efficiencyExportSchema, body);
       if (!parsed.ok) return parsed;
-      const workbench = this.workbench.readWorkbench();
+      if (!this.projectSpaceDirectory()) return fail('not-found');
+      const opened = this.checkListActor(caller, body, actor.value);
+      if (!opened.ok) return opened;
+      for (const task of this.workbench.readWorkbench().tasks) {
+        const space = await this.gateSpaceScoped(task.id, actor.value.spaceIds, undefined);
+        if (space !== 'missing' && !space.ok && space.error.code === 'unavailable') return space;
+      }
       const requested = parsed.value.taskId;
-      if (
-        requested !== undefined &&
-        planMembership(workbench, requested, actor.value.actorId) !== 'allowed'
-      ) {
-        return fail('not-found');
-      }
+      const candidates =
+        requested !== undefined
+          ? [requested]
+          : [
+              ...new Set([
+                ...efficiencyTaskIds(),
+                ...this.storage
+                  .listNodes()
+                  .flatMap((record) => (intactNode(record) ? [record.taskId] : [])),
+              ]),
+            ];
       const taskIds = new Set<string>();
-      if (requested !== undefined) taskIds.add(requested);
-      else {
-        for (const taskId of efficiencyTaskIds()) {
-          if (planMembership(workbench, taskId, actor.value.actorId) === 'allowed') {
-            taskIds.add(taskId);
-          }
-        }
-        for (const record of this.storage.listNodes()) {
-          if (!intactNode(record)) continue;
-          if (planMembership(workbench, record.taskId, actor.value.actorId) === 'allowed') {
-            taskIds.add(record.taskId);
-          }
-        }
+      for (const taskId of candidates) {
+        const visible = await this.efficiencyTaskVisible(
+          taskId,
+          actor.value.actorId,
+          actor.value.spaceIds,
+        );
+        if (typeof visible !== 'string') return visible;
+        const current = this.checkListActor(caller, body, actor.value);
+        if (!current.ok) return current;
+        if (visible === 'allow') taskIds.add(taskId);
+        else if (requested !== undefined) return fail('not-found');
       }
+      const finished = this.checkListActor(caller, body, actor.value);
+      if (!finished.ok) return finished;
       this.projectEfficiencyFacts(taskIds);
       return {
         ok: true as const,
@@ -8093,6 +8095,29 @@ export class ExecutionService {
     return { ok: true, value: false };
   }
 
+  /**
+   * 参与关系不够。空间门禁把无权、跨空间和找不到的任务收成同一份 omit。
+   * 目录故障原样返回，调用方不得把它当成空指标。
+   */
+  private async efficiencyTaskVisible(
+    taskId: string,
+    actorId: string,
+    spaceIds: readonly string[],
+  ): Promise<'allow' | 'omit' | { readonly ok: false; readonly error: ExecutionFailure }> {
+    if (planMembership(this.workbench.readWorkbench(), taskId, actorId) !== 'allowed') {
+      return 'omit';
+    }
+    const space = await this.gateSpaceScoped(taskId, spaceIds, undefined);
+    if (space === 'missing') return 'omit';
+    if (!space.ok) return space.error.code === 'unavailable' ? space : 'omit';
+    return 'allow';
+  }
+
+  /** 只从已经写进存储的节点戳派生。写盘失败的那次不会留下开始时间。 */
+  private rememberCommittedEfficiency(taskId: string): void {
+    this.projectEfficiencyFacts(new Set([taskId]));
+  }
+
   private noteEfficiencyPlan(taskId: string, planId: string, revision: number): void {
     notePlanIfTerminal(
       this.storage
@@ -8223,7 +8248,6 @@ export class ExecutionService {
         .filter((record) => intactNode(record) && samePlan(record, taskId, planId, revision)),
     });
     if (!started.ok) return fail(started.code);
-    if (started.disposition === 'applied') noteTaskStarted({ taskId, planId, revision });
     for (const record of started.records) {
       const key = nodeRecordKey(record);
       if (this.storage.readNode(key) === record) continue;
@@ -8232,6 +8256,7 @@ export class ExecutionService {
       beforeWrite?.();
       const stored = await this.persist(() => this.writeNode(stamped));
       if (!stored.ok) return stored;
+      this.rememberCommittedEfficiency(taskId);
     }
     const compensated = await this.unlockCompleted(taskId, planId, revision);
     if (!compensated.ok) return compensated;
@@ -8340,6 +8365,7 @@ export class ExecutionService {
       }
       const stored = await this.persist(() => this.writeNode(record));
       if (!stored.ok) return stored;
+      this.rememberCommittedEfficiency(current.taskId);
       this.noteEfficiencyPlan(current.taskId, current.planId, current.revision);
     }
     if (record.command.status === 'completed') {
@@ -8406,6 +8432,7 @@ export class ExecutionService {
       if (!stamped) return fail('unavailable');
       const stored = await this.persist(() => this.writeNode(stamped));
       if (!stored.ok) return stored;
+      this.rememberCommittedEfficiency(completed.taskId);
       unlocked += 1;
     }
     return { ok: true, value: unlocked };

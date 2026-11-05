@@ -273,4 +273,165 @@ describe('efficiency host log', { concurrency: false }, () => {
     assert.equal(actor.ok, false);
     assert.equal(actor.error.code, 'actor-from-body');
   });
+
+  function memoryStorage(failWrites = 0) {
+    const nodes = new Map();
+    const plans = new Map();
+    let remaining = failWrites;
+    return {
+      nodes,
+      plans,
+      storage: {
+        readNode: (key) => nodes.get(key),
+        writeNode: async (key, value) => {
+          if (remaining > 0) {
+            remaining -= 1;
+            throw new Error('disk full');
+          }
+          nodes.set(key, structuredClone(value));
+        },
+        listNodes: () => [...nodes.values()],
+        readPlan: (key) => plans.get(key),
+        writePlan: async (key, value) => {
+          plans.set(key, structuredClone(value));
+        },
+        listPlans: () => [...plans.entries()].map(([key, receipt]) => ({ key, receipt })),
+      },
+      allowWrites() {
+        remaining = 0;
+      },
+    };
+  }
+
+  function serviceFor(state, spaces, extra = {}) {
+    const store = memoryStorage(extra.failWrites ?? 0);
+    const service = new ExecutionService(
+      store.storage,
+      {
+        readWorkbench: () => state,
+        ...(extra.memberDirectory ? { memberDirectory: extra.memberDirectory } : {}),
+      },
+      spaces,
+    );
+    return { service, store };
+  }
+
+  test('a failed node write leaves no efficiency facts, and the retry uses the committed time', async () => {
+    const { state, applied } = confirm([workflowNode({ id: 'design', title: '设计' })]);
+    const { service, store } = serviceFor(
+      state,
+      boundedProjectSpaces([{ projectId: 'project', spaceId: 'project' }]),
+      { failWrites: 1 },
+    );
+    const chen = { member: { ok: true, memberId: 'chen', spaceIds: ['project'] } };
+    const body = {
+      taskId: applied.taskId,
+      planId: applied.id,
+      revision: applied.revision,
+      idempotencyKey: 'start-1',
+    };
+    const failed = await service.startPlan(chen, body);
+    assert.equal(failed.ok, false);
+    assert.equal(failed.error.code, 'unavailable');
+    assert.equal(store.nodes.size, 0);
+    assert.equal(store.plans.size, 0);
+    assert.deepEqual(
+      readEfficiencyLog().map((event) => event.kind),
+      [],
+    );
+    const leaked = await service.exportEfficiency(chen, { format: 'json', taskId: applied.taskId });
+    assert.equal(leaked.ok, true);
+    assert.equal(leaked.value.metricCount, 0);
+    store.allowWrites();
+    const started = await service.startPlan(chen, body);
+    assert.equal(started.ok, true, started.ok ? '' : started.error.code);
+    const stored = [...store.nodes.values()][0];
+    const committed = stored.events.find((event) => event.type === 'node-started').occurredAt;
+    const taskStarted = readEfficiencyLog().find((event) => event.kind === 'task-started');
+    assert.equal(taskStarted.occurredAt, committed);
+    assert.equal(readEfficiencyLog().filter((event) => event.kind === 'task-started').length, 1);
+  });
+
+  test('export follows the current space gate after membership is no longer enough', async () => {
+    const { state, applied } = confirm([workflowNode({ id: 'design', title: '设计' })]);
+    let lookup = async () => ({ ok: true, spaceId: 'project' });
+    const spaces = { spaceForProject: () => lookup() };
+    const membership = { chen: ['project'] };
+    const directory = () => ({
+      spacesForMember: (id) => (membership[id] ?? []).map((spaceId) => ({ id: spaceId })),
+      membersForSpace: (spaceId) =>
+        Object.entries(membership)
+          .filter(([, held]) => held.includes(spaceId))
+          .map(([id]) => ({ id })),
+      isMember: (spaceId, id) => (membership[id] ?? []).includes(spaceId),
+    });
+    const { service } = serviceFor(state, spaces, { memberDirectory: directory });
+    const held = { member: { ok: true, memberId: 'chen', spaceIds: ['project'] } };
+    const started = await service.startPlan(held, {
+      taskId: applied.taskId,
+      planId: applied.id,
+      revision: applied.revision,
+      idempotencyKey: 'start-1',
+    });
+    assert.equal(started.ok, true, started.ok ? '' : started.error.code);
+    const before = await service.exportEfficiency(held, { format: 'json' });
+    assert.equal(before.ok, true);
+    assert.equal(before.value.metricCount, 5);
+
+    membership.chen = ['team-south'];
+    const inbox = await service.inbox(held, {});
+    assert.equal(inbox.ok, true, inbox.ok ? '' : inbox.error.code);
+    assert.equal(inbox.value.items.length, 0);
+    const revoked = await service.exportEfficiency(held, {
+      format: 'json',
+      taskId: applied.taskId,
+    });
+    assert.equal(revoked.ok, false);
+    assert.equal(revoked.error.code, 'not-found');
+    const revokedBatch = await service.exportEfficiency(held, { format: 'json' });
+    assert.equal(revokedBatch.ok, true);
+    assert.equal(revokedBatch.value.metricCount, 0);
+
+    lookup = async () => {
+      throw new Error('directory down');
+    };
+    membership.chen = ['project'];
+    const broken = await service.exportEfficiency(held, { format: 'json' });
+    assert.equal(broken.ok, false);
+    assert.equal(broken.error.code, 'unavailable');
+  });
+
+  test('export hides a task whose space the member no longer holds', async () => {
+    const { state, applied } = confirm([workflowNode({ id: 'design', title: '设计' })]);
+    const spaces = boundedProjectSpaces([{ projectId: 'project', spaceId: 'team-north' }]);
+    const { service } = serviceFor(state, spaces);
+    const north = { member: { ok: true, memberId: 'chen', spaceIds: ['team-north'] } };
+    const started = await service.startPlan(north, {
+      taskId: applied.taskId,
+      planId: applied.id,
+      revision: applied.revision,
+      idempotencyKey: 'start-1',
+    });
+    assert.equal(started.ok, true, started.ok ? '' : started.error.code);
+    const south = { member: { ok: true, memberId: 'chen', spaceIds: ['team-south'] } };
+    const crossed = await service.exportEfficiency(south, {
+      format: 'json',
+      taskId: applied.taskId,
+    });
+    assert.equal(crossed.ok, false);
+    assert.equal(crossed.error.code, 'not-found');
+    const cleared = { member: { ok: true, memberId: 'chen', spaceIds: [] } };
+    const inbox = await service.inbox(cleared, {});
+    assert.equal(inbox.ok, true, inbox.ok ? '' : inbox.error.code);
+    assert.equal(inbox.value.items.length, 0);
+    const batch = await service.exportEfficiency(cleared, { format: 'json' });
+    assert.equal(batch.ok, true);
+    assert.equal(batch.value.metricCount, 0);
+    const named = await service.exportEfficiency(cleared, {
+      format: 'json',
+      taskId: applied.taskId,
+    });
+    assert.equal(named.ok, false);
+    assert.equal(named.error.code, 'not-found');
+  });
 });
