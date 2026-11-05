@@ -1,0 +1,122 @@
+{
+  "scope": "Actual Client development build with React StrictMode, the original browser ExecutionProbe, real ReviewWorkspace and ExecutionApi codec, and synthetic RPC replay. The coordinator performed normal clicks and keyboard input, then individually inspected these seven self-generated images. Synthetic names and delivery records only; no user attachments, credentials, or private materials.",
+  "baseSource": "b2d3a0a1bb90630a034759fbc11e6c32613675e1",
+  "afterSource": "4c9cb2b59f2b63e45d9e7f8ef036df6b2b2c7377",
+  "scenarios": [
+    "Before and after in light and dark appearance",
+    "Fixed version 2 text and its difference against version 1; later version 3 does not replace the current review target",
+    "Version-bound comment visibility and comment submission",
+    "Return for changes with the current version comment references",
+    "Synthetic conflict preserves entered review input"
+  ],
+  "capture": "Isolated desktop in-app browser; viewport reset by the coordinator after review. Original capture dimensions are recorded per image. Image bytes were not resampled or edited.",
+  "evidenceBoundaries": [
+    "Actual Client rendering, normal user interaction, and codec/request behavior only",
+    "Responses are synthetic RPC replay; this does not establish real backend review-state commits, idempotency, or recovery",
+    "No identity authorization, Host, paid model, native desktop, installation, or deployment qualification"
+  ],
+  "sourceHashes": {
+    "before": {
+      "source": "b2d3a0a1bb90630a034759fbc11e6c32613675e1",
+      "bundleSha256": "61fcd26929012a9f5ed56b81e6ccaeceb21abca21fa872ca2af3ddd29c7260fb",
+      "sources": {
+        "packages/client/src/execution/ReviewWorkspace.tsx": "424f7b95af68296f58df436726b8c500156d2f7ceafc4c7692dc92d50942838a",
+        "packages/client/src/execution/ExecutionApi.ts": "a705a715526ba9e3509b10a70efcae20c60064a94fbcef50937928f8e18c638c",
+        "packages/client/src/execution/ReviewBallots.tsx": "a430d871bfe223a597e4da8a9a1c7ae6803c3e8b7498c36156cc85b514634e72",
+        "packages/client/src/execution/interaction.ts": "a5f0899c3232323ca29496144a4484dcc4b7c6eba621d623f9e8545c95402974",
+        "packages/client/src/workbench/workbench.css": "2154f97ec9660eb4582a4949ccbfa67182310c5d4c607de6a1640ded5fb95b11"
+      }
+    },
+    "after": {
+      "source": "4c9cb2b59f2b63e45d9e7f8ef036df6b2b2c7377",
+      "bundleSha256": "94103536c5da5d68673a16af5f0c7532ac984073e044747dbb9383e4a0fb3fe3",
+      "sources": {
+        "packages/client/src/execution/ReviewWorkspace.tsx": "9941bab097baf8f69ff4b8ef35f3fb4b515dae94a77e013fced05ce743f7c84e",
+        "packages/client/src/execution/ExecutionApi.ts": "c8dd705f469ebefc6cc5031c75edd9110822d62ab579e7de2624a8a258040fd9",
+        "packages/client/src/execution/ReviewBallots.tsx": "a430d871bfe223a597e4da8a9a1c7ae6803c3e8b7498c36156cc85b514634e72",
+        "packages/client/src/execution/interaction.ts": "a5f0899c3232323ca29496144a4484dcc4b7c6eba621d623f9e8545c95402974",
+        "packages/client/src/workbench/workbench.css": "99f1d452ab23d98c1eb7f2e6eb7463427ae62ad9cc15cb40b429299841e0671b",
+        "packages/agent-core/src/delivery-review.ts": "4a400a5f0318ec54131b77f3f30314d1e07498c19d13d90ff103ef0a3a9dd6fd"
+      }
+    }
+  },
+  "items": [
+    {
+      "name": "before-light.jpg",
+      "path": "docs/review/pr391-20261105/before-light.jpg",
+      "format": "JPEG",
+      "width": 1280,
+      "height": 820,
+      "sha256": "830c9ce0283e17fc5f549bcb81efd079824c79cf5cf0a343aa4bb30fbe7ff26e",
+      "bytes": 37010,
+      "blob": "765942bbd892a2972282c91695f04565a012be40",
+      "source": "b2d3a0a1bb90630a034759fbc11e6c32613675e1"
+    },
+    {
+      "name": "before-dark.jpg",
+      "path": "docs/review/pr391-20261105/before-dark.jpg",
+      "format": "JPEG",
+      "width": 1280,
+      "height": 820,
+      "sha256": "ea170bae5632c51bb484330ce58ec98398418e4e924186c34cccf76e4db4185f",
+      "bytes": 36271,
+      "blob": "3d593fe9dc21360a7c2633f142d8e4c2dfda27cc",
+      "source": "b2d3a0a1bb90630a034759fbc11e6c32613675e1"
+    },
+    {
+      "name": "after-light.jpg",
+      "path": "docs/review/pr391-20261105/after-light.jpg",
+      "format": "JPEG",
+      "width": 1265,
+      "height": 810,
+      "sha256": "229e523a9714948bfa1c8cb2eb02d925f2035e87e830d8cd8b44ce92a395684d",
+      "bytes": 48588,
+      "blob": "6ba7822adf500982540bdd8b8fe84f9b1b706102",
+      "source": "4c9cb2b59f2b63e45d9e7f8ef036df6b2b2c7377"
+    },
+    {
+      "name": "after-dark.jpg",
+      "path": "docs/review/pr391-20261105/after-dark.jpg",
+      "format": "JPEG",
+      "width": 1265,
+      "height": 838,
+      "sha256": "29689767faa92f35f8cea83a4bf8a86633063347d2425f75e9b57b53d36b6361",
+      "bytes": 51541,
+      "blob": "ab8d4e1be71b618cff4b84fe0bec6a496d592199",
+      "source": "4c9cb2b59f2b63e45d9e7f8ef036df6b2b2c7377"
+    },
+    {
+      "name": "after-comment.jpg",
+      "path": "docs/review/pr391-20261105/after-comment.jpg",
+      "format": "JPEG",
+      "width": 1265,
+      "height": 941,
+      "sha256": "a0bf5ec7b779fd89d26e557dfdc2f1736048f818e7d24388802b71204bd5c309",
+      "bytes": 61320,
+      "blob": "72599d4b2e88e18ad950a7d93cd30c46a7803d00",
+      "source": "4c9cb2b59f2b63e45d9e7f8ef036df6b2b2c7377"
+    },
+    {
+      "name": "after-returned.jpg",
+      "path": "docs/review/pr391-20261105/after-returned.jpg",
+      "format": "JPEG",
+      "width": 1265,
+      "height": 979,
+      "sha256": "64abcc89fb650c45cd4d45c062c38c4317ec9ea528716bcc9381a30f9418b891",
+      "bytes": 62489,
+      "blob": "4d2a75a14eb7658c5a14a27191c5770256880a8a",
+      "source": "4c9cb2b59f2b63e45d9e7f8ef036df6b2b2c7377"
+    },
+    {
+      "name": "after-failure.jpg",
+      "path": "docs/review/pr391-20261105/after-failure.jpg",
+      "format": "JPEG",
+      "width": 1265,
+      "height": 902,
+      "sha256": "081c047404cd8d5f5fc7544deb676f7a9cb0b2f1361fc382ae476b3f25952555",
+      "bytes": 60214,
+      "blob": "7cdc5d9ac34ee33854f26705260be3bad9ca1fe7",
+      "source": "4c9cb2b59f2b63e45d9e7f8ef036df6b2b2c7377"
+    }
+  ]
+}
