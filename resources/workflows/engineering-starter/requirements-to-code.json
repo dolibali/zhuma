@@ -1,0 +1,215 @@
+{
+  "format": "zhuma-workflow-template",
+  "schemaVersion": 1,
+  "roles": [
+    {
+      "id": "analyst",
+      "name": "需求分析者",
+      "preferredKind": "expert",
+      "capabilities": ["需求编号", "验收场景"]
+    },
+    {
+      "id": "designer",
+      "name": "方案与任务设计者",
+      "preferredKind": "expert",
+      "capabilities": ["有界设计", "任务与影响分析"]
+    },
+    {
+      "id": "implementer",
+      "name": "代码实现者",
+      "preferredKind": "expert",
+      "capabilities": ["受控实现", "兼容性保护"]
+    },
+    {
+      "id": "verifier",
+      "name": "项目验证者",
+      "preferredKind": "expert",
+      "capabilities": ["项目命令", "失败反馈与复验"]
+    },
+    {
+      "id": "independent-reviewer",
+      "name": "独立代码评审者",
+      "preferredKind": "any",
+      "capabilities": ["独立差异审查", "证据覆盖"]
+    },
+    {
+      "id": "human-approver",
+      "name": "人工评审与交付负责人",
+      "preferredKind": "human",
+      "capabilities": ["固定版本评审", "交付确认"]
+    }
+  ],
+  "resources": [
+    {
+      "id": "requirements-analysis",
+      "name": "需求分析",
+      "kind": "skill",
+      "suggestedAssetId": "zhuma-eng-requirements-analysis"
+    },
+    {
+      "id": "solution-design",
+      "name": "有界方案设计",
+      "kind": "skill",
+      "suggestedAssetId": "zhuma-eng-solution-design"
+    },
+    {
+      "id": "delivery-plan",
+      "name": "工作拆解与计划",
+      "kind": "skill",
+      "suggestedAssetId": "zhuma-eng-delivery-plan"
+    },
+    {
+      "id": "test-design",
+      "name": "业务测试设计",
+      "kind": "skill",
+      "suggestedAssetId": "zhuma-eng-test-design"
+    },
+    {
+      "id": "controlled-implementation",
+      "name": "受控代码实现",
+      "kind": "skill",
+      "suggestedAssetId": "zhuma-eng-controlled-implementation"
+    },
+    {
+      "id": "focused-verification",
+      "name": "定向验证",
+      "kind": "skill",
+      "suggestedAssetId": "zhuma-eng-focused-verification"
+    },
+    {
+      "id": "change-review",
+      "name": "变更代码审查",
+      "kind": "skill",
+      "suggestedAssetId": "zhuma-eng-change-review"
+    },
+    {
+      "id": "acceptance-review",
+      "name": "验收与内容评审",
+      "kind": "skill",
+      "suggestedAssetId": "zhuma-eng-acceptance-review"
+    },
+    {
+      "id": "engineering-writing",
+      "name": "工程文档编写",
+      "kind": "skill",
+      "suggestedAssetId": "zhuma-eng-engineering-writing"
+    }
+  ],
+  "workflows": [
+    {
+      "id": "requirements-to-code",
+      "name": "需求到代码验收",
+      "parentNodeId": null,
+      "nodes": [
+        {
+          "id": "requirements",
+          "title": "需求澄清",
+          "description": "需求澄清以真实来源和实际执行为依据。",
+          "assigneeId": "analyst",
+          "reviewerIds": [],
+          "reviewRequired": false,
+          "dependsOn": [],
+          "skillIds": ["requirements-analysis"],
+          "mcpIds": [],
+          "input": "当前目标、授权工程基线、用户已确认约束、有权资料及其固定来源。",
+          "output": "带本次需求编号的范围和保持行为清单；场景以前提/动作/预期描述，标明输入来源、未知项及可验证结果。",
+          "rationale": "依赖只表达所需上游固定输入；没有新增条件调度或自动可信测试门禁。资源/身份/独立性不足时保留可编辑草稿并报告缺项。",
+          "position": {
+            "x": 0,
+            "y": 80
+          }
+        },
+        {
+          "id": "design",
+          "title": "设计与任务",
+          "description": "人工确认设计与范围后再改代码。",
+          "assigneeId": "designer",
+          "reviewerIds": ["human-approver"],
+          "reviewRequired": true,
+          "dependsOn": ["requirements"],
+          "skillIds": ["solution-design", "delivery-plan", "test-design"],
+          "mcpIds": [],
+          "input": "需求节点的固定产物、准确代码基线、现有项目命令和可用参与者；不以模板角色代替授权身份。",
+          "output": "需求→影响模块→工作任务→验收场景映射、接口兼容约束、正常/负向验证命令和允许改动范围；人工评审接受后才交实现。",
+          "rationale": "依赖只表达所需上游固定输入；没有新增条件调度或自动可信测试门禁。资源/身份/独立性不足时保留可编辑草稿并报告缺项。",
+          "position": {
+            "x": 360,
+            "y": 80
+          }
+        },
+        {
+          "id": "implement",
+          "title": "代码实现",
+          "description": "代码实现以真实来源和实际执行为依据。",
+          "assigneeId": "implementer",
+          "reviewerIds": [],
+          "reviewRequired": false,
+          "dependsOn": ["design"],
+          "skillIds": ["controlled-implementation"],
+          "mcpIds": [],
+          "input": "已接受的设计任务固定版本、需求/场景编号、授权文件范围、真实工作区与代码基线。",
+          "output": "实际工作区改动、准确代码版本/差异及保持行为说明；记录真实项目检查，不把自检当独立评审或报告当已提交代码。",
+          "rationale": "依赖只表达所需上游固定输入；没有新增条件调度或自动可信测试门禁。资源/身份/独立性不足时保留可编辑草稿并报告缺项。",
+          "position": {
+            "x": 720,
+            "y": 80
+          }
+        },
+        {
+          "id": "verify",
+          "title": "验证与失败反馈",
+          "description": "验证与失败反馈以真实来源和实际执行为依据。",
+          "assigneeId": "verifier",
+          "reviewerIds": [],
+          "reviewRequired": false,
+          "dependsOn": ["requirements", "design", "implement"],
+          "skillIds": ["focused-verification"],
+          "mcpIds": [],
+          "input": "需求场景、已接受设计、实现固定版本与实际项目命令；缺少执行权限或依赖时明确阻塞。",
+          "output": "逐场景真实证据：源码版本、环境、argv、工作目录、退出码、报告位置及摘要；失败保留原输出，返工使用原退回/修正/重提，不降低断言。",
+          "rationale": "依赖只表达所需上游固定输入；没有新增条件调度或自动可信测试门禁。资源/身份/独立性不足时保留可编辑草稿并报告缺项。",
+          "position": {
+            "x": 1080,
+            "y": 80
+          }
+        },
+        {
+          "id": "review",
+          "title": "独立与人工评审",
+          "description": "独立报告及人工正式票绑定同一固定版本；退回后沿既有重提。",
+          "assigneeId": "independent-reviewer",
+          "reviewerIds": ["human-approver"],
+          "reviewRequired": true,
+          "dependsOn": ["requirements", "design", "implement", "verify"],
+          "skillIds": ["change-review", "acceptance-review"],
+          "mcpIds": [],
+          "input": "上述节点指定固定版本、代码差异、验收映射及验证报告；评审角色必须与代码作者实际独立。",
+          "output": "有位置与影响的发现、原失败修复复核、建议结论及边界；由指定人工对本轮固定版本正式通过/退回。作者自检、测试exit0和报告建议均不代票。",
+          "rationale": "依赖只表达所需上游固定输入；没有新增条件调度或自动可信测试门禁。资源/身份/独立性不足时保留可编辑草稿并报告缺项。",
+          "position": {
+            "x": 1440,
+            "y": 80
+          }
+        },
+        {
+          "id": "deliver",
+          "title": "固定交付",
+          "description": "固定交付不发布、不部署，也不代表尚未验证的平台通过。",
+          "assigneeId": "human-approver",
+          "reviewerIds": [],
+          "reviewRequired": false,
+          "dependsOn": ["implement", "verify", "review"],
+          "skillIds": ["engineering-writing"],
+          "mcpIds": [],
+          "input": "本轮已正式接受的代码/报告/评审产物版本及当前提交范围；不能用较新未评审草稿替换。",
+          "output": "通过正常固定文件/正文提交交付准确源码引用或补丁、可复现命令、实际报告和限制；列每个交付文件SHA-256与对应提交版本，不读取或打包凭据。",
+          "rationale": "依赖只表达所需上游固定输入；没有新增条件调度或自动可信测试门禁。资源/身份/独立性不足时保留可编辑草稿并报告缺项。",
+          "position": {
+            "x": 1800,
+            "y": 80
+          }
+        }
+      ]
+    }
+  ]
+}
