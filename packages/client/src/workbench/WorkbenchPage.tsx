@@ -23,10 +23,14 @@ import { AssetImportDialog } from './AssetImportDialog.js';
 import { ResourceSourceDialog } from './SourceFiles.js';
 import { ExpertBrowser, type ExpertBrowserView } from './ExpertBrowser.js';
 import type { NativeRunApi } from '../run/api.js';
-import { ControlIcon } from './ControlIcon.js';
+import { ControlIcon, ProjectIcon } from './ControlIcon.js';
 import { TaskBoard } from './TaskBoard.js';
 import { taskBoardColumn, taskBoardColumns } from './task-board.js';
-import { emptyTaskFilters, taskFilterCandidates } from './task-filters.js';
+import {
+  emptyTaskFilters,
+  taskFilterCandidates,
+  taskFiltersForNavigation,
+} from './task-filters.js';
 import { useTaskFilters } from './useTaskFilters.js';
 import { PlanningReadiness, usePlanningReadiness } from './PlanningReadiness.js';
 import {
@@ -34,7 +38,9 @@ import {
   useTaskProgress,
   type TaskProgressState,
 } from '../execution/useTaskProgress.js';
+import { confirmedNodeTitles } from '../execution/progress-focus.js';
 import { TaskProgressSummary } from '../execution/TaskProgressSummary.js';
+import { AUTOMATIC_TASK_TITLE_LIMIT, taskHeading } from './task-heading.js';
 import { KnowledgePanel, type KnowledgePanelProps } from '../knowledge/KnowledgePanel.js';
 import type { ProjectKnowledgeApi } from '../knowledge/project-knowledge-api.js';
 import { useLeaveConfirmation } from './useLeaveConfirmation.js';
@@ -443,7 +449,7 @@ export function WorkbenchPage({
     const task = {
       ...draft.value,
       goal,
-      title: draft.value.title.trim() || goal.split('\n')[0]!.slice(0, 60),
+      title: draft.value.title.trim() || goal.split('\n')[0]!.slice(0, AUTOMATIC_TASK_TITLE_LIMIT),
     };
     if (draft.planning === 'template' && !draft.template) {
       setDialogError('请选择要使用的工作流。');
@@ -783,6 +789,12 @@ export function WorkbenchPage({
                     onClick={() => {
                       if (s === section && !activeProject) return;
                       leaveKnowledge(() => {
+                        const filters = taskFiltersForNavigation(
+                          taskFilters,
+                          s,
+                          activeProject?.id ?? null,
+                        );
+                        if (filters !== taskFilters) setTaskFilters(filters);
                         setSection(s);
                         setSearch('');
                         setActiveProjectId(null);
@@ -1059,7 +1071,7 @@ export function WorkbenchPage({
                   }}
                 >
                   <span className="zm-directory-symbol" aria-hidden>
-                    ▱
+                    <ProjectIcon />
                   </span>
                   <div className="zm-directory-content">
                     <Button
@@ -1113,6 +1125,7 @@ export function WorkbenchPage({
                 projects={state.projects}
                 participants={state.participants}
                 progress={progressFor}
+                nodeTitles={(id) => confirmedNodeTitles(state.appliedPlans, progressFor(id))}
                 confirmed={(id) => state.appliedPlans.some((plan) => plan.taskId === id)}
                 openTask={setActiveTaskId}
               />
@@ -1127,7 +1140,7 @@ export function WorkbenchPage({
                 {tasks.map((t) => (
                   <button className="zm-task-row" key={t.id} onClick={() => setActiveTaskId(t.id)}>
                     <span>
-                      <strong>{t.title}</strong>
+                      <strong title={t.title || t.goal}>{taskHeading(t)}</strong>
                       <small>
                         {state.projects.find((p) => p.id === t.projectId)?.name}
                         <span className="zm-meta-dot">·</span>
@@ -1169,6 +1182,7 @@ export function WorkbenchPage({
                       <TaskProgressSummary
                         progress={progressFor(t.id)}
                         confirmed={state.appliedPlans.some((plan) => plan.taskId === t.id)}
+                        nodeTitles={confirmedNodeTitles(state.appliedPlans, progressFor(t.id))}
                         compact
                       />
                       <span className={`zm-status ${t.status}`}>
@@ -1741,7 +1755,9 @@ export function WorkbenchPage({
                         )}
                       </>
                     )}
-                    {member && <PlanningReadiness value={planningReadiness} />}
+                    {member && dialog.planning === 'ai' && (
+                      <PlanningReadiness value={planningReadiness} />
+                    )}
                     <fieldset className="zm-create-modes">
                       <legend>规划方式</legend>
                       <label>

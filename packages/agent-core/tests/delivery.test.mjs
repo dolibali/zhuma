@@ -369,6 +369,7 @@ test('derives separate inbox rows and omits read-only, finished, and agent deliv
     [
       ['deliver', 'n1', 'assignee-delivery', 'submit'],
       ['deliver', 'n10', 'retry-or-take-back', 'retry-or-take-back'],
+      ['deliver', 'n11', 'waiting-on-prerequisites', 'wait'],
       ['deliver', 'n2', 'revision-delivery', 'revise'],
       ['deliver', 'n8', 'agent-assisted-delivery', 'continue-handling'],
       ['deliver', 'n9', 'input-required', 'provide-input'],
@@ -384,7 +385,7 @@ test('derives separate inbox rows and omits read-only, finished, and agent deliv
     '确认反馈方案',
   );
   assert.equal(
-    items.some((item) => item.nodeId === 'n11' || item.nodeId === 'n12'),
+    items.some((item) => item.nodeId === 'n12'),
     false,
   );
 });
@@ -500,6 +501,7 @@ test('review to-dos follow the current round, and an agent stall notifies the ow
       .map((item) => [item.nodeId, item.reason, item.action]),
     [
       ['agent-fail', 'owner-take-back', 'retry-or-take-back'],
+      ['agent-run', 'agent-assisted-delivery', 'continue-handling'],
       ['agent-wait', 'owner-input-required', 'provide-input'],
       ['expert-fail', 'owner-take-back', 'retry-or-take-back'],
       ['expert-wait', 'owner-input-required', 'provide-input'],
@@ -512,6 +514,43 @@ test('review to-dos follow the current round, and an agent stall notifies the ow
     confirmations: [],
   });
   assert.equal(asExpert.length, 0);
+});
+
+test('owned and assigned waiting nodes stay visible without becoming a submit action', () => {
+  const items = deriveInbox({
+    actorId: 'human-1',
+    nodes: [
+      node('mine', 'blocked'),
+      node('owned-human', 'blocked', {
+        assignee: { id: 'human-2', kind: 'human' },
+        access: 'read',
+        ownerId: 'human-1',
+      }),
+      node('owned-expert', 'blocked', {
+        assignee: { id: 'expert-1', kind: 'expert' },
+        ownerId: 'human-1',
+      }),
+      node('elsewhere', 'blocked', {
+        assignee: { id: 'human-2', kind: 'human' },
+        access: 'read',
+        ownerId: 'human-2',
+      }),
+    ],
+    rounds: [],
+    confirmations: [],
+  });
+  assert.deepEqual(
+    items.map((item) => [item.nodeId, item.reason, item.action]),
+    [
+      ['mine', 'waiting-on-prerequisites', 'wait'],
+      ['owned-expert', 'owner-waiting', 'wait'],
+      ['owned-human', 'owner-waiting', 'wait'],
+    ],
+  );
+  assert.equal(
+    canSubmitNode({ actorId: 'human-1', assigneeId: 'human-2', taskAccess: 'write' }),
+    false,
+  );
 });
 
 test('keeps task access, submission, review votes, and files on their own grant', () => {

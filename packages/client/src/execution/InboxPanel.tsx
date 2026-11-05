@@ -82,6 +82,7 @@ export function InboxPanel({
             <h2 id={heading}>需要我处理</h2>
             {!!rows.length && <span className="zm-kind">已载入 {rows.length} 个工作项</span>}
           </div>
+          <p className="zm-muted">分配给你或由你负责的工作都在这里，等待前置的事项会标成等待中。</p>
         </div>
         <Button variant="secondary" busy={pending} busyLabel="正在读取…" onClick={reload}>
           刷新
@@ -106,6 +107,7 @@ export function InboxPanel({
             <div className="zm-directory zm-execution-inbox">
               {grouped.map(({ item, index, node, place, view }) => {
                 const agent = group.id === 'active';
+                const waiting = group.id === 'waiting';
                 const supported = agent || ['deliver', 'revise', 'review'].includes(group.id);
                 const current = supported && !!node && readyFor(item, node);
                 const enabled = current && (!agent || !!renderAgentAction);
@@ -145,6 +147,8 @@ export function InboxPanel({
                     <div className="zm-directory-actions">
                       {agent && enabled ? (
                         renderAgentAction!(node!)
+                      ) : waiting ? (
+                        <span className="zm-status">等待中</span>
                       ) : supported ? (
                         <Button disabled={!enabled} onClick={() => open(item)}>
                           {agent ? '打开 Agent 会话' : view.actionLabel}

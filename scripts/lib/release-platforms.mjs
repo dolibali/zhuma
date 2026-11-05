@@ -14,7 +14,7 @@ import { join } from 'node:path';
 import { Transform, Writable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { createGunzip, createGzip } from 'node:zlib';
-import { candidateFileRecord } from './windows-candidate.mjs';
+import { candidateFileRecord, windowsInstallerNames } from './windows-candidate.mjs';
 
 const json = (file) => JSON.parse(readFileSync(file, 'utf8'));
 const digest = (bytes) => createHash('sha256').update(bytes).digest('hex');
@@ -173,7 +173,7 @@ export function verifyQualifiedServer(context, directory) {
 
 export async function assemblePlatformAssets(context, windows, server, receipt, output) {
   assert.equal(receipt.source, context.source);
-  const installer = `zhuma-${context.version}-win-x64-unsigned.exe`;
+  const installer = windowsInstallerNames(context.version).product;
   const winSource = json(join(windows, 'SOURCE.json'));
   sourceIdentity(context, winSource, 'windows');
   const winRecords = exactSums(windows, [
@@ -251,7 +251,7 @@ export async function verifyPlatformAssets(context, directory, platforms) {
     'Both Windows and qualified Linux release assets are required.',
   );
   const expected = [
-    `zhuma-${context.version}-win-x64-unsigned.exe`,
+    windowsInstallerNames(context.version).product,
     'windows-SOURCE.json',
     'server-SOURCE.json',
     `zhuma-${context.version}-server-linux-amd64-portable.tar.gz`,

@@ -186,6 +186,7 @@ export function PlanningReadiness({ value }: { value: ReturnType<typeof usePlann
         ) : (
           <strong>{value.ready ? `规划模型 · ${value.model}` : '当前服务未配置规划模型'}</strong>
         )}
+        <p>生成计划前可确认当前规划模型。</p>
         {!value.ready && !switchable && (
           <p>请由服务操作者配置后刷新。本机模型设置不会自动配置共享服务，仍可手工编排。</p>
         )}

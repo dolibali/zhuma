@@ -10,6 +10,7 @@ import assert from 'node:assert/strict';
 import { desktopStageLaunch } from '../lib/dev-model-gateway.mjs';
 import { corepackPnpmInvocation } from '../lib/corepack-pnpm.mjs';
 import { desktopPackageTarget } from '../lib/desktop-package-target.mjs';
+import { copyWindowsInstaller } from '../lib/windows-candidate.mjs';
 import { assertProductSourceRecipe } from './source-recipe.mjs';
 const root = resolve(fileURLToPath(new URL('../..', import.meta.url)));
 const stage = `${root}/.build/desktop/deepseek-harness`;
@@ -115,9 +116,13 @@ if (task === 'dev') {
     target.name,
     'unsigned-artifacts',
   );
-  const artifactName = `zhuma-${brand.desktopBuildVersion}-${target.name}-unsigned.${target.extension}`;
   const destination = join(root, target.name === 'win-x64' ? 'dist/windows-x64' : 'dist');
   mkdirSync(destination, { recursive: true });
-  copyFileSync(join(artifacts, artifactName), join(destination, artifactName));
+  const artifactName =
+    target.name === 'win-x64'
+      ? copyWindowsInstaller(artifacts, destination, brand.desktopBuildVersion)
+      : `zhuma-${brand.desktopBuildVersion}-${target.name}-unsigned.${target.extension}`;
+  if (target.name !== 'win-x64')
+    copyFileSync(join(artifacts, artifactName), join(destination, artifactName));
   console.log(`Zhuma installer available at ${join(destination, artifactName)}`);
 }

@@ -238,6 +238,83 @@ test('comment-only reviews use the real ballot action and link-only artifacts st
   assert.deepEqual(value.artifacts[0].links, ['https://example.com/design']);
 });
 
+const legacyInboxActions = [
+  'submit',
+  'revise',
+  'continue-handling',
+  'provide-input',
+  'retry-or-take-back',
+  'review',
+  'confirm',
+];
+function legacyInbox(value) {
+  if (!value || typeof value !== 'object' || !Array.isArray(value.items))
+    throw new ExecutionError('validation', '返回的待办不正确。');
+  for (const item of value.items) {
+    if (!legacyInboxActions.includes(item.action))
+      throw new ExecutionError('validation', '返回的待办动作不正确。');
+  }
+  return value.items.map((item) => item.action);
+}
+test('inbox compatibility: a new client falls back when an old service rejects wait opt-in', async () => {
+  const legacy = {
+    actorId: 'chen',
+    items: [
+      { ...item, id: 'human', nodeId: 'human', action: 'submit' },
+      {
+        ...item,
+        id: 'review-1',
+        nodeId: 'parallel',
+        kind: 'review',
+        action: 'review',
+        reason: 'review-assigned',
+      },
+    ],
+    nodes: [
+      { ...node, nodeId: 'human', status: 'ready' },
+      { ...node, nodeId: 'parallel', status: 'ready' },
+    ],
+  };
+  const calls = [];
+  const { api } = apiWith((_endpoint, payload) => {
+    calls.push(structuredClone(payload));
+    if (payload && Object.hasOwn(payload, 'detail'))
+      return { ok: false, error: { code: 'unknown-field', message: 'unrecognized', details: {} } };
+    return { ok: true, value: legacy };
+  });
+  const inbox = await api.inbox();
+  assert.deepEqual(calls, [{ detail: 'waiting' }, {}]);
+  assert.deepEqual(
+    inbox.items.map((entry) => entry.action),
+    ['submit', 'review'],
+  );
+  assert.deepEqual(legacyInbox(legacy), ['submit', 'review']);
+  const mixed = {
+    ...legacy,
+    items: [
+      ...legacy.items,
+      {
+        ...item,
+        id: 'consume',
+        nodeId: 'consume',
+        action: 'wait',
+        reason: 'waiting-on-prerequisites',
+      },
+    ],
+  };
+  assert.throws(() => legacyInbox(mixed), {
+    code: 'validation',
+    message: '返回的待办动作不正确。',
+  });
+  let failures = 0;
+  const refused = apiWith(() => {
+    failures += 1;
+    return { ok: false, error: { code: 'validation', message: 'bad', details: {} } };
+  });
+  await assert.rejects(refused.api.inbox(), { code: 'validation' });
+  assert.equal(failures, 1);
+});
+
 test('the runnable preview uses valid service projections for delivery, review and revision', async () => {
   const { reviewNode, deliveryNode, reviseNode, inbox } =
     await import('./browser/execution-fixture.mjs');

@@ -227,7 +227,7 @@ test('upstream RPC: inbox consumes the real inputs field; write replies may omit
     text: '产物',
   });
   assert.equal('inputs' in result, false);
-  assert.deepEqual(calls[0].payload, {});
+  assert.deepEqual(calls[0].payload, { detail: 'waiting' });
   assert.ok(!('inputs' in calls[1].payload));
 });
 
