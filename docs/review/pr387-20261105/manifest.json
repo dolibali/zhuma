@@ -1,0 +1,57 @@
+{
+  "scope": "Actual Client development build with React StrictMode and synthetic HTTP replay. Normal keyboard selection of model B and refresh; failed model switch preserves user input. The five self-generated images were individually inspected by the coordinator. Synthetic names only; no user attachments, credentials, or private materials.",
+  "baseSource": "b2d3a0a1bb90630a034759fbc11e6c32613675e1",
+  "afterSource": "112810d8ab537619f309d512e8a2e88fdc33d193",
+  "viewport": {
+    "width": 1280,
+    "height": 820,
+    "surface": "isolated in-app browser; desktop viewport reset"
+  },
+  "evidenceBoundaries": [
+    "Client rendering and normal keyboard interaction only",
+    "Synthetic HTTP replay is not real backend or identity authorization proof",
+    "No Host, paid model, native desktop, installation, or deployment qualification"
+  ],
+  "items": [
+    {
+      "name": "before-light.jpg",
+      "path": "docs/review/pr387-20261105/before-light.jpg",
+      "sha256": "937c3452d589db3bd40fedf1ecc7c5c92e5242d4e7919b98a15fca00b8ec4afa",
+      "bytes": 36535,
+      "blob": "e6c19a974e55bb609a32fdb18b21ed450a3ac15b",
+      "source": "b2d3a0a1bb90630a034759fbc11e6c32613675e1"
+    },
+    {
+      "name": "before-dark.jpg",
+      "path": "docs/review/pr387-20261105/before-dark.jpg",
+      "sha256": "7a7684b1620b080d502d388f276ea2b7fce4f6ece7d4737cfc4bbd6d0e3a4828",
+      "bytes": 36813,
+      "blob": "a667ce4f4d040b77961ee5bf074f2ea5dd690589",
+      "source": "b2d3a0a1bb90630a034759fbc11e6c32613675e1"
+    },
+    {
+      "name": "after-light-selected.jpg",
+      "path": "docs/review/pr387-20261105/after-light-selected.jpg",
+      "sha256": "3cf1c49998e8a184554744b0f4585c059a3380d571d1b806ce15b9057e0a3aa9",
+      "bytes": 37322,
+      "blob": "61bf0d952aa65c8591f0d1e6cb1d91de5b8c5f5c",
+      "source": "112810d8ab537619f309d512e8a2e88fdc33d193"
+    },
+    {
+      "name": "after-dark-selected.jpg",
+      "path": "docs/review/pr387-20261105/after-dark-selected.jpg",
+      "sha256": "9c95c99e17b979329b5d69a0f4b37008ab9a12dd771f62f2d511c206d8dadb0a",
+      "bytes": 37237,
+      "blob": "359332f51db367c731ff6719de1d30edddab04c7",
+      "source": "112810d8ab537619f309d512e8a2e88fdc33d193"
+    },
+    {
+      "name": "after-failure-input-preserved.jpg",
+      "path": "docs/review/pr387-20261105/after-failure-input-preserved.jpg",
+      "sha256": "b051fb8103fc2c41107acab499b001b29f3d9308fddb273bc242ffd5553428a2",
+      "bytes": 38047,
+      "blob": "55ed100b0eac8fa0a3d51054895df3444aa1ff02",
+      "source": "112810d8ab537619f309d512e8a2e88fdc33d193"
+    }
+  ]
+}
