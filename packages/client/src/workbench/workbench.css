@@ -3995,6 +3995,8 @@ html[data-platform='darwin'] .zhuma .zm-space-bar {
 .zm-create-modes input {
   margin-top: 3px;
   flex-shrink: 0;
+  /* Native Tab scrolling must reveal the surrounding option and focus ring. */
+  scroll-margin-block: 24px;
 }
 .zm-create-modes strong,
 .zm-create-modes small {
