@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { applyWorkbenchCommand, canonicalPayload, nodeRecordKey } from '@zhuma/agent-core';
+import { applyWorkbenchCommand, castBallot, settleReview, nodeRecordKey } from '@zhuma/agent-core';
 import { ExecutionService } from '../dist/execution-service.js';
 import { boundedProjectSpaces } from '../dist/project-space.js';
 import { fixture } from '../../../tests/fixtures/workbench.mjs';
@@ -494,52 +494,185 @@ test('an approval still replays after another reviewer comments', async () => {
   );
 });
 
-test('a comment receipt saved before version comments replays without appending a binding', async () => {
-  const { applied, store, service, roundId, artifactVersionId } = await reviewing();
-  const node = store.node('design');
-  const version = node.command.version;
-  const comment = '升级前的意见';
-  const fingerprint = canonicalPayload({
-    kind: 'ballot',
+// Exact old service binding: production domain commands create the legacy receipt.
+// No manual fingerprint, success receipt, or ballot mutation is used.
+async function saveLegacyReview(f, command, settle = false) {
+  let record = f.store.node('design');
+  const result = castBallot({
+    record,
     actorId: 'lin',
-    reviewerId: 'lin',
-    roundId,
-    artifactVersionId,
-    action: 'comment',
-    comment,
-    unresolvedCommentIds: [],
-    availability: null,
-    comments: node.comments,
+    idempotencyKey: command.idempotencyKey,
+    expectedVersion: command.expectedVersion,
+    ballot: {
+      reviewerId: 'lin',
+      roundId: command.roundId,
+      artifactVersionId: command.artifactVersionId,
+      action: command.action,
+      ...(command.comment === undefined ? {} : { comment: command.comment }),
+      ...(command.unresolvedCommentIds === undefined
+        ? {}
+        : { unresolvedCommentIds: command.unresolvedCommentIds }),
+    },
+    comments: record.comments,
   });
-  const round = node.rounds.find((item) => item.id === roundId);
-  round.ballots.push({
-    reviewerId: 'lin',
-    roundId,
-    artifactVersionId,
-    action: 'comment',
-    comment,
-  });
-  node.receipts.push({
+  assert.equal(result.ok, true, result.ok ? '' : result.code);
+  record = result.record;
+  if (settle) {
+    const settled = settleReview({
+      record,
+      actorId: 'lin',
+      idempotencyKey: `settle:${command.roundId}`,
+      expectedVersion: record.command.version,
+      roundId: command.roundId,
+      artifactVersionId: command.artifactVersionId,
+    });
+    assert.equal(settled.ok, true, settled.ok ? '' : settled.code);
+    record = settled.record;
+  }
+  await f.store.storage.writeNode(nodeRecordKey(record), record);
+}
+
+const legacyCommand = (f, extra = {}) =>
+  vote(f.applied, f.roundId, f.artifactVersionId, {
+    expectedVersion: f.store.node('design').command.version,
     idempotencyKey: 'legacy-note',
-    fingerprint,
-    version,
-    disposition: 'applied',
+    action: 'comment',
+    comment: '升级前的意见',
+    ...extra,
   });
-  await store.storage.writeNode(nodeRecordKey(node), node);
-  const before = JSON.stringify(store.node('design'));
-  assert.equal(store.node('design').comments.length, 0);
-  const replayed = await service.ballot(
-    session('lin'),
-    vote(applied, roundId, artifactVersionId, {
-      expectedVersion: version,
-      idempotencyKey: 'legacy-note',
-      action: 'comment',
-      comment,
-    }),
-  );
+
+test('a production legacy comment receipt replays without appending a binding', async () => {
+  const f = await reviewing();
+  const command = legacyCommand(f);
+  await saveLegacyReview(f, command);
+  const before = JSON.stringify(f.store.node('design'));
+  const replayed = await f.service.ballot(session('lin'), command);
   assert.equal(replayed.ok, true, replayed.ok ? '' : replayed.error.code);
   assert.equal(replayed.value.disposition, 'replayed');
-  assert.equal(JSON.stringify(store.node('design')), before);
-  assert.equal(store.node('design').comments.length, 0);
-  assert.equal(store.node('design').rounds.find((item) => item.id === roundId).ballots.length, 1);
+  assert.equal(JSON.stringify(f.store.node('design')), before);
+  assert.equal(f.store.node('design').comments.length, 0);
+  assert.equal(f.store.node('design').rounds[0].ballots.length, 1);
+});
+
+for (const nonemptySnapshot of [false, true]) {
+  test(`legacy comment replay uses its saved snapshot after later comments; nonempty=${nonemptySnapshot}`, async () => {
+    const f = await reviewing();
+    if (nonemptySnapshot)
+      assert.equal(
+        (
+          await f.service.ballot(
+            session('qiu'),
+            legacyCommand(f, { idempotencyKey: 'earlier-note', comment: 'Already present' }),
+          )
+        ).ok,
+        true,
+      );
+    const command = legacyCommand(f);
+    await saveLegacyReview(f, command);
+    assert.equal(
+      (
+        await f.service.ballot(session('qiu'), {
+          ...command,
+          idempotencyKey: 'later-note',
+          comment: 'Added after upgrade',
+        })
+      ).ok,
+      true,
+    );
+    const before = JSON.stringify(f.store.node('design'));
+    const replayed = await f.service.ballot(session('lin'), command);
+    assert.equal(replayed.ok, true, replayed.ok ? '' : replayed.error.code);
+    assert.equal(replayed.value.disposition, 'replayed');
+    assert.equal(JSON.stringify(f.store.node('design')), before);
+  });
+}
+
+test('a settled legacy return replays the raw request without a new automatic citation', async () => {
+  const f = await reviewing();
+  const command = legacyCommand(f, { action: 'request-changes', comment: '  原始退回意见  ' });
+  await saveLegacyReview(f, command, true);
+  assert.equal(f.store.node('design').command.status, 'needs-revision');
+  const before = JSON.stringify(f.store.node('design'));
+  const replayed = await f.service.ballot(session('lin'), command);
+  assert.equal(replayed.ok, true, replayed.ok ? '' : replayed.error.code);
+  assert.equal(replayed.value.disposition, 'replayed');
+  assert.equal(JSON.stringify(f.store.node('design')), before);
+  assert.equal(f.store.node('design').comments.length, 0);
+});
+
+test('legacy fallback still rejects changed body, actor, round, artifact, action, and explicit references', async () => {
+  const f = await reviewing();
+  const command = legacyCommand(f);
+  await saveLegacyReview(f, command);
+  assert.equal(
+    (
+      await f.service.ballot(session('qiu'), {
+        ...command,
+        idempotencyKey: 'other-valid-note',
+        comment: 'Valid current reference',
+      })
+    ).ok,
+    true,
+  );
+  const validId = f.store.node('design').comments[0].id;
+  const before = JSON.stringify(f.store.node('design'));
+  for (const [actor, patch] of [
+    ['lin', { comment: '改写正文' }],
+    ['qiu', {}],
+    ['lin', { roundId: 'another-round' }],
+    ['lin', { artifactVersionId: 'another-version' }],
+    ['lin', { action: 'approve' }],
+    ['lin', { unresolvedCommentIds: [validId] }],
+  ]) {
+    const result = await f.service.ballot(session(actor), { ...command, ...patch });
+    assert.equal(result.ok, false);
+    assert.equal(result.error.code, 'idempotency-mismatch');
+    assert.equal(JSON.stringify(f.store.node('design')), before);
+  }
+});
+
+test('legacy return preserves user-supplied citations rather than dropping them for compatibility', async () => {
+  const f = await reviewing();
+  for (const id of ['reference-a', 'reference-b'])
+    assert.equal(
+      (
+        await f.service.ballot(
+          session('qiu'),
+          legacyCommand(f, { idempotencyKey: id, comment: id }),
+        )
+      ).ok,
+      true,
+    );
+  const [a, b] = f.store.node('design').comments;
+  const command = legacyCommand(f, {
+    action: 'request-changes',
+    comment: 'Return with explicit reference',
+    unresolvedCommentIds: [a.id],
+  });
+  await saveLegacyReview(f, command, true);
+  const before = JSON.stringify(f.store.node('design'));
+  const same = await f.service.ballot(session('lin'), command);
+  assert.equal(same.ok, true);
+  assert.equal(same.value.disposition, 'replayed');
+  const changed = await f.service.ballot(session('lin'), {
+    ...command,
+    unresolvedCommentIds: [b.id],
+  });
+  assert.equal(changed.ok, false);
+  assert.equal(changed.error.code, 'idempotency-mismatch');
+  assert.equal(JSON.stringify(f.store.node('design')), before);
+});
+
+test('a corrupted legacy fingerprint is refused without turning parse failure into success', async () => {
+  const f = await reviewing();
+  const command = legacyCommand(f);
+  await saveLegacyReview(f, command);
+  const damaged = structuredClone(f.store.node('design'));
+  damaged.receipts.find((r) => r.idempotencyKey === command.idempotencyKey).fingerprint = '{broken';
+  await f.store.storage.writeNode(nodeRecordKey(damaged), damaged);
+  const before = JSON.stringify(f.store.node('design'));
+  const result = await f.service.ballot(session('lin'), command);
+  assert.equal(result.ok, false);
+  assert.equal(result.error.code, 'idempotency-mismatch');
+  assert.equal(JSON.stringify(f.store.node('design')), before);
 });

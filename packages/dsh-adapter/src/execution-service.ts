@@ -6553,6 +6553,31 @@ export class ExecutionService {
         body,
         ballotSchema,
         (actorId, request, record) => {
+          const ballot = {
+            reviewerId: actorId,
+            roundId: request.roundId,
+            artifactVersionId: request.artifactVersionId,
+            action: request.action,
+            ...(request.comment === undefined ? {} : { comment: request.comment }),
+            ...(request.unresolvedCommentIds === undefined
+              ? {}
+              : { unresolvedCommentIds: request.unresolvedCommentIds }),
+          };
+          if (record.receipts.some((item) => item.idempotencyKey === request.idempotencyKey)) {
+            // Legacy receipts predate the generated version-comment citation. Only a full
+            // replay of the original request may return before the current binding path.
+            const replay = castBallot({
+              record,
+              actorId,
+              idempotencyKey: request.idempotencyKey,
+              expectedVersion: request.expectedVersion,
+              ballot,
+              comments: record.comments,
+              receiptComments: [],
+            });
+            if (replay.ok && replay.disposition === 'replayed')
+              return { result: replay, settle: true };
+          }
           const bound = bindVersionedReviewComment({
             existing: record.comments,
             id: reviewCommentId(request.idempotencyKey),
@@ -6571,11 +6596,7 @@ export class ExecutionService {
             idempotencyKey: request.idempotencyKey,
             expectedVersion: request.expectedVersion,
             ballot: {
-              reviewerId: actorId,
-              roundId: request.roundId,
-              artifactVersionId: request.artifactVersionId,
-              action: request.action,
-              ...(request.comment === undefined ? {} : { comment: request.comment }),
+              ...ballot,
               ...(unresolvedCommentIds === undefined ? {} : { unresolvedCommentIds }),
             },
             comments: bound.comments,
