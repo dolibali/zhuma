@@ -1,4 +1,5 @@
 import type { PlanProposal } from './planning.js';
+import { readPromptConstraints, type PromptConstraintSnapshot } from './prompt-constraints.js';
 import { WorkbenchError, type TeamAsset, type Workbench, type WorkTask } from './workbench.js';
 
 /** Character budgets, not model token estimates. Required work is never truncated. */
@@ -59,7 +60,9 @@ export function buildPlanningContext(
   task: WorkTask,
   instruction: string,
   baseProposal?: PlanProposal,
+  constraints?: PromptConstraintSnapshot,
 ) {
+  const frozenConstraints = constraints ? readPromptConstraints(constraints) : undefined;
   const participants = state.participants
     .filter((p) => task.participantIds.includes(p.id) && p.available)
     .map(({ origin, ...p }) => ({
@@ -133,6 +136,7 @@ export function buildPlanningContext(
         }
       : null,
     instruction,
+    ...(frozenConstraints ? { constraints: frozenConstraints } : {}),
     selection: {
       method: 'local-keyword-v1' as const,
       omittedAssetCount: available.length - selected.length,

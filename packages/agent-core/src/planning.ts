@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { buildPlanningContext, type PlanningContext } from './planning-context.js';
+import { checkPlanningWorkflows, type PromptConstraintSnapshot } from './prompt-constraints.js';
 import {
   PlanningAdjustmentSchema,
   requirePlanningTarget,
@@ -54,7 +55,8 @@ questions 只用于阻碍“编排”本身的关键问题，例如任务目标�
 完全无法确定范围或合理分工时 workflows=[] 并提问。合理推断写入 assumptions，明确尚待相应节点确认。存在 questions 时草案不能被应用。
 currentWorkflows 是本次调整的工作流基线；previousProposal 存在时，它来自用户正在审阅但尚未应用的草案。上一轮的问题与推断仍是待确认信息，结合用户本轮要求处理。
 输入含 adjustment 时，只能修改其 nodeId 节点的 fields 字段；该节点的其他字段也必须完全保留。其他节点的所有字段、工作流层级、节点顺序、依赖和位置必须完全保留，不得增删或移动节点；即使补充要求提及更大范围也不能越过本次明确选择。
-已有工作流时只修改补充要求涉及的部分，保留其余工作流和节点的 ID、依赖、配置及分工，不要重新从空白生成。position 使用适合画布的坐标：按依赖从左到右、并行分支从上到下。`;
+已有工作流时只修改补充要求涉及的部分，保留其余工作流和节点的 ID、依赖、配置及分工，不要重新从空白生成。position 使用适合画布的坐标：按依赖从左到右、并行分支从上到下。
+输入含 constraints 时，它是本次冻结的提示约束。不得扩大其中的生成范围、改用其他输出格式、引用禁止路径，或混用未钉住的 Skill 版本；执行必须读取同一份快照。`;
 
 export function planningPrompt(
   state: Workbench,
@@ -62,10 +64,11 @@ export function planningPrompt(
   instruction: string,
   baseProposal?: PlanProposal,
   adjustment?: PlanningAdjustment,
+  constraints?: PromptConstraintSnapshot,
 ): { system: string; input: string; context: PlanningContext } {
   if (adjustment)
     requirePlanningTarget(baseProposal?.result.workflows ?? task.workflows, adjustment.nodeId);
-  const context = buildPlanningContext(state, task, instruction, baseProposal);
+  const context = buildPlanningContext(state, task, instruction, baseProposal, constraints);
   return {
     system: PLANNING_SYSTEM,
     context,
@@ -82,7 +85,7 @@ export function parsePlanningResult(
   text: string,
   state: Workbench,
   task: WorkTask,
-  context?: Pick<PlanningContext, 'assets'>,
+  context?: Pick<PlanningContext, 'assets' | 'constraints'>,
 ): PlanningResult {
   if (text.length > 150000) throw new WorkbenchError('invalid-plan', '规划结果超过大小限制。');
   let raw: unknown;
@@ -121,6 +124,15 @@ export function parsePlanningResult(
       throw new WorkbenchError('invalid-plan', `「${node.title}」需要输入说明和分工理由。`);
     if (allowedAssets && [...node.skillIds, ...node.mcpIds].some((id) => !allowedAssets.has(id)))
       throw new WorkbenchError('invalid-plan', `「${node.title}」引用了未提供给本次规划的资源。`);
+  }
+  if (context?.constraints) {
+    const violations = checkPlanningWorkflows(context.constraints, result.workflows);
+    if (violations.length) {
+      throw new WorkbenchError(
+        'constraint-violation',
+        violations.map((item) => `${item.code} ${item.target} ${item.reason}`).join('\n'),
+      );
+    }
   }
   return result;
 }
