@@ -8,20 +8,20 @@
 
 ## 当前状态
 
-本工程版本为 **v1.4.0 候选**，自有代码采用 MIT；版本号不代表已经发布。Windows x64、macOS arm64 和 Linux amd64 共享服务以同一准确来源分别验证，见 [v1.4 范围与安装说明](docs/release-v1.4.md)和[实时工作项 #372](https://github.com/dolibali/zhuma/issues/372)。共享后端保存团队业务，成员在官方桌面明确授权本机 Zhuma Agent 接续处理自己负责的工作节点；任务、交付与评审复用原领域，会话与执行模型凭据仍由成员本机原 Harness 管理。共享后端的 AI 规划使用其自身配置的模型。
+当前源码版本为 **v1.5.0**，本版范围与实际验收见[发行说明](docs/release-v1.5.0.md)和[工作项 #394](https://github.com/dolibali/zhuma/issues/394)。已公开的 [v1.4.0](https://github.com/dolibali/zhuma/releases/tag/v1.4.0) 包含 Windows x64、macOS arm64 客户端与 Linux amd64 共享服务；新版是否已公开以 [Releases](https://github.com/dolibali/zhuma/releases) 为准。共享后端保存团队业务并提供 AI 规划，成员在自己的桌面授权本机 Agent 处理工作节点，会话与执行模型凭据仍由成员本机原 Harness 管理。
 
-源码、Host／Client 契约及历史安装结果按版本分层保留，不能追认后续修改。正常桌面、真实模型＋Skill、同工作区同 Session、文件、独立 Agent 评审与恢复按准确候选分别验收。实时结论以 [交付总索引 #25](https://github.com/dolibali/zhuma/issues/25) 和 [v1.3 工作项 #310](https://github.com/dolibali/zhuma/issues/310) 为准，本轮范围和验证边界见 [v1.3.0 说明](docs/release-v1.3.md)；[v1.2.0 说明](docs/release-v1.2.md) 保留原版本边界。
+实时交付以[总索引 #25](https://github.com/dolibali/zhuma/issues/25)和对应工作项为准。源码、契约、真实 Host／正常界面、模型工程结果和安装分别留证；历史通过不认证新修改。[v1.4.0](docs/release-v1.4.md)、[v1.3.0](docs/release-v1.3.md)和[v1.2.0](docs/release-v1.2.md)说明保留各自的原资产与验证边界。
 
 ## 开始使用
 
-1. 取得已核对来源的 macOS arm64 DMG，或按[桌面发行指南](distribution/desktop/README.md)从源码构建。本版使用 ad-hoc 临时签名、未公证；正式来源见对应 Release，不认证全平台。
+1. 从对应 Release 选择 Windows x64 安装器或 macOS arm64 DMG，并核对 `SOURCE.json` 与 `SHA256SUMS`。Windows 当前未签名；macOS 使用 ad-hoc 签名、未公证。源码构建见[桌面发行指南](distribution/desktop/README.md)。
 2. 全新安装首次打开后创建本机账号、团队并选择基础专家；已有账号从成员登录入口进入。在账号与空间入口选择有权团队。旧单人 profile 的资料与模式不会自动迁移。
-3. 在“团队工作台”新建项目和任务，选择参与者。成员任务可用“AI 规划”或“从空白开始”，在列表／工作流中编辑节点、负责人、Skills、依赖和评审人，再保存并确认计划。模板复用的当前入口与限制见[正常操作说明](distribution/workbench/README.md#正常操作)。
+3. 在“团队工作台”新建项目和任务，选择参与者。可选“AI 规划”“使用工作流”或“从空白开始”，在列表／工作流中编辑节点、负责人、Skills、依赖和评审人，再保存并确认计划。模板复用的入口与限制见[正常操作说明](distribution/workbench/README.md#正常操作)。
 4. 使用 AI 前配置相应运行位置的模型：共享 AI 规划由服务操作者在后端官方模型页配置，本机 Agent 在桌面模型页配置。检查节点专家所需的 Skill；无模型也能编排人工任务。规划失败保留输入，不以模板结果冒充 AI 成功。
 5. 在“我的工作”开始已确认计划。成员可逐节点“提交产物”或“使用 Agent”，也可选择“运行工作流”，明确本机模型、工作区权限、交付范围与自动返工上限。本机只接续本成员获准处理的节点；其他成员或人工节点进入各自待办，离线时等待，不让后端代跑。查看或重开应用不自动执行，停止后须明确继续。
 6. 需要评审的固定文字／文件提交交给指定真人或独立 Agent 专家；自动退回修改受本轮上限约束，真人评审和预算耗尽都等待人工。全部指定评审通过且原运行收口后才接续。下游查看“上游输入”，项目“资料与成果”查看“已接受成果”；会话回复或停止状态本身不等于已交付。
 
-完整入口与执行方式见[工作台组合指南](distribution/workbench/README.md)；本地共享后端部署见[服务说明](distribution/server/README.md)。本轮多成员执行与恢复以同机共享后端及两个隔离成员 Host 为验证边界，实体异机网络、休眠差异另验。非空 MCP、批量反馈、复杂子流程与完整工作树执行、效能统计、完整跨会话通信、个人专家独立使用、其他 CLI 完整资格与跨 CLI 接管继续后置，范围保留而非完成。团队资产、固定资料与码道接入按 [v1.3.0 说明](docs/release-v1.3.md)的准确候选分别验收。
+完整入口与执行方式见[工作台组合指南](distribution/workbench/README.md)；共享后端部署见[服务说明](distribution/server/README.md)。v1.4.0 已记录正式 Windows／macOS 启动、共享服务协作、固定交付与评审、任务和会话历史恢复；v1.5.0 的新增部分按 #394 另行验证。非空 MCP、内置效能统计、复杂子流程与完整工作树执行、个人专家独立使用、更多 CLI 完整资格及跨 CLI 接管继续后置。工程案例中的项目测试不等于平台已实现通用质量门禁。
 
 ## 开发准备
 
@@ -84,7 +84,7 @@ zhuma/
 
 ## 桌面与发行
 
-桌面复用上游 `apps/desktop/`。品牌、插件预装及发行补丁在 `distribution/`、`branding/` 与补丁层维护；在 `.build/` 临时构建树应用，不直接长期修改子模块。当前已有构建集中于 macOS arm64；Windows、Linux 不计为已验证。Developer ID 签名、公证和自动更新尚未提供；本轮 v1.3.0 的支持平台、安装限制、签名状态与必要验收按最终发行说明核对。
+桌面复用上游 `apps/desktop/`。品牌、插件预装及发行补丁在 `distribution/`、`branding/` 与补丁层维护，在 `.build/` 临时构建树应用。Windows x64、macOS arm64 与 Linux amd64 服务沿同一准确 main 来源分别构建和核验；Linux 为共享服务包，尚无 Linux 桌面支持。Developer ID、公证、Authenticode 和自动更新尚未提供。安装限制和本版验证范围见[发行说明](docs/release-v1.5.0.md)。
 
 桌面构建使用可验证的上游补丁和独立临时 Git worktree，避免修改固定子模块。桌面不强制显示 DeepSeek 平台账号欢迎界面；Zhuma 成员登录与供应商模型凭据各走自己的正常入口。macOS 安装包构建指令、签名限制和调试说明见 [桌面发行指南](distribution/desktop/README.md)。
 
