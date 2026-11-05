@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { applyWorkbenchCommand } from '@zhuma/agent-core';
+import { applyWorkbenchCommand, canonicalPayload, nodeRecordKey } from '@zhuma/agent-core';
 import { ExecutionService } from '../dist/execution-service.js';
 import { boundedProjectSpaces } from '../dist/project-space.js';
 import { fixture } from '../../../tests/fixtures/workbench.mjs';
@@ -392,4 +392,154 @@ test('an illegal or failed directory answer is the same unavailable bytes whethe
     assert.equal(JSON.stringify(missing).includes('写不了-4e1'), false);
     assert.equal(JSON.stringify(store.node('design')), before);
   }
+});
+
+test('comment A then comment B still replays A with the original key and text', async () => {
+  const { applied, store, service, roundId, artifactVersionId } = await reviewing();
+  const version = store.node('design').command.version;
+  const first = await service.ballot(
+    session('lin'),
+    vote(applied, roundId, artifactVersionId, {
+      expectedVersion: version,
+      idempotencyKey: 'note-lin',
+      action: 'comment',
+      comment: '林夏的意见',
+    }),
+  );
+  assert.equal(first.ok, true, first.ok ? '' : first.error.code);
+  const second = await service.ballot(
+    session('qiu'),
+    vote(applied, roundId, artifactVersionId, {
+      expectedVersion: version,
+      idempotencyKey: 'note-qiu',
+      action: 'comment',
+      comment: '邱衡的意见',
+    }),
+  );
+  assert.equal(second.ok, true, second.ok ? '' : second.error.code);
+  const before = JSON.stringify(store.node('design'));
+  const replayed = await service.ballot(
+    session('lin'),
+    vote(applied, roundId, artifactVersionId, {
+      expectedVersion: version,
+      idempotencyKey: 'note-lin',
+      action: 'comment',
+      comment: '林夏的意见',
+    }),
+  );
+  assert.equal(replayed.ok, true, replayed.ok ? '' : replayed.error.code);
+  assert.equal(replayed.value.disposition, 'replayed');
+  assert.equal(JSON.stringify(store.node('design')), before);
+  assert.equal(
+    store.node('design').comments.filter((item) => item.body === '林夏的意见').length,
+    1,
+  );
+  assert.equal(
+    store.node('design').comments.filter((item) => item.body === '邱衡的意见').length,
+    1,
+  );
+  const changed = await service.ballot(
+    session('lin'),
+    vote(applied, roundId, artifactVersionId, {
+      expectedVersion: version,
+      idempotencyKey: 'note-lin',
+      action: 'comment',
+      comment: '换成另一句',
+    }),
+  );
+  assert.equal(changed.ok, false);
+  assert.equal(changed.error.code, 'idempotency-mismatch');
+  assert.equal(JSON.stringify(store.node('design')), before);
+});
+
+test('an approval still replays after another reviewer comments', async () => {
+  const { applied, store, service, roundId, artifactVersionId } = await reviewing();
+  const version = store.node('design').command.version;
+  const approved = await service.ballot(
+    session('lin'),
+    vote(applied, roundId, artifactVersionId, {
+      expectedVersion: version,
+      idempotencyKey: 'approve-lin',
+      action: 'approve',
+    }),
+  );
+  assert.equal(approved.ok, true, approved.ok ? '' : approved.error.code);
+  const noted = await service.ballot(
+    session('qiu'),
+    vote(applied, roundId, artifactVersionId, {
+      expectedVersion: version,
+      idempotencyKey: 'note-after-approve',
+      action: 'comment',
+      comment: '通过之后补一句',
+    }),
+  );
+  assert.equal(noted.ok, true, noted.ok ? '' : noted.error.code);
+  const before = JSON.stringify(store.node('design'));
+  const replayed = await service.ballot(
+    session('lin'),
+    vote(applied, roundId, artifactVersionId, {
+      expectedVersion: version,
+      idempotencyKey: 'approve-lin',
+      action: 'approve',
+    }),
+  );
+  assert.equal(replayed.ok, true, replayed.ok ? '' : replayed.error.code);
+  assert.equal(replayed.value.disposition, 'replayed');
+  assert.equal(JSON.stringify(store.node('design')), before);
+  const round = store.node('design').rounds.find((item) => item.id === roundId);
+  assert.equal(round.ballots.filter((item) => item.action === 'approve').length, 1);
+  assert.equal(
+    store.node('design').comments.filter((item) => item.body === '通过之后补一句').length,
+    1,
+  );
+});
+
+test('a comment receipt saved before version comments replays without appending a binding', async () => {
+  const { applied, store, service, roundId, artifactVersionId } = await reviewing();
+  const node = store.node('design');
+  const version = node.command.version;
+  const comment = '升级前的意见';
+  const fingerprint = canonicalPayload({
+    kind: 'ballot',
+    actorId: 'lin',
+    reviewerId: 'lin',
+    roundId,
+    artifactVersionId,
+    action: 'comment',
+    comment,
+    unresolvedCommentIds: [],
+    availability: null,
+    comments: node.comments,
+  });
+  const round = node.rounds.find((item) => item.id === roundId);
+  round.ballots.push({
+    reviewerId: 'lin',
+    roundId,
+    artifactVersionId,
+    action: 'comment',
+    comment,
+  });
+  node.receipts.push({
+    idempotencyKey: 'legacy-note',
+    fingerprint,
+    version,
+    disposition: 'applied',
+  });
+  await store.storage.writeNode(nodeRecordKey(node), node);
+  const before = JSON.stringify(store.node('design'));
+  assert.equal(store.node('design').comments.length, 0);
+  const replayed = await service.ballot(
+    session('lin'),
+    vote(applied, roundId, artifactVersionId, {
+      expectedVersion: version,
+      idempotencyKey: 'legacy-note',
+      action: 'comment',
+      comment,
+    }),
+  );
+  assert.equal(replayed.ok, true, replayed.ok ? '' : replayed.error.code);
+  assert.equal(replayed.value.disposition, 'replayed');
+  assert.equal(JSON.stringify(store.node('design')), before);
+  assert.equal(store.node('design').comments.length, 0);
+  assert.equal(store.node('design').rounds.find((item) => item.id === roundId).ballots.length, 1);
 });

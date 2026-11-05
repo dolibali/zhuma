@@ -112,9 +112,15 @@ export function previewFixedDelivery(
 }
 
 export interface BoundReviewComment {
+  /** Every comment citation checks may use, including rows from other ballots. */
   readonly comments: readonly CitedComment[];
   /** Set when a return should cite the comment pinned to this artifact version. */
   readonly citedId?: string;
+  /**
+   * The single comment this ballot itself creates. Absent when the ballot does
+   * not bind one. A receipt fingerprint uses this row, not `comments`.
+   */
+  readonly owned?: CitedComment;
 }
 
 function samePinnedComment(
@@ -158,21 +164,17 @@ export function bindVersionedReviewComment(input: {
   if (found && !samePinnedComment(found, input.id, input.artifactVersionId, text, input.authorId)) {
     return { comments: input.existing };
   }
-  const comments = found
-    ? input.existing
-    : [
-        ...input.existing,
-        {
-          id: input.id,
-          status: 'open' as const,
-          versionId: input.artifactVersionId,
-          targetId: input.artifactVersionId,
-          body: text,
-          authorId: input.authorId,
-        },
-      ];
+  const owned: CitedComment = found ?? {
+    id: input.id,
+    status: 'open',
+    versionId: input.artifactVersionId,
+    targetId: input.artifactVersionId,
+    body: text,
+    authorId: input.authorId,
+  };
   return {
-    comments,
+    comments: found ? input.existing : [...input.existing, owned],
+    owned,
     ...(input.action === 'request-changes' ? { citedId: input.id } : {}),
   };
 }

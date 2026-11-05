@@ -6574,6 +6574,7 @@ export class ExecutionService {
               ...(unresolvedCommentIds === undefined ? {} : { unresolvedCommentIds }),
             },
             comments: bound.comments,
+            receiptComments: bound.owned === undefined ? [] : [bound.owned],
           });
           return { result, settle: true };
         },

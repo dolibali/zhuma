@@ -516,26 +516,14 @@ function mergeComments(
   return [...existing, ...incoming.filter((comment) => !seen.has(comment.id))];
 }
 
-/**
- * Record one trusted actor's ballot. The actor is not read from the ballot alone.
- * Reviewer membership is checked before replay, and the fingerprint includes the actor.
- */
-export function castBallot(input: {
-  readonly record: ExecutionNodeRecord;
-  readonly actorId: string;
-  readonly idempotencyKey: string;
-  readonly expectedVersion: number;
-  readonly ballot: ReviewBallot;
-  readonly comments?: readonly CitedComment[];
-}): NodeCommandResult {
-  if (!input.record.handoff.reviewerIds.includes(input.actorId)) {
-    return reject(input.record, 'not-assigned-reviewer');
-  }
-  if (input.ballot.reviewerId !== input.actorId) {
-    return reject(input.record, 'actor-mismatch');
-  }
-  const comments = input.comments ?? [];
-  const fingerprint = canonicalPayload({
+function ballotFingerprint(
+  input: {
+    readonly actorId: string;
+    readonly ballot: ReviewBallot;
+  },
+  comments: readonly CitedComment[],
+): string {
+  return canonicalPayload({
     kind: 'ballot',
     actorId: input.actorId,
     reviewerId: input.ballot.reviewerId,
@@ -547,7 +535,42 @@ export function castBallot(input: {
     availability: input.ballot.availability ?? null,
     comments,
   });
-  const replay = replayReceipt(input.record, input.idempotencyKey, fingerprint);
+}
+
+/**
+ * Record one trusted actor's ballot. The actor is not read from the ballot alone.
+ * Reviewer membership is checked before replay, and the fingerprint includes the actor.
+ * `comments` is the full set citation checks use. `receiptComments`, when set, is the
+ * only comment rows this request itself contributes to the receipt. A receipt saved
+ * before that split still matches when its fingerprint covers the stored comment list.
+ */
+export function castBallot(input: {
+  readonly record: ExecutionNodeRecord;
+  readonly actorId: string;
+  readonly idempotencyKey: string;
+  readonly expectedVersion: number;
+  readonly ballot: ReviewBallot;
+  readonly comments?: readonly CitedComment[];
+  readonly receiptComments?: readonly CitedComment[];
+}): NodeCommandResult {
+  if (!input.record.handoff.reviewerIds.includes(input.actorId)) {
+    return reject(input.record, 'not-assigned-reviewer');
+  }
+  if (input.ballot.reviewerId !== input.actorId) {
+    return reject(input.record, 'actor-mismatch');
+  }
+  const comments = input.comments ?? [];
+  const fingerprintComments = input.receiptComments ?? comments;
+  const fingerprint = ballotFingerprint(input, fingerprintComments);
+  let replay = replayReceipt(input.record, input.idempotencyKey, fingerprint);
+  if (replay && !replay.ok && replay.code === 'idempotency-mismatch' && input.receiptComments !== undefined) {
+    const legacy = replayReceipt(
+      input.record,
+      input.idempotencyKey,
+      ballotFingerprint(input, input.record.comments),
+    );
+    if (legacy?.ok) replay = legacy;
+  }
   if (replay) return replay;
   if (input.expectedVersion !== input.record.command.version) {
     return { ok: false, disposition: 'conflict', code: 'conflict', record: input.record };
