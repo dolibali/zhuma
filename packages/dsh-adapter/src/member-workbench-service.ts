@@ -31,6 +31,7 @@ import {
 } from './member-workbench-dto.js';
 import { WorkbenchService } from './workbench-service.js';
 import { defaultMemberTemplateSource, ownedMemberTemplates } from './member-template-catalog.js';
+import { canUpgradeBuiltinAsset } from './member-builtin-asset-upgrade.js';
 import type { MemberAssetSourceSnapshot } from './member-asset-source-contract.js';
 import { memberAssetPublishedCatalog, memberAssetFixedFiles } from './member-asset-service.js';
 import {
@@ -546,9 +547,14 @@ export class MemberWorkbenchService {
       if (!previous) next.participants.push(structuredClone(participant));
     }
     for (const asset of scope.catalog.assets) {
-      const previous = next.assets.find((a) => a.id === asset.id);
-      if (previous && JSON.stringify(previous) !== JSON.stringify(asset))
-        fail('resource-conflict', '授权资源与已有定义冲突。');
+      const index = next.assets.findIndex((a) => a.id === asset.id);
+      const previous = next.assets[index];
+      if (previous && canonicalPayload(previous) !== canonicalPayload(asset)) {
+        if (!canUpgradeBuiltinAsset(previous, asset))
+          fail('resource-conflict', '授权资源与已有定义冲突。');
+        // Refresh only the live exact legacy builtin. Frozen plans/receipts are untouched.
+        next.assets[index] = structuredClone(asset);
+      }
       if (!previous) next.assets.push(structuredClone(asset));
     }
     return next;
