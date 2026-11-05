@@ -370,3 +370,62 @@ test('member contract binds a planning proposal to the requested task and saved 
   }));
   await assert.rejects(wrong.api.plan(input), (error) => error.code === 'invalid-response');
 });
+
+test('member planning model wire accepts a catalog choice and rejects an unavailable or oversized list', async () => {
+  const option = {
+    id: 'route-a',
+    label: 'fixture-provider / fixture-current',
+    provider: 'fixture-provider',
+    model: 'fixture-current',
+  };
+  const catalog = {
+    actorId: 'chen',
+    spaceId: space.id,
+    kind: 'ready',
+    label: option.label,
+    selectedId: option.id,
+    message: '',
+    items: [option],
+  };
+  const bodies = [];
+  const h = harness((request) => {
+    bodies.push(request);
+    return request.method === 'zhuma-member/select-planning-model'
+      ? {
+          ...catalog,
+          label: 'fixture-provider / fixture-alternate',
+          selectedId: 'route-b',
+          items: [
+            {
+              ...option,
+              id: 'route-b',
+              label: 'fixture-provider / fixture-alternate',
+              model: 'fixture-alternate',
+            },
+          ],
+        }
+      : catalog;
+  });
+  assert.equal((await h.api.planningModels()).label, option.label);
+  assert.equal(
+    (await h.api.selectPlanningModel(option.provider, option.model)).selectedId,
+    'route-b',
+  );
+  assert.equal(bodies[0].method, 'zhuma-member/planning-models');
+  assert.deepEqual(bodies[0].payload, { spaceId: space.id });
+  assert.equal(bodies[1].method, 'zhuma-member/select-planning-model');
+  assert.deepEqual(bodies[1].payload, {
+    spaceId: space.id,
+    provider: option.provider,
+    model: option.model,
+  });
+  for (const broken of [
+    { ...catalog, endpoint: 'https://example.invalid' },
+    { ...catalog, kind: 'unavailable', items: [option], selectedId: option.id },
+    { ...catalog, selectedId: 'missing' },
+    { ...catalog, items: [{ ...option, secret: 'key' }] },
+  ]) {
+    const bad = harness(() => broken);
+    await assert.rejects(bad.api.planningModels(), (error) => error.code === 'invalid-response');
+  }
+});

@@ -35,7 +35,12 @@ import {
   TeamAssetCatalogQuerySchema,
   canonicalPayload,
 } from '@zhuma/agent-core';
-import { MemberWorkbenchCommandSchema, MemberWorkbenchPlanSchema } from './member-workbench-dto.js';
+import {
+  MemberPlanningModelSelectSchema,
+  MemberWorkbenchCommandSchema,
+  MemberWorkbenchPlanSchema,
+  MemberWorkbenchScopeSchema,
+} from './member-workbench-dto.js';
 import {
   identityRegistrationSchema,
   identityPasswordChangeSchema,
@@ -76,6 +81,8 @@ export const SHARED_BACKEND_OPERATIONS = [
   'member.snapshot',
   'member.command',
   'member.plan',
+  'member.planning-models',
+  'member.select-planning-model',
   'member.asset-folder-list',
   'member.asset-folder-create',
   'member.asset-list',
@@ -273,6 +280,18 @@ const descriptors = {
   'member.plan': {
     schema: MemberWorkbenchPlanSchema,
     path: '/api/zhuma-member/plan',
+    verb: 'POST',
+    auth: false,
+  },
+  'member.planning-models': {
+    schema: MemberWorkbenchScopeSchema,
+    path: '/api/zhuma-member/planning-models',
+    verb: 'POST',
+    auth: false,
+  },
+  'member.select-planning-model': {
+    schema: MemberPlanningModelSelectSchema,
+    path: '/api/zhuma-member/select-planning-model',
     verb: 'POST',
     auth: false,
   },
