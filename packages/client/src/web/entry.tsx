@@ -1,4 +1,4 @@
-import { useEffect, useState, useSyncExternalStore } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { createRoot } from 'react-dom/client';
 import { MemberExecutionPage } from '../execution/MemberExecutionPage.js';
 import { createIdentityApi } from '../identity/api.js';
@@ -60,6 +60,8 @@ const appearance: AppearanceStore = {
 function MemberWeb() {
   const [accountOpen, setAccountOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const settingsTrigger = useRef<HTMLButtonElement>(null);
+  const restoreSettingsFocus = useRef(false);
   const [view, setView] = useState<'catalog' | 'work'>('catalog');
   const snapshot = useSyncExternalStore(shell.subscribe, shell.getSnapshot, shell.getSnapshot);
   const signedIn = snapshot.session.status === 'authenticated';
@@ -69,12 +71,22 @@ function MemberWeb() {
   }, []);
   useEffect(() => shell.setPageActive(true, view), [view]);
   useEffect(() => {
+    if (!settingsOpen && restoreSettingsFocus.current) {
+      restoreSettingsFocus.current = false;
+      settingsTrigger.current?.focus();
+    }
+  }, [settingsOpen]);
+  useEffect(() => {
     if (!signedIn) {
       setSettingsOpen(false);
       setAccountOpen(false);
     }
   }, [signedIn]);
   const navigate = (next: typeof view) => shell.requestLeave(() => setView(next));
+  const closeSettings = () => {
+    restoreSettingsFocus.current = true;
+    setSettingsOpen(false);
+  };
   const manageAccount = () =>
     shell.requestLeave(() => {
       setSettingsOpen(false);
@@ -141,6 +153,7 @@ function MemberWeb() {
                 manageAccount={manageAccount}
               />
               <button
+                ref={settingsTrigger}
                 type="button"
                 className="zm-settings-trigger"
                 aria-label="设置"
@@ -157,7 +170,7 @@ function MemberWeb() {
       )}
       <div className="zm-web-main">
         {signedIn && settingsOpen && (
-          <Modal title="设置" close={() => setSettingsOpen(false)}>
+          <Modal title="设置" close={closeSettings}>
             <div className="zhuma zm-form-body">
               <section aria-label="外观设置">
                 <h3>外观</h3>
