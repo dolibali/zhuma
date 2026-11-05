@@ -563,7 +563,12 @@ export function castBallot(input: {
   const fingerprintComments = input.receiptComments ?? comments;
   const fingerprint = ballotFingerprint(input, fingerprintComments);
   let replay = replayReceipt(input.record, input.idempotencyKey, fingerprint);
-  if (replay && !replay.ok && replay.code === 'idempotency-mismatch' && input.receiptComments !== undefined) {
+  if (
+    replay &&
+    !replay.ok &&
+    replay.code === 'idempotency-mismatch' &&
+    input.receiptComments !== undefined
+  ) {
     const legacy = replayReceipt(
       input.record,
       input.idempotencyKey,
