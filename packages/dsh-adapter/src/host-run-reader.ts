@@ -7,6 +7,7 @@ import type {
 import type { ExecutionRunAuthorities, ExecutionRunLocator } from './execution-run-authority.js';
 import {
   ExecutionRunError,
+  executionRunScope,
   readExecutionRunState,
   type ExecutionRun,
 } from './execution-run-state.js';
@@ -18,6 +19,10 @@ import {
   type NativeConversationFrame,
 } from './native-work-session-contract.js';
 import { canonicalPayload } from '@zhuma/agent-core';
+import {
+  emitHostRunTerminalFailure,
+  hostRunTerminalDiagnosticsEnabled,
+} from './host-run-startup-diagnostics.js';
 
 export type HostRunModeCapability =
   | { readonly kind: 'available' }
@@ -422,34 +427,73 @@ export function createHostRunReader(
           resultDelivery = { kind: 'pending', phase: pendingResult?.(scope) ?? 'not-durable' };
         }
         opened.grant.assertCurrent('open');
-        return {
-          ok: true,
-          value: {
-            taskId: scope.taskId,
-            planId: scope.planId,
-            revision: scope.revision,
-            nodeId: scope.nodeId,
-            runId: scope.runId,
-            generation: scope.generation,
-            segmentId: scope.segmentId,
-            nodeVersion: node.command.version,
-            runVersion: state.version,
-            status: run.attempt.status,
-            dispatch: run.dispatch,
-            resources: run.resources,
-            acknowledged: run.attempt.acknowledged,
-            stopPhase: run.attempt.stopPhase,
-            ...(sendCapabilities ? { sendCapabilities } : {}),
-            ...(resultDelivery ? { resultDelivery } : {}),
-            native: current
-              ? {
-                  sessionId: current.binding.nativeSessionId,
-                  agentId: current.binding.nativeAgentId,
-                  status: current.status,
-                }
-              : null,
-          },
+        const value: HostRunReadView = {
+          taskId: scope.taskId,
+          planId: scope.planId,
+          revision: scope.revision,
+          nodeId: scope.nodeId,
+          runId: scope.runId,
+          generation: scope.generation,
+          segmentId: scope.segmentId,
+          nodeVersion: node.command.version,
+          runVersion: state.version,
+          status: run.attempt.status,
+          dispatch: run.dispatch,
+          resources: run.resources,
+          acknowledged: run.attempt.acknowledged,
+          stopPhase: run.attempt.stopPhase,
+          ...(sendCapabilities ? { sendCapabilities } : {}),
+          ...(resultDelivery ? { resultDelivery } : {}),
+          native: current
+            ? {
+                sessionId: current.binding.nativeSessionId,
+                agentId: current.binding.nativeAgentId,
+                status: current.status,
+              }
+            : null,
         };
+        if (
+          hostRunTerminalDiagnosticsEnabled() &&
+          value.status === 'failed' &&
+          value.resources === 'settled' &&
+          value.native
+        ) {
+          try {
+            const expectedScope = canonicalPayload(scope);
+            const signal = wait
+              ? AbortSignal.any([wait, opened.grant.signal])
+              : opened.grant.signal;
+            signal.throwIfAborted();
+            opened.grant.assertCurrent('history');
+            const snapshot = await native.readResultSnapshot(opened.grant, signal);
+            signal.throwIfAborted();
+            opened.grant.assertCurrent('history');
+            snapshot.check();
+            const latestNode = execution.readRunNode(scope);
+            const latestState = latestNode && readExecutionRunState(latestNode);
+            const latestRun = latestState?.runs.find((item) => item.attempt.id === value.runId);
+            if (
+              latestNode?.command.version === value.nodeVersion &&
+              latestState?.version === value.runVersion &&
+              latestState.currentRunId === state.currentRunId &&
+              latestRun?.attempt.status === 'failed' &&
+              latestRun.resources === 'settled' &&
+              latestRun.attempt.sessionId === run.attempt.sessionId &&
+              canonicalPayload(scope) === expectedScope &&
+              canonicalPayload(executionRunScope(latestNode, latestRun)) === expectedScope
+            ) {
+              snapshot.check();
+              opened.grant.assertCurrent('history');
+              signal.throwIfAborted();
+              emitHostRunTerminalFailure(scope, snapshot);
+            }
+          } catch {
+            // Diagnostics never replace a normal read or certify native cleanup.
+          }
+          wait?.throwIfAborted();
+          opened.grant.assertCurrent('open');
+        }
+        return { ok: true, value };
       } finally {
         opened.dispose();
       }

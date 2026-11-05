@@ -59,6 +59,92 @@ export interface HostRunStartupFailure {
   readonly code: string;
 }
 
+function scopeCorrelation(scope: NativeWorkScope): string {
+  return createHash('sha256').update(canonicalPayload(scope)).digest('hex').slice(0, 16);
+}
+
+const terminalCodes = new Set([
+  'AUTH',
+  'NO_ADAPTER',
+  'MISSING_CREDENTIAL',
+  'INVALID_CREDENTIAL',
+  'INVALID_REQUEST',
+  'INVALID_ARGS',
+  'UNSUPPORTED_REASONING_EFFORT',
+  'RATE_LIMIT',
+  'QUOTA',
+  'ACCOUNT_QUOTA',
+  'CONTEXT_WINDOW_EXCEEDED',
+  'TIMEOUT',
+  'NETWORK',
+  'EMPTY_RESPONSE',
+  'UNKNOWN',
+]);
+export interface HostRunTerminalFailure {
+  readonly event: 'zhuma-native-run-failed';
+  readonly correlation: string;
+  readonly stage: 'terminal-history';
+  readonly code: string;
+}
+
+export function hostRunTerminalDiagnosticsEnabled(): boolean {
+  return process.env.ZHUMA_NATIVE_STARTUP_DIAGNOSTICS_STDOUT === '1';
+}
+
+function ownData(value: unknown, key: string): unknown {
+  if (value === null || typeof value !== 'object') return undefined;
+  const property = Object.getOwnPropertyDescriptor(value, key);
+  return property && 'value' in property ? property.value : undefined;
+}
+
+/** Inspect only the last turn boundary in C's existing bounded cut. Never
+ * render an error or inspect message/stack/cause, even for malformed ports. */
+function terminalCode(snapshot: unknown): string {
+  try {
+    const events = ownData(snapshot, 'events');
+    if (!Array.isArray(events)) return 'unclassified-error';
+    const length = ownData(events, 'length');
+    // The original snapshot reader permits at most 100 pages of 100 events.
+    if (typeof length !== 'number' || !Number.isSafeInteger(length) || length > 10_000)
+      return 'unclassified-error';
+    for (let index = length - 1; index >= 0; index--) {
+      const event = ownData(events, String(index));
+      if (ownData(event, 'type') !== 'turn/end') continue;
+      const reason = ownData(ownData(event, 'data'), 'reason');
+      if (ownData(reason, 'kind') !== 'error') return 'unclassified-error';
+      const code = ownData(ownData(reason, 'error'), 'code');
+      return typeof code === 'string' && terminalCodes.has(code) ? code : 'unclassified-error';
+    }
+  } catch {
+    // A hostile descriptor is unclassified, never a reason to read its value.
+  }
+  return 'unclassified-error';
+}
+
+/** Private opt-in only. The caller must validate original read authority and
+ * snapshot/version currency before emitting; this is never a public DTO. */
+export function emitHostRunTerminalFailure(
+  scope: NativeWorkScope,
+  snapshot: unknown,
+  emit: (failure: HostRunTerminalFailure) => unknown = (failure) =>
+    writeSync(1, `${JSON.stringify(failure)}\n`),
+): void {
+  if (!hostRunTerminalDiagnosticsEnabled()) return;
+  try {
+    const pending = emit(
+      Object.freeze({
+        event: 'zhuma-native-run-failed',
+        correlation: scopeCorrelation(scope),
+        stage: 'terminal-history',
+        code: terminalCode(snapshot),
+      }),
+    );
+    void Promise.resolve(pending).catch(() => undefined);
+  } catch {
+    // An unavailable acceptance pipe must not change the original read.
+  }
+}
+
 /** Existing error sinks retain this at Cordis' default threshold. The private
  * acceptance flag mirrors only this safe record through desktop's stdout pipe. */
 export function emitHostRunStartupFailure(
@@ -84,10 +170,7 @@ export function createHostRunStartupDiagnostic(
   scope: NativeWorkScope,
   emit: (failure: HostRunStartupFailure) => unknown,
 ) {
-  const correlation = createHash('sha256')
-    .update(canonicalPayload(scope))
-    .digest('hex')
-    .slice(0, 16);
+  const correlation = scopeCorrelation(scope);
   let stage: HostRunStartupStage = 'authority',
     reported = false;
   return {

@@ -6,6 +6,7 @@ import { Context, Logger } from '@deepseek-ai/cordis';
 import {
   createHostRunStartupDiagnostic,
   emitHostRunStartupFailure,
+  emitHostRunTerminalFailure,
 } from '../dist/host-run-startup-diagnostics.js';
 import { NativeWorkError } from '../dist/native-work-session-contract.js';
 import { ExecutionRunError } from '../dist/execution-run-state.js';
@@ -185,5 +186,115 @@ test('startup diagnostic contract: synchronous/asynchronous logger failures cann
     };
     await assert.rejects(operation(), (error) => error === original);
   }
+  await new Promise(setImmediate);
+});
+
+function terminalFlag(t, value = '1') {
+  const previous = process.env.ZHUMA_NATIVE_STARTUP_DIAGNOSTICS_STDOUT;
+  process.env.ZHUMA_NATIVE_STARTUP_DIAGNOSTICS_STDOUT = value;
+  t.after(() => {
+    if (previous === undefined) delete process.env.ZHUMA_NATIVE_STARTUP_DIAGNOSTICS_STDOUT;
+    else process.env.ZHUMA_NATIVE_STARTUP_DIAGNOSTICS_STDOUT = previous;
+  });
+}
+const boundary = (error) => ({ type: 'turn/end', data: { reason: { kind: 'error', error } } });
+
+test('terminal diagnostic contract: the final boundary keeps only a whitelisted code and the original scope correlation', (t) => {
+  terminalFlag(t);
+  const records = [],
+    startup = [];
+  createHostRunStartupDiagnostic(scope, (value) => startup.push(value)).failed(new Error());
+  emitHostRunTerminalFailure(
+    scope,
+    {
+      events: [
+        boundary({ code: 'AUTH' }),
+        boundary({ code: 'UNSUPPORTED_REASONING_EFFORT', message: 'PRIVATE_MESSAGE' }),
+      ],
+    },
+    (value) => records.push(value),
+  );
+  assert.deepEqual(records[0], {
+    event: 'zhuma-native-run-failed',
+    correlation: startup[0].correlation,
+    stage: 'terminal-history',
+    code: 'UNSUPPORTED_REASONING_EFFORT',
+  });
+  assert.equal(Object.isFrozen(records[0]), true);
+  emitHostRunTerminalFailure(
+    { ...scope, segmentId: 'other-private-segment' },
+    { events: [boundary({ code: 'UNKNOWN' })] },
+    (value) => records.push(value),
+  );
+  assert.notEqual(records[1].correlation, records[0].correlation);
+  assert.doesNotMatch(JSON.stringify(records), /PRIVATE|private|sk-/u);
+});
+
+test('terminal diagnostic contract: getters, inherited values, malformed cuts and unknown codes never expose private data', (t) => {
+  terminalFlag(t);
+  let touched = 0;
+  const poison = () => {
+    touched++;
+    throw Error('PRIVATE_GETTER');
+  };
+  const guarded = { code: 'AUTH' };
+  for (const name of ['message', 'stack', 'cause', 'toJSON'])
+    Object.defineProperty(guarded, name, { get: poison });
+  const codeGetter = {};
+  Object.defineProperty(codeGetter, 'code', { get: poison });
+  const eventGetter = {};
+  Object.defineProperty(eventGetter, 'data', { get: poison });
+  Object.defineProperty(eventGetter, 'type', { value: 'turn/end' });
+  const snapshotGetter = {};
+  Object.defineProperty(snapshotGetter, 'events', { get: poison });
+  const snapshots = [
+    [{ events: [boundary(guarded)] }, 'AUTH'],
+    [{ events: [boundary(codeGetter)] }, 'unclassified-error'],
+    [{ events: [boundary(Object.create({ code: 'AUTH' }))] }, 'unclassified-error'],
+    [{ events: [boundary({ code: 'PRIVATE_FORGED' })] }, 'unclassified-error'],
+    [{ events: [eventGetter] }, 'unclassified-error'],
+    [snapshotGetter, 'unclassified-error'],
+    [{ events: new Proxy([], { getOwnPropertyDescriptor: poison }) }, 'unclassified-error'],
+    [
+      {
+        events: [
+          boundary({ code: 'AUTH' }),
+          { type: 'turn/end', data: { reason: { kind: 'completed' } } },
+        ],
+      },
+      'unclassified-error',
+    ],
+  ];
+  for (const [snapshot, code] of snapshots) {
+    const records = [];
+    emitHostRunTerminalFailure(scope, snapshot, (value) => records.push(value));
+    assert.equal(records[0].code, code);
+    assert.deepEqual(Object.keys(records[0]).sort(), ['code', 'correlation', 'event', 'stage']);
+    assert.doesNotMatch(JSON.stringify(records), /PRIVATE|private|sk-/u);
+  }
+  assert.equal(
+    touched,
+    1,
+    'Only the deliberately throwing Proxy descriptor runs; no value getter is invoked',
+  );
+});
+
+test('terminal diagnostic contract: exact opt-in is required and sync/async emission failures are contained', async (t) => {
+  terminalFlag(t, 'true');
+  const snapshot = new Proxy(
+    {},
+    { getOwnPropertyDescriptor: () => assert.fail('Disabled diagnostics cannot inspect a cut') },
+  );
+  emitHostRunTerminalFailure(scope, snapshot, () => assert.fail('Nonexact flag cannot emit'));
+  process.env.ZHUMA_NATIVE_STARTUP_DIAGNOSTICS_STDOUT = '1';
+  for (const emit of [
+    () => {
+      throw Error('PRIVATE_SINK');
+    },
+    async () => {
+      throw Error('PRIVATE_SINK');
+    },
+  ])
+    assert.doesNotThrow(() => emitHostRunTerminalFailure(scope, { events: [] }, emit));
   await new Promise(setImmediate);
 });
