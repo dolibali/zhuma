@@ -72,7 +72,7 @@ test('项目菜单真实展开、搜索与选择；不同可视区不越界', as
 });
 
 test('外观菜单键盘选择、取消和外部关闭不保存任务，菜单跟随主题与窗口', async ({ page, replay }) => {
-  await page.goto('/');
+  await page.goto('/?appearance-menu-probe=1');
   const appearance = trigger(page, '外观');
   await appearance.focus();
   await page.keyboard.press('ArrowDown');

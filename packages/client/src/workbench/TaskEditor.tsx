@@ -23,7 +23,7 @@ import { NodeInspector } from './NodeInspector.js';
 import { TreeNavigator } from './TreeNavigator.js';
 import { indexWorkTree, resolveWorkLocation, workflowPath } from './navigation.js';
 import { Button } from './Button.js';
-import { Appearance, type AppearanceStore } from './Appearance.js';
+import type { AppearanceStore } from './Appearance.js';
 import { TemplateSaveDialog } from './TemplateSaveDialog.js';
 import { TemplateBindings, type TemplateBindingValues } from './TemplateBindings.js';
 import { SingleSelect } from './SingleSelect.js';
@@ -75,7 +75,6 @@ export function TaskEditor({
   model,
   saved,
   close,
-  appearance,
   initialPlanning,
   backLabel = '任务清单',
   openWork,
@@ -90,7 +89,8 @@ export function TaskEditor({
   model: string;
   saved(state: Workbench): void;
   close(): void;
-  appearance: AppearanceStore;
+  /** Accepted for existing embedders; theme preferences are managed in Settings. */
+  appearance?: AppearanceStore;
   initialPlanning?: InitialPlanning;
   backLabel?: string;
   openWork?: () => void;
@@ -709,7 +709,6 @@ export function TaskEditor({
             保存为工作流
           </Button>
         )}
-        <Appearance store={appearance} />
         {conflict && (
           <Button disabled={busy || planning} onClick={() => void readLatest()}>
             读取最新版本
