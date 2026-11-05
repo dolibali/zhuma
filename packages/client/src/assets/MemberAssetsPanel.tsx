@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   teamAssetCatalogRowKey,
   type MemberAssetCommand,
@@ -128,6 +128,7 @@ export function MemberAssetsPanel({
     content: MemberAssetFileContent;
   } | null>(null);
   const lifetimeRef = useRef(lifetime);
+  const detailPane = useRef<HTMLDivElement>(null);
   lifetimeRef.current = lifetime;
   const epoch = useRef({ controller: new AbortController() }),
     readAttempt = useRef(0),
@@ -607,8 +608,27 @@ export function MemberAssetsPanel({
             detail.value.reference.pageId,
           ])
         : '';
+  const detailKey =
+    detail?.kind === 'new' ? JSON.stringify(['asset', spaceId, detail.assetId]) : selectedKey;
+  useLayoutEffect(() => {
+    const pane = detailPane.current;
+    if (!pane) return;
+    pane.scrollTop = 0;
+    if (detailKey && !pane.closest('dialog')) {
+      pane.focus({ preventScroll: true });
+      // On the single-column layout, bring the newly opened detail into view.
+      pane.scrollIntoView({ block: 'nearest' });
+    }
+  }, [detailKey]);
   const detailView = (
-    <div className="zm-member-asset-detail" aria-busy={detailLoading || !!busy}>
+    <div
+      ref={detailPane}
+      className="zm-member-asset-detail"
+      role="region"
+      aria-label="资产详情"
+      tabIndex={0}
+      aria-busy={detailLoading || !!busy}
+    >
       {error && (
         <div className="zm-error" role="alert">
           {error}
@@ -907,7 +927,13 @@ export function MemberAssetsPanel({
         </>
       ) : (
         <div className="zm-member-assets-layout">
-          <div className="zm-member-assets-list" aria-busy={browse.phase === 'loading'}>
+          <div
+            className="zm-member-assets-list"
+            role="region"
+            aria-label="资产列表"
+            tabIndex={0}
+            aria-busy={browse.phase === 'loading'}
+          >
             {browse.phase === 'loading' ? (
               <p role="status">正在读取资产…</p>
             ) : browse.phase === 'error' ? (

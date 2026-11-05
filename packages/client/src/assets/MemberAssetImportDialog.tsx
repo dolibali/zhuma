@@ -42,6 +42,14 @@ export function MemberAssetImportDialog({
     folderInput = useRef<HTMLInputElement>(null),
     operation = useRef<AbortController>();
   const activeSignal = useRef<AbortSignal>();
+  const definitionPane = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const pane = definitionPane.current;
+    if (!pane) return;
+    pane.scrollTop = 0;
+    pane.focus({ preventScroll: true });
+    pane.scrollIntoView({ block: 'nearest' });
+  }, [active]);
   const mounted = useRef(false),
     currentLifetime = useRef(lifetime),
     intent = useRef<MemberAssetImportDraftsQuery | null>(null);
@@ -163,7 +171,7 @@ export function MemberAssetImportDialog({
   return (
     <>
       <Modal title="导入资产" close={() => leave.request(close, !!preview || !!busy || unknown)}>
-        <div className="zm-form zm-member-asset-import">
+        <div className={`zm-form zm-member-asset-import${preview ? ' has-preview' : ''}`}>
           <div className="zm-actions">
             <Button disabled={locked} onClick={() => fileInput.current?.click()}>
               选择文件或 ZIP
@@ -209,7 +217,12 @@ export function MemberAssetImportDialog({
           {preview && (
             <>
               <div className="zm-member-import-layout">
-                <div className="zm-member-import-items">
+                <div
+                  className="zm-member-import-items"
+                  role="region"
+                  aria-label="导入资产列表"
+                  tabIndex={0}
+                >
                   {preview.items.map((value) => (
                     <div key={value.key}>
                       <label>
@@ -240,7 +253,13 @@ export function MemberAssetImportDialog({
                   ))}
                 </div>
                 {item && choice && (
-                  <div className="zm-member-import-definition">
+                  <div
+                    ref={definitionPane}
+                    className="zm-member-import-definition"
+                    role="region"
+                    aria-label="导入资产详情"
+                    tabIndex={0}
+                  >
                     <Field label="导入名称">
                       <input
                         value={choice.name}
@@ -278,7 +297,7 @@ export function MemberAssetImportDialog({
                 )}
               </div>
               {!!preview.ignored.length && (
-                <details>
+                <details className="zm-member-import-ignored">
                   <summary>已忽略 {preview.ignored.length} 个文件</summary>
                   <ul>
                     {preview.ignored.map((value, index) => (

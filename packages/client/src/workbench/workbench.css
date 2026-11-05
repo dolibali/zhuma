@@ -2,6 +2,9 @@
 .zhuma .zm-member-assets {
   min-width: 0;
 }
+.zhuma.zm-assets-workbench {
+  container: member-assets / inline-size;
+}
 .zm-dialog > .zm-member-asset-import {
   display: grid;
   gap: 16px;
@@ -43,6 +46,46 @@
 .zhuma .zm-member-import-definition {
   min-width: 0;
 }
+.zm-member-import-definition .zm-member-asset-text {
+  max-height: none;
+  overflow: visible;
+}
+@media (min-width: 781px) and (min-height: 561px) {
+  .zm-dialog:has(> .zm-member-asset-import.has-preview) {
+    width: min(900px, calc(100vw - 40px));
+    height: min(720px, calc(100dvh - 40px));
+  }
+  .zm-dialog > .zm-member-asset-import.has-preview {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+  }
+  .zm-member-asset-import.has-preview > :not(.zm-member-import-layout) {
+    flex-shrink: 0;
+  }
+  .zhuma .zm-member-import-layout {
+    flex: 1;
+    min-height: 0;
+    grid-template-rows: minmax(0, 1fr);
+    align-items: stretch;
+    margin: 0;
+  }
+  .zhuma .zm-member-import-items,
+  .zhuma .zm-member-import-definition {
+    min-height: 0;
+    overflow: auto;
+    overscroll-behavior: contain;
+    scrollbar-gutter: stable;
+  }
+  .zm-member-asset-import.has-preview > .zm-member-import-ignored {
+    flex-shrink: 1;
+    min-height: 0;
+    max-height: 120px;
+    overflow: auto;
+  }
+}
 .zhuma .zm-member-asset-requirements {
   display: grid;
   gap: 8px;
@@ -78,8 +121,8 @@
 }
 .zhuma .zm-member-assets-layout {
   display: grid;
-  grid-template-columns: minmax(230px, 0.85fr) minmax(0, 1.4fr);
-  gap: 22px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
   align-items: start;
   margin-top: 18px;
 }
@@ -92,6 +135,77 @@
 }
 .zhuma .zm-member-asset-detail {
   padding: 22px;
+}
+.zhuma .zm-member-assets-layout .zm-member-asset-text {
+  max-height: none;
+  overflow: visible;
+}
+.zm-dialog > .zm-member-asset-detail,
+.zm-dialog > .zm-member-asset-preview {
+  min-height: 0;
+  overflow: auto;
+}
+.zm-dialog > .zm-member-asset-preview > .zm-member-asset-text {
+  max-height: none;
+  overflow: visible;
+}
+/* Keep a single page scroller when panes cannot fit comfortably. */
+@media (min-height: 561px) {
+  @container member-assets (min-width: 781px) {
+    .zm-assets-workbench > .zm-page {
+      display: flex;
+      flex-direction: column;
+      width: 100%;
+      height: 100%;
+      min-height: 0;
+      margin: 0 auto;
+      padding-bottom: 24px;
+    }
+    .zm-assets-workbench > .zm-page > :not(.zm-member-assets) {
+      flex-shrink: 0;
+    }
+    .zhuma .zm-member-assets {
+      display: flex;
+      flex-direction: column;
+      flex: 1;
+      min-height: 0;
+    }
+    .zhuma .zm-member-assets > .zm-member-assets-toolbar,
+    .zhuma .zm-member-assets > .zm-asset-categories {
+      flex-shrink: 0;
+    }
+    .zhuma .zm-member-assets-layout {
+      flex: 1;
+      min-height: 0;
+      grid-template-columns: minmax(230px, 0.85fr) minmax(0, 1.4fr);
+      grid-template-rows: minmax(0, 1fr);
+      align-items: stretch;
+      gap: 22px;
+    }
+    .zhuma .zm-member-assets-layout > .zm-member-assets-list,
+    .zhuma .zm-member-assets-layout > .zm-member-asset-detail {
+      min-height: 0;
+      overflow: auto;
+      overscroll-behavior: contain;
+      scrollbar-gutter: stable;
+    }
+    .zhuma .zm-member-assets > .zm-file-browser {
+      display: flex;
+      flex-direction: column;
+      flex: 1;
+      min-height: 0;
+    }
+    .zhuma .zm-member-assets > .zm-file-browser > :not(.zm-file-browser-table-wrap) {
+      flex-shrink: 0;
+    }
+    .zhuma .zm-member-assets > .zm-file-browser > .zm-file-browser-table-wrap {
+      flex: 1;
+      min-height: 0;
+      overflow: auto;
+      overscroll-behavior: contain;
+      scrollbar-gutter: stable;
+    }
+  }
 }
 .zhuma .zm-member-asset-row {
   display: grid;
@@ -3807,6 +3921,9 @@ html[data-platform='darwin'] .zhuma .zm-space-bar {
 .zm-task-project-choice {
   min-width: 0;
 }
+.zm-task-owner-choice {
+  min-width: 0;
+}
 .zm-creation-field-heading {
   display: flex;
   min-height: 32px;
@@ -3878,6 +3995,8 @@ html[data-platform='darwin'] .zhuma .zm-space-bar {
 .zm-create-modes input {
   margin-top: 3px;
   flex-shrink: 0;
+  /* Native Tab scrolling must reveal the surrounding option and focus ring. */
+  scroll-margin-block: 24px;
 }
 .zm-create-modes strong,
 .zm-create-modes small {
@@ -4212,6 +4331,80 @@ html[data-platform='darwin'] .zhuma .zm-space-bar {
 }
 .zm-template-bindings h4 {
   margin: 0 0 12px;
+}
+.zm-template-binding-heading {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+}
+.zm-template-binding-heading h4 {
+  margin: 0;
+  font-size: 13px;
+}
+.zm-template-binding-count,
+.zm-template-binding-heading > .zm-warning {
+  font-size: 12px;
+}
+.zm-template-binding-count {
+  color: var(--zm-muted);
+}
+.zm-template-binding-heading > .zm-button {
+  margin-left: auto;
+  min-height: 28px;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+.zm-template-binding-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+}
+.zm-template-binding-summary li {
+  min-width: 0;
+  max-width: 100%;
+}
+.zm-template-binding-summary .zm-button,
+.zm-template-binding-summary li > span {
+  display: block;
+  min-height: 28px;
+  padding: 4px 8px;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  border-radius: 6px;
+}
+.zm-template-binding-summary .zm-button {
+  color: var(--zm-warning);
+  background: var(--zm-warning-soft);
+  text-align: left;
+}
+.zm-template-binding-summary li > span {
+  color: var(--zm-muted);
+  background: var(--zm-soft);
+}
+.zm-template-bindings > section > div:not([hidden]) {
+  margin-top: 12px;
+}
+.zm-template-expert-resources {
+  margin-top: 8px;
+  color: var(--zm-muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.zm-template-expert-resources summary {
+  cursor: pointer;
+}
+.zm-template-expert-resources ul {
+  margin: 6px 0;
+  padding-left: 18px;
+}
+.zm-template-binding-grid > div {
+  min-width: 0;
 }
 .zm-template-binding-grid {
   display: grid;
