@@ -1,0 +1,336 @@
+{
+  "scope": "Actual Client browser GUI with synthetic in-memory RPC and neutral participants. The coordinator performed normal mouse and keyboard operations and individually inspected these six self-generated images.",
+  "pullRequestHead": "71e0e3a0453c5c3cdcb9f09ee75c469c8af15f47",
+  "before": {
+    "variant": "before",
+    "sourceHead": "b2d3a0a1bb90630a034759fbc11e6c32613675e1",
+    "sourceTree": "939558416ee97682c30a1caa694640af5f34264b",
+    "harnessSha256": "ed6cb395ec9b9987015cb32b5326a6f5005ef3786228aebb6fa9aabc30a87ae2",
+    "replayRuntimeSha256": "f7265d7f40d7a33f61b7c24447a12d648b47e3d7c4b9a342ded5016a557ff4f4",
+    "fixtureSha256": "a1f0e32d016220fa354137c3f3fa4c4a16ae2931f98a8fb591c7f02bd9ec8c0c",
+    "helperHashes": {
+      "scripts/lib/member-template-defaults.mjs": "7d79c50aba960a6786dbed6e0566d19e7d4ce8c0ca7e01d3e1f818d9e1663a89",
+      "scripts/lib/member-engineering-skills.mjs": "8f2550c0d598273358cd2cda33c29d8d241efafd11ad06b6fd74bbf8e508222b"
+    },
+    "templates": {
+      "sourceCommit": "133276e2014bf1bcbd8410bab7bb339c929de46d",
+      "count": 4,
+      "assets": [
+        {
+          "id": "zhuma-eng-requirements-to-test",
+          "name": "需求分析与测试设计",
+          "bodySha256": "05889adea412b2bbbc2d8d1fbb728e5dda6e2de1fb8e9a66b3cb76c284282b4d"
+        },
+        {
+          "id": "zhuma-eng-design-to-plan",
+          "name": "方案与实施计划",
+          "bodySha256": "7668b76b1e105ee7460d438b3bac0d68d130001370d8ce186f5da72365a0dc92"
+        },
+        {
+          "id": "zhuma-eng-review-fix-verify",
+          "name": "代码审查、修复与验证",
+          "bodySha256": "6f74d69dbfb2e7ed149f8b4a60f09d1a0d0a064f85bbfe672da4b0a8511a1378"
+        },
+        {
+          "id": "zhuma-eng-sources-to-docs",
+          "name": "资料整理与文档生成",
+          "bodySha256": "6341c51355b7f023cf06e0da6f3d80ca4a428d22918faf072e1c60886e9720dd"
+        }
+      ]
+    },
+    "skills": {
+      "sourceCommit": "133276e2014bf1bcbd8410bab7bb339c929de46d",
+      "count": 10,
+      "assets": [
+        {
+          "id": "zhuma-eng-requirements-analysis",
+          "name": "需求分析",
+          "bodySha256": "23754e8c676cca599706022c20d2a2742f21e4aa81146ef5e3ea2913843629df"
+        },
+        {
+          "id": "zhuma-eng-delivery-plan",
+          "name": "工作拆解与计划",
+          "bodySha256": "efa97092bd29686dc508e178a16904b054b0abbba6f552ada135c927cec976e8"
+        },
+        {
+          "id": "zhuma-eng-test-design",
+          "name": "业务测试设计",
+          "bodySha256": "c8c4e636ee9d254493ad827c28dbc3f1e19797579266c31e1756b93cfdbde864"
+        },
+        {
+          "id": "zhuma-eng-acceptance-review",
+          "name": "验收与内容评审",
+          "bodySha256": "aeec9eceacc40eec74de092c4d330c83ffc1ca7f04b026a6753d464b865a0f33"
+        },
+        {
+          "id": "zhuma-eng-solution-design",
+          "name": "有界方案设计",
+          "bodySha256": "05ad2f92580f83b6e7c2c06dff8c8f0797cc370c253e1870ca09bfcd79cbb54c"
+        },
+        {
+          "id": "zhuma-eng-change-review",
+          "name": "变更代码审查",
+          "bodySha256": "b65d1a963c3c273a4d63771ff6da61fc843da039d7a4709340a2becc0c7d3419"
+        },
+        {
+          "id": "zhuma-eng-bounded-fix",
+          "name": "有界问题修复",
+          "bodySha256": "2e979ac765b5cadf345c6b8e8999cdc7195bd00fb12811c19496dc1fa7c06568"
+        },
+        {
+          "id": "zhuma-eng-focused-verification",
+          "name": "定向验证",
+          "bodySha256": "0655b1ded6d2637f5f35f0bff26aea7460c0ff499818cea1e97278f44abc8109"
+        },
+        {
+          "id": "zhuma-eng-source-curation",
+          "name": "资料整理与来源索引",
+          "bodySha256": "7e332a4bebfffd60eb840ea301932052d4eac4e8cc3ca7aada62e274dff55704"
+        },
+        {
+          "id": "zhuma-eng-engineering-writing",
+          "name": "工程文档编写",
+          "bodySha256": "edc5303d2c94134083c06d917b051bb4920a9ef1e95cf702b5f882cd1a2d7903"
+        }
+      ]
+    },
+    "qaResourceBindings": {
+      "skillIds": [
+        "zhuma-eng-change-review",
+        "zhuma-eng-acceptance-review"
+      ],
+      "mcpIds": []
+    },
+    "tasksInitiallyEmpty": true
+  },
+  "after": {
+    "variant": "after",
+    "sourceHead": "ce0b957a3df44eb8b1b93d55c2264b536b49357f",
+    "sourceTree": "c0abe5258e9eb52087ba242e0f93a461e0732fdc",
+    "harnessSha256": "7197f81a6d13bf95855c2ab99a76e0a2f9ca4e34a76c2eb82326bdadae6e577e",
+    "replayRuntimeSha256": "4432c25d03868072eb7f57a7383ef11fbd427ef0146ae63945727496b4871e36",
+    "fixtureSha256": "70c3c82bb353029c778ff8e1f9e0370f4aeaa8fb5706703bf09a344288f8cb65",
+    "helperHashes": {
+      "scripts/lib/member-template-defaults.mjs": "fddf233c57626062d9dc92b8f6f282064204562830b038f083275957b6cb1d27",
+      "scripts/lib/member-engineering-skills.mjs": "5bddd9c0f1971e06455812b2f1c7cc7dc8a4388dbf2f87fdf0ed06d8284c7268"
+    },
+    "templates": {
+      "sourceCommit": "583472338143c5d02f94ec97e0d9eb6dc8dfa76e",
+      "count": 5,
+      "assets": [
+        {
+          "id": "zhuma-eng-requirements-to-code",
+          "name": "需求到代码验收",
+          "bodySha256": "fe358749fcda1039d72c66cf4fa42aa7c73cef34757500f15c36de696a18b8ff"
+        },
+        {
+          "id": "zhuma-eng-requirements-to-test",
+          "name": "需求分析与测试设计",
+          "bodySha256": "05889adea412b2bbbc2d8d1fbb728e5dda6e2de1fb8e9a66b3cb76c284282b4d"
+        },
+        {
+          "id": "zhuma-eng-design-to-plan",
+          "name": "方案与实施计划",
+          "bodySha256": "7668b76b1e105ee7460d438b3bac0d68d130001370d8ce186f5da72365a0dc92"
+        },
+        {
+          "id": "zhuma-eng-review-fix-verify",
+          "name": "代码审查、修复与验证",
+          "bodySha256": "6f74d69dbfb2e7ed149f8b4a60f09d1a0d0a064f85bbfe672da4b0a8511a1378"
+        },
+        {
+          "id": "zhuma-eng-sources-to-docs",
+          "name": "资料整理与文档生成",
+          "bodySha256": "6341c51355b7f023cf06e0da6f3d80ca4a428d22918faf072e1c60886e9720dd"
+        }
+      ]
+    },
+    "skills": {
+      "sourceCommit": "583472338143c5d02f94ec97e0d9eb6dc8dfa76e",
+      "count": 11,
+      "assets": [
+        {
+          "id": "zhuma-eng-requirements-analysis",
+          "name": "需求分析",
+          "bodySha256": "4d1ceff638d52baecafe5f092c3f5fe9bf7a3c7742a94b3ffce6905f2e126bb9"
+        },
+        {
+          "id": "zhuma-eng-delivery-plan",
+          "name": "工作拆解与计划",
+          "bodySha256": "3c760eaab9b78454dfc4c54d7899833be8c050810411ad8348acb2c08b7de13e"
+        },
+        {
+          "id": "zhuma-eng-test-design",
+          "name": "业务测试设计",
+          "bodySha256": "c8c4e636ee9d254493ad827c28dbc3f1e19797579266c31e1756b93cfdbde864"
+        },
+        {
+          "id": "zhuma-eng-acceptance-review",
+          "name": "验收与内容评审",
+          "bodySha256": "ecd2124cfcc15b4bf75b2dac742a612a9dfa5fd5828d51184dfd91772fae2a90"
+        },
+        {
+          "id": "zhuma-eng-solution-design",
+          "name": "有界方案设计",
+          "bodySha256": "3f14d8ead0887475fc872b589a9e6a612b3bc070695aa85b20a277b67133da25"
+        },
+        {
+          "id": "zhuma-eng-change-review",
+          "name": "变更代码审查",
+          "bodySha256": "ed6afc4433101d7ae524a8e8d5dcb95f39836255293bcc26fe718a2d8543dbbd"
+        },
+        {
+          "id": "zhuma-eng-bounded-fix",
+          "name": "有界问题修复",
+          "bodySha256": "d529c14b8e3ef4b4a5447418ca61d22c77e62c3d346f2a9a378de6dea5964b00"
+        },
+        {
+          "id": "zhuma-eng-focused-verification",
+          "name": "定向验证",
+          "bodySha256": "baf1d5cadf4ae574caae535fd8087ecd32ff231fd3f7d4c8886548c01ae51000"
+        },
+        {
+          "id": "zhuma-eng-source-curation",
+          "name": "资料整理与来源索引",
+          "bodySha256": "7e332a4bebfffd60eb840ea301932052d4eac4e8cc3ca7aada62e274dff55704"
+        },
+        {
+          "id": "zhuma-eng-engineering-writing",
+          "name": "工程文档编写",
+          "bodySha256": "16cbdce08d399730faeafa2ab359326e303c7d045b44cd05dcb49d1865085f41"
+        },
+        {
+          "id": "zhuma-eng-controlled-implementation",
+          "name": "受控代码实现",
+          "bodySha256": "7be26da842fcc5a1e17cfd0159133bd88f911f394998172b88b89d843552e1b2"
+        }
+      ]
+    },
+    "qaResourceBindings": {
+      "skillIds": [
+        "zhuma-eng-change-review",
+        "zhuma-eng-acceptance-review"
+      ],
+      "mcpIds": []
+    },
+    "tasksInitiallyEmpty": true
+  },
+  "sourceAttribution": {
+    "afterIsIntegrationSnapshot": true,
+    "matchingPRUIBlobs": {
+      "packages/client/src/workbench/TemplateBindings.tsx": "e1951f0cde92360f966a25550cd29e22c28c03ea",
+      "packages/client/src/workbench/controls.tsx": "8a92c0599505bd8205c09b82e32b77558f4fb434"
+    },
+    "cssDifferenceFromPRHead": "The integration snapshot additionally includes 12 lines for the planning model selector from the separately reviewed planning change. The entire Client tree is not claimed identical to this PR head."
+  },
+  "fixtureHTTPChecks": [
+    {
+      "variant": "before",
+      "snapshotValid": true,
+      "templateCount": 4,
+      "skillCount": 10,
+      "servedHarnessSha256": "ed6cb395ec9b9987015cb32b5326a6f5005ef3786228aebb6fa9aabc30a87ae2"
+    },
+    {
+      "variant": "after",
+      "snapshotValid": true,
+      "templateCount": 5,
+      "skillCount": 11,
+      "servedHarnessSha256": "7197f81a6d13bf95855c2ab99a76e0a2f9ca4e34a76c2eb82326bdadae6e577e"
+    }
+  ],
+  "observations": [
+    "Create task -> Use workflow retains the original four workflows and places the new requirements-to-code-acceptance workflow first, with six nodes and six roles.",
+    "Using the workflow and selecting the independent reviewer displays the selected expert's own two Skill names and no bound MCP. Node resources are not treated as reviewer resources or authorization.",
+    "Enter and Escape return focus to the same combobox; light and dark captures were visually checked for overlap."
+  ],
+  "capture": {
+    "viewport": {
+      "width": 1440,
+      "height": 900
+    },
+    "surface": "isolated desktop in-app browser; viewport reset after review; native window dimensions unchanged",
+    "pixelEdits": false,
+    "extensionCorrectionOnly": true,
+    "roleHintScrollPositions": "The light and dark role-hint screenshots have different scroll positions; they are separate observations, not a matched-scroll comparison."
+  },
+  "boundaries": [
+    "Synthetic RPC and actual Client GUI only; no Host, identity, persistent backend, paid model, native installation, or task-runtime acceptance.",
+    "This evidence does not close the separate real backend/native task demonstration gate.",
+    "No user attachments, private materials, credentials, or internal endpoints are published."
+  ],
+  "images": [
+    {
+      "name": "before-light.jpg",
+      "path": "docs/review/pr397-20261105/before-light.jpg",
+      "format": "JPEG",
+      "width": 1440,
+      "height": 900,
+      "bytes": 77037,
+      "sha256": "9e723d475da6fb0c1c81abb1c9fc75a716ef46c02c4651c28dec4c330916c29b",
+      "blob": "a380f07281a5b55a1edbb6591594186cf3f8e372",
+      "clientSourceHead": "b2d3a0a1bb90630a034759fbc11e6c32613675e1",
+      "resourceSourceHead": "133276e2014bf1bcbd8410bab7bb339c929de46d"
+    },
+    {
+      "name": "before-dark.jpg",
+      "path": "docs/review/pr397-20261105/before-dark.jpg",
+      "format": "JPEG",
+      "width": 1440,
+      "height": 900,
+      "bytes": 67978,
+      "sha256": "7ad85fe81e91810ce0b4b7ca2705e252398cb6114d1a1711499dcc0839470303",
+      "blob": "99ae9cc4b79b0145e6aafc06769defd02718fb64",
+      "clientSourceHead": "b2d3a0a1bb90630a034759fbc11e6c32613675e1",
+      "resourceSourceHead": "133276e2014bf1bcbd8410bab7bb339c929de46d"
+    },
+    {
+      "name": "after-light.jpg",
+      "path": "docs/review/pr397-20261105/after-light.jpg",
+      "format": "JPEG",
+      "width": 1440,
+      "height": 900,
+      "bytes": 85337,
+      "sha256": "b628fb5b5c3b36170b00df3644befebbe083706d960f2d959c04ec8204b49d45",
+      "blob": "16039d0e3c13f4734d5e846f168cbab190f97559",
+      "clientSourceHead": "ce0b957a3df44eb8b1b93d55c2264b536b49357f",
+      "resourceSourceHead": "583472338143c5d02f94ec97e0d9eb6dc8dfa76e"
+    },
+    {
+      "name": "after-dark.jpg",
+      "path": "docs/review/pr397-20261105/after-dark.jpg",
+      "format": "JPEG",
+      "width": 1440,
+      "height": 900,
+      "bytes": 77513,
+      "sha256": "05b628aff73e0cebc4fbfd5927e32ee84ddfabe951a36fe28d2687ec2f6b4309",
+      "blob": "0b7cf239de8fe036732a702c29a60603e3f54516",
+      "clientSourceHead": "ce0b957a3df44eb8b1b93d55c2264b536b49357f",
+      "resourceSourceHead": "583472338143c5d02f94ec97e0d9eb6dc8dfa76e"
+    },
+    {
+      "name": "role-hint-light.jpg",
+      "path": "docs/review/pr397-20261105/role-hint-light.jpg",
+      "format": "JPEG",
+      "width": 1440,
+      "height": 900,
+      "bytes": 70491,
+      "sha256": "90432303d630158e4e724f7032ab4acfaae2b92b7fb9fd1f28c10d531baaae2e",
+      "blob": "9b0998c9d77a1a6cc915e93ff1ef3a772b568d40",
+      "clientSourceHead": "ce0b957a3df44eb8b1b93d55c2264b536b49357f",
+      "resourceSourceHead": "583472338143c5d02f94ec97e0d9eb6dc8dfa76e"
+    },
+    {
+      "name": "role-hint-dark.jpg",
+      "path": "docs/review/pr397-20261105/role-hint-dark.jpg",
+      "format": "JPEG",
+      "width": 1440,
+      "height": 900,
+      "bytes": 56017,
+      "sha256": "e52dde47f6448d262d9fd0fea55bb8f6df83f4d350b2ebb427946c65c50e0053",
+      "blob": "a1aaf747d13d44c2753720ac55885f69c6fa1073",
+      "clientSourceHead": "ce0b957a3df44eb8b1b93d55c2264b536b49357f",
+      "resourceSourceHead": "583472338143c5d02f94ec97e0d9eb6dc8dfa76e"
+    }
+  ]
+}
