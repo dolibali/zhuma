@@ -9,7 +9,8 @@ import {
 import { DomainFacility } from '@deepseek-ai/dsh-storage-domain';
 import { applyIdentity, identityInject } from '../dist/identity-session.js';
 import { configureDeploymentMode, resolveMember } from '../dist/member-session.js';
-import { applySpaceDirectory } from '../dist/space-directory.js';
+import { applySpaceDirectory, spaceDirectoryFor } from '../dist/space-directory.js';
+import { createHostDirectoryLifecycle } from '../dist/host-directory-lifecycle.js';
 
 export const AUTHORITY = '127.0.0.1:3080';
 
@@ -146,9 +147,14 @@ async function callWeb(web, { method, path, cookie, body, remoteAddress }) {
  * `mode` is `legacy-single-user` or `multi-member` and is selected before identity starts.
  * Callers pass scrypt hashes, never passwords in storage.
  * `spaces` mounts the trusted space directory before identity; omitted means no directory.
+ * An explicit lifecycle uses the original Host directory publication and member lease.
  */
-export async function bootIdentity(imported, mode, spaces) {
+export async function bootIdentity(imported, mode, spaces, lifecycle) {
   const ctx = new Context();
+  const directoryLifecycle =
+    lifecycle === undefined
+      ? undefined
+      : createHostDirectoryLifecycle(() => spaceDirectoryFor(ctx));
   const web = createWebServer();
   ctx.provide('credentials', memoryCredentials());
   ctx.provide('webServer', web);
@@ -173,10 +179,29 @@ export async function bootIdentity(imported, mode, spaces) {
       await spaceFiber;
       spaceStarted = true;
     }
-    identityFiber = ctx.plugin({ inject: [...identityInject], apply: applyIdentity }, imported);
+    const directory = directoryLifecycle && spaceDirectoryFor(ctx);
+    if (directory) directoryLifecycle.publish(directory);
+    identityFiber = ctx.plugin(
+      {
+        inject: [...identityInject],
+        apply:
+          lifecycle === undefined
+            ? applyIdentity
+            : (identityCtx, value) =>
+                applyIdentity(
+                  identityCtx,
+                  value,
+                  { currentDirectoryBinding: directoryLifecycle.currentDirectoryBinding },
+                  undefined,
+                  lifecycle,
+                ),
+      },
+      imported,
+    );
     await identityFiber;
     identityStarted = true;
   } catch (error) {
+    directoryLifecycle?.close();
     if (identityStarted) await identityFiber.dispose().catch(() => {});
     if (spaceStarted) await spaceFiber.dispose().catch(() => {});
     if (connectionStarted) await connectionFiber.dispose();
@@ -213,6 +238,7 @@ export async function bootIdentity(imported, mode, spaces) {
       return resolveMember(ctx, { headers });
     },
     async dispose() {
+      directoryLifecycle?.close();
       if (identityStarted) await identityFiber.dispose();
       if (spaceStarted) await spaceFiber.dispose();
       if (connectionStarted) await connectionFiber.dispose();
