@@ -68,6 +68,8 @@ export type {
   ReviewSettlement,
   ReviewSettlementCurrent,
 } from './review.js';
+export type { FixedDeliveryPreview, BoundReviewComment } from './delivery-review.js';
+export { previewFixedDelivery, bindVersionedReviewComment } from './delivery-review.js';
 export {
   REVIEW_ACTIONS,
   aggregateReview,
