@@ -1,4 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { writeSync } from 'node:fs';
+import { canonicalPayload } from '@zhuma/agent-core';
 import {
   NativeSessionPurpose,
   assertNativePurposeOwner,
@@ -49,6 +51,173 @@ export const NATIVE_INPUT_READ_LIMITS = Object.freeze({
   pageBytes: 24_576,
 });
 const MAX_OWNER_SCOPES = 4096;
+
+const retirementStages = [
+  'cleanup-authority',
+  'cleanup-purpose',
+  'cleanup-capacity',
+  'cleanup-call',
+  'cleanup-binding',
+  'cleanup-native-ready',
+  'cleanup-native-retire',
+  'cleanup-scope-idle',
+  'cleanup-input-source',
+  'cleanup-binding-check',
+  'cleanup-proof',
+  'runtime-owner',
+  'runtime-source-identity',
+  'runtime-connect',
+  'runtime-agent-idle',
+  'runtime-handle-dispose',
+  'runtime-dispose-join',
+  'runtime-registry',
+  'runtime-writer-open',
+  'runtime-writer-flush',
+  'runtime-writer-close',
+  'runtime-identity',
+  'runtime-epoch',
+  'runtime-barrier',
+] as const;
+export type NativeRetirementStage = (typeof retirementStages)[number];
+type RetirementPhase = 'wait' | 'done' | 'error' | 'pending';
+interface RetirementDiagnostic {
+  record(stage: NativeRetirementStage, phase: RetirementPhase, error?: unknown): void;
+  attach(runtime: NativeWorkRuntime, sessionId: string): void;
+  close(): void;
+}
+const quietRetirement: RetirementDiagnostic = {
+  record() {},
+  attach() {},
+  close() {},
+};
+// Private observation only: no grant, binding, proof, queue or persisted state.
+const retirementObservers = new WeakMap<
+  NativeWorkRuntime,
+  Map<string, Set<RetirementDiagnostic>>
+>();
+const retirementCodes = new Set([
+  'invalid-request',
+  'scope-mismatch',
+  'capacity',
+  'unavailable',
+  'cancelled',
+  'input-read-busy',
+  'not-started',
+  'binding-state-invalid',
+  'migration-not-ready',
+  'migration-unknown',
+  'migration-conflict',
+  'configuration-mismatch',
+  'persistence-not-found',
+]);
+function createRetirementDiagnostic(scope?: NativeWorkScope): RetirementDiagnostic {
+  try {
+    if (process.env.ZHUMA_NATIVE_STARTUP_DIAGNOSTICS_STDOUT !== '1') return quietRetirement;
+    // Invalid input cannot supply a trustworthy scope. Use a fixed opaque sentinel,
+    // never inspect/stringify the rejected object or invoke its accessors again.
+    const correlation = createHash('sha256')
+      .update(canonicalPayload(scope ?? { scope: 'unavailable' }))
+      .digest('hex')
+      .slice(0, 16);
+    const seen = new Set<string>(),
+      remove: (() => void)[] = [];
+    const diagnostic: RetirementDiagnostic = {
+      record(stage, phase, error) {
+        try {
+          if (
+            !retirementStages.includes(stage) ||
+            !['wait', 'done', 'error', 'pending'].includes(phase)
+          )
+            return;
+          const key = `${stage}-${phase}`;
+          if (seen.has(key)) return;
+          seen.add(key);
+          let code = phase === 'error' ? 'unexpected-error' : 'none';
+          if (phase === 'error') {
+            const candidate = error instanceof NativeWorkError ? error.code : error;
+            if (typeof candidate === 'string' && retirementCodes.has(candidate)) code = candidate;
+          }
+          writeSync(
+            1,
+            `${JSON.stringify({ event: 'zhuma-native-retire-stage', correlation, stage: key, code })}\n`,
+          );
+        } catch {
+          /* Diagnostic failure never changes the original operation. */
+        }
+      },
+      attach(runtime, sessionId) {
+        try {
+          let sessions = retirementObservers.get(runtime);
+          if (!sessions) retirementObservers.set(runtime, (sessions = new Map()));
+          let observers = sessions.get(sessionId);
+          if (!observers) sessions.set(sessionId, (observers = new Set()));
+          if (observers.has(diagnostic)) return;
+          observers.add(diagnostic);
+          remove.push(() => {
+            observers.delete(diagnostic);
+            if (!observers.size && sessions.get(sessionId) === observers)
+              sessions.delete(sessionId);
+            if (!sessions.size && retirementObservers.get(runtime) === sessions)
+              retirementObservers.delete(runtime);
+          });
+        } catch {
+          /* No observation is preferable to changing cleanup. */
+        }
+      },
+      close() {
+        for (const release of remove.splice(0)) {
+          try {
+            release();
+          } catch {
+            /* Observation is not ownership. */
+          }
+        }
+      },
+    };
+    return diagnostic;
+  } catch {
+    return quietRetirement;
+  }
+}
+/** C-internal observer bridge; deliberately absent from public package exports. */
+export function traceNativeRetirementStage(
+  runtime: NativeWorkRuntime,
+  sessionId: string,
+  stage: NativeRetirementStage,
+  phase: RetirementPhase,
+  error?: unknown,
+): void {
+  try {
+    for (const observer of retirementObservers.get(runtime)?.get(sessionId) ?? [])
+      observer.record(stage, phase, error);
+  } catch {
+    /* Never turn a diagnostic into authority or a new failure. */
+  }
+}
+function observeRetirementPromise<T>(
+  diagnostic: RetirementDiagnostic,
+  stage: NativeRetirementStage,
+  operation: () => Promise<T>,
+): Promise<T> {
+  if (diagnostic === quietRetirement) return operation();
+  diagnostic.record(stage, 'wait');
+  let promise: Promise<T>;
+  try {
+    promise = operation();
+  } catch (error) {
+    diagnostic.record(stage, 'error', error);
+    throw error;
+  }
+  try {
+    void promise.then(
+      () => diagnostic.record(stage, 'done'),
+      (error: unknown) => diagnostic.record(stage, 'error', error),
+    );
+  } catch {
+    /* The original await still owns this exact value. */
+  }
+  return promise;
+}
 
 // Native persistence locking alone is not a same-process, cross-Host I/O
 // fence. Keep only an ephemeral owner/drain, never content or authority facts.
@@ -642,23 +811,47 @@ export class NativeWorkSessionService {
     authority: NativeScopeCleanupAuthority,
     waitSignal: AbortSignal,
   ): Promise<NativeScopeCleanupResult> {
-    const parsed = nativeScopeSchema.safeParse(authority?.scope);
+    let parsed: ReturnType<typeof nativeScopeSchema.safeParse>;
+    try {
+      parsed = nativeScopeSchema.safeParse(authority?.scope);
+    } catch (error) {
+      const rejected = createRetirementDiagnostic();
+      rejected.record('cleanup-authority', 'wait');
+      rejected.record('cleanup-authority', 'error', error);
+      throw error;
+    }
+    const diagnostic = createRetirementDiagnostic(parsed.success ? parsed.data : undefined);
+    diagnostic.record('cleanup-authority', 'wait');
     if (
       !parsed.success ||
       typeof authority?.assertCurrent !== 'function' ||
       !(waitSignal instanceof AbortSignal)
-    )
+    ) {
+      diagnostic.record('cleanup-authority', 'error', 'invalid-request');
       throw new NativeWorkError('invalid-request');
-    assertNativeScopePurposeOwner(authority.scope, this.review?.purpose);
+    }
+    diagnostic.record('cleanup-purpose', 'wait');
+    try {
+      assertNativeScopePurposeOwner(authority.scope, this.review?.purpose);
+    } catch (error) {
+      diagnostic.record('cleanup-purpose', 'error', error);
+      throw error;
+    }
+    diagnostic.record('cleanup-purpose', 'done');
     const scope = this.review?.purpose.context(authority.scope)
         ? this.cloneScope(authority.scope)
         : parsed.data,
       address = this.scopeKey(scope),
       method = authority.assertCurrent;
     const verify = () => {
-      if (this.inputReadsSealed) throw new NativeWorkError('unavailable');
-      if (authority.assertCurrent !== method || !this.sameScope(scope, authority.scope))
+      if (this.inputReadsSealed) {
+        diagnostic.record('cleanup-authority', 'error', 'unavailable');
+        throw new NativeWorkError('unavailable');
+      }
+      if (authority.assertCurrent !== method || !this.sameScope(scope, authority.scope)) {
+        diagnostic.record('cleanup-authority', 'error', 'scope-mismatch');
         throw new NativeWorkError('scope-mismatch');
+      }
       try {
         const result: unknown = authority.assertCurrent();
         if (result !== undefined) {
@@ -666,27 +859,38 @@ export class NativeWorkSessionService {
           throw new NativeWorkError('unavailable');
         }
       } catch {
+        diagnostic.record('cleanup-authority', 'error', 'unavailable');
         throw new NativeWorkError('unavailable');
       }
+      diagnostic.record('cleanup-authority', 'done');
     };
     verify();
-    if (!this.retiredScopes.has(address) && this.retiredScopes.size >= MAX_OWNER_SCOPES)
+    if (!this.retiredScopes.has(address) && this.retiredScopes.size >= MAX_OWNER_SCOPES) {
+      diagnostic.record('cleanup-capacity', 'error', 'capacity');
       throw new NativeWorkError('capacity');
+    }
     this.retiredScopes.add(address);
+    diagnostic.record('cleanup-call', 'wait');
     let work = this.cleanups.get(address);
     if (!work) {
-      if (this.cleanups.size >= 256) throw new NativeWorkError('capacity');
-      work = this.retireScope(scope);
+      if (this.cleanups.size >= 256) {
+        diagnostic.record('cleanup-capacity', 'error', 'capacity');
+        throw new NativeWorkError('capacity');
+      }
+      work = this.retireScope(scope, diagnostic);
       this.cleanups.set(address, work);
       const owned = work;
       void owned.then(
         () => {
           this.cleanupFailures.delete(address);
           if (this.cleanups.get(address) === owned) this.cleanups.delete(address);
+          diagnostic.close();
         },
-        () => {
+        (error: unknown) => {
+          diagnostic.record('cleanup-call', 'error', error);
           this.cleanupFailures.add(address);
           if (this.cleanups.get(address) === owned) this.cleanups.delete(address);
+          diagnostic.close();
         },
       );
     }
@@ -701,6 +905,7 @@ export class NativeWorkSessionService {
       const result = await Promise.race([pending, work]);
       verify();
       if (result.status === 'retired') result.drain.assertCurrent();
+      diagnostic.record('cleanup-call', result.status === 'retired' ? 'done' : 'pending');
       return result;
     } finally {
       clearTimeout(timer);
@@ -726,47 +931,65 @@ export class NativeWorkSessionService {
 
   private async retireScope(
     scope: NativeWorkScope,
+    diagnostic: RetirementDiagnostic,
   ): Promise<Extract<NativeScopeCleanupResult, { status: 'retired' }>> {
     const key = this.sessionKey(scope),
       address = this.scopeKey(scope),
       context = this.review?.purpose.context(scope);
     const find = () => {
-      const stored = context ? this.review!.read(key) : this.storage.read(key);
-      if (stored === undefined) return undefined;
-      let record;
-      if (context) {
-        const review = nativeReviewRecordSchema.parse(stored);
-        if (nativeReviewScopeKey(review.context) !== address)
-          throw new NativeWorkError('scope-mismatch');
-        record = review.binding;
-      } else record = readNativeRecord(stored);
-      const binding = bindingForScope(record, scope);
-      if (binding && context) this.review!.purpose.bindScope(binding.scope, context);
-      return binding;
+      diagnostic.record('cleanup-binding', 'wait');
+      try {
+        const stored = context ? this.review!.read(key) : this.storage.read(key);
+        if (stored === undefined) {
+          diagnostic.record('cleanup-binding', 'done');
+          return undefined;
+        }
+        let record;
+        if (context) {
+          const review = nativeReviewRecordSchema.parse(stored);
+          if (nativeReviewScopeKey(review.context) !== address)
+            throw new NativeWorkError('scope-mismatch');
+          record = review.binding;
+        } else record = readNativeRecord(stored);
+        const binding = bindingForScope(record, scope);
+        if (binding && context) this.review!.purpose.bindScope(binding.scope, context);
+        diagnostic.record('cleanup-binding', 'done');
+        return binding;
+      } catch (error) {
+        diagnostic.record('cleanup-binding', 'error', error);
+        throw error;
+      }
     };
     // The owned runtime retirement itself keeps physical cleanup after a wait abort.
     const control = new AbortController();
     const before = find();
+    if (before) diagnostic.attach(this.runtime, before.nativeSessionId);
     const retire = (binding: NativeSessionBinding) => {
+      diagnostic.record('cleanup-native-ready', 'wait');
       try {
         const ready = this.runtime.migrationDrain(binding.nativeSessionId);
         ready.assertCurrent();
+        diagnostic.record('cleanup-native-ready', 'done');
         return Promise.resolve(ready);
-      } catch {
+      } catch (error) {
+        diagnostic.record('cleanup-native-ready', 'error', error);
         /* A cold/unprepared writer needs the actual retire barrier. */
       }
-      return this.runtime.retire(
-        binding.nativeSessionId,
-        control.signal,
-        binding.receipts.length === 0,
+      return observeRetirementPromise(diagnostic, 'cleanup-native-retire', () =>
+        this.runtime.retire(binding.nativeSessionId, control.signal, binding.receipts.length === 0),
       );
     };
     const early = before && retire(before);
     if (early) void early.catch(() => undefined);
-    await this.whenScopeIdle(scope);
+    await observeRetirementPromise(diagnostic, 'cleanup-scope-idle', () =>
+      this.whenScopeIdle(scope),
+    );
     const binding = find();
     if (!binding) {
-      if (before || this.nativeAdmissions.has(address)) throw new NativeWorkError('unavailable');
+      if (before || this.nativeAdmissions.has(address)) {
+        diagnostic.record('cleanup-binding-check', 'error', 'unavailable');
+        throw new NativeWorkError('unavailable');
+      }
       const drain = Object.freeze({
         signal: this.cleanupLifetime.signal,
         basis: 'absent-unadmitted' as const,
@@ -782,26 +1005,41 @@ export class NativeWorkSessionService {
       });
       return { status: 'retired', binding: undefined, drain };
     }
-    if (before && before.nativeSessionId !== binding.nativeSessionId)
+    if (before && before.nativeSessionId !== binding.nativeSessionId) {
+      diagnostic.record('cleanup-binding-check', 'error', 'scope-mismatch');
       throw new NativeWorkError('scope-mismatch');
+    }
+    if (!before) diagnostic.attach(this.runtime, binding.nativeSessionId);
+    diagnostic.record('cleanup-input-source', 'wait');
     while (activeInputReads.has(binding.nativeSessionId)) {
       const active = activeInputReads.get(binding.nativeSessionId)!;
-      if (active.owner !== this.runtime) throw new NativeWorkError('input-read-busy');
+      if (active.owner !== this.runtime) {
+        diagnostic.record('cleanup-input-source', 'error', 'input-read-busy');
+        throw new NativeWorkError('input-read-busy');
+      }
       await active.drain;
     }
+    diagnostic.record('cleanup-input-source', 'done');
     const native = await (early ?? retire(binding));
     const digest = createHash('sha256').update(JSON.stringify(binding)).digest('hex');
     const assertCurrent = () => {
-      const latest = find();
-      if (
-        this.cleanupLifetime.signal.aborted ||
-        this.scopeActivity.get(address)?.size ||
-        activeInputReads.has(binding.nativeSessionId) ||
-        !latest ||
-        createHash('sha256').update(JSON.stringify(latest)).digest('hex') !== digest
-      )
-        throw new NativeWorkError('unavailable');
-      native.assertCurrent();
+      diagnostic.record('cleanup-proof', 'wait');
+      try {
+        const latest = find();
+        if (
+          this.cleanupLifetime.signal.aborted ||
+          this.scopeActivity.get(address)?.size ||
+          activeInputReads.has(binding.nativeSessionId) ||
+          !latest ||
+          createHash('sha256').update(JSON.stringify(latest)).digest('hex') !== digest
+        )
+          throw new NativeWorkError('unavailable');
+        native.assertCurrent();
+        diagnostic.record('cleanup-proof', 'done');
+      } catch (error) {
+        diagnostic.record('cleanup-proof', 'error', error);
+        throw error;
+      }
     };
     return {
       status: 'retired',
