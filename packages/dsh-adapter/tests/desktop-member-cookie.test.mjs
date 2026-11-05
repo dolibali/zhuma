@@ -158,6 +158,7 @@ test('desktop transport contract: only exact member routes carry the private mem
       'asset-folder-create',
     ].map((endpoint) => `/api/zhuma-member/${endpoint}`),
     ...executionEndpoints.map((endpoint) => `/api/zhuma-exec/${endpoint}`),
+    '/api/zhuma-efficiency/export',
     ...knowledgeEndpoints.map((endpoint) => `/api/zhuma-knowledge/${endpoint}`),
     ...['begin', 'send', 'stop', 'read', 'history', 'options', 'inbox', 'observe'].map(
       (endpoint) => `/api/zhuma-run/${endpoint}`,
@@ -175,6 +176,7 @@ test('desktop transport contract: only exact member routes carry the private mem
     '/zhuma-id/%74eams',
     '/zhuma-id/team-members%2Fextra',
     '/api/zhuma-exec/unknown',
+    '/api/zhuma-efficiency/unknown',
     '/api/zhuma-exec/inbox/extra',
     '/api/zhuma-exec/project-artifacts/extra',
     '/api/zhuma-exec/review-outcome/extra',

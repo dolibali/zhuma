@@ -52,3 +52,19 @@ export {
   claimWritableWorkspace,
   releaseWritableWorkspace,
 } from './run-context.js';
+export type {
+  EfficiencyEventKind,
+  EfficiencyMetricName,
+  EfficiencyEvent,
+  EfficiencyMetric,
+  EfficiencySummary,
+  EfficiencyAppendResult,
+} from './efficiency-log.js';
+export {
+  EFFICIENCY_EVENT_KINDS,
+  EFFICIENCY_METRICS,
+  appendEfficiencyEvent,
+  summarizeEfficiency,
+  exportEfficiencyJson,
+  exportEfficiencyCsv,
+} from './efficiency-log.js';

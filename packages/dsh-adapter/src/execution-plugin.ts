@@ -769,6 +769,56 @@ export async function apply(ctx: Context, config: ExecutionPluginConfig): Promis
     },
   });
   stops.push(uploadStop);
+  stops.push(
+    registerProductFetch(ctx, {
+      path: '/api/zhuma-efficiency/export',
+      methods: ['POST'],
+      requestBody: 'streaming',
+      fetch: async (request) => {
+        const signal = AbortSignal.any([request.signal, lifetime.signal]);
+        let rpcId = '';
+        try {
+          if (signal.aborted) throw new DOMException('aborted', 'AbortError');
+          const original = { headers: fetchHeaders(request) };
+          const member = await resolveMember(ctx, original);
+          if (!member.ok) {
+            return Response.json(
+              { ok: false, error: { code: member.code } },
+              { status: member.status },
+            );
+          }
+          if (request.headers.get('content-type')?.split(';')[0] !== 'application/json') {
+            return new Response(null, { status: 415 });
+          }
+          const body = await readLimitedJson(request, signal);
+          const envelope = clientRequestSchema.safeParse(body);
+          if (!envelope.success || envelope.data.method !== 'zhuma-efficiency/export') {
+            return new Response(null, { status: 400 });
+          }
+          rpcId = envelope.data.rpcId;
+          if (signal.aborted) throw new DOMException('aborted', 'AbortError');
+          const result = await service.exportEfficiency({ member }, envelope.data.payload);
+          return Response.json({ type: 'server-response', rpcId, result });
+        } catch (error) {
+          if (error instanceof BodyRejected) {
+            return Response.json(
+              { ok: false, error: { code: error.code } },
+              { status: error.status },
+            );
+          }
+          if (signal.aborted) {
+            return Response.json({ type: 'server-response', rpcId, result: unavailable(true) });
+          }
+          if (rpcId === '') return new Response(null, { status: 400 });
+          return Response.json({
+            type: 'server-response',
+            rpcId,
+            result: unavailable(false),
+          });
+        }
+      },
+    }),
+  );
 
   stops.push(
     registerProductFetch(ctx, {

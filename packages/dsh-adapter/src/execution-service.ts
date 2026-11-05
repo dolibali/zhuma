@@ -22,6 +22,15 @@ import { describeTeamAssetFileTool } from './team-asset-file-tool.js';
 import type { RemoteTeamAssetFileReadGrant } from './remote-team-asset-file-authority.js';
 import { z } from 'zod';
 import {
+  efficiencyDocument,
+  efficiencyExportSchema,
+  efficiencyTaskIds,
+  noteExecutionFact,
+  notePlanIfTerminal,
+  noteTaskStarted,
+  type EfficiencyPlanNode,
+} from './efficiency-log.js';
+import {
   canonicalPayload,
   remoteWorkflowRefSchema,
   remoteWorkflowIntentSchema,
@@ -1050,13 +1059,14 @@ function withExecutionEvent(
 ): ExecutionNodeRecord | undefined {
   const log: readonly NodeEvent[] = Array.isArray(record.events) ? record.events : [];
   const sequence = log.reduce((max, item) => Math.max(max, item.sequence), 0) + 1;
+  const occurredAt = new Date().toISOString();
   const appended = recordCommandEvent({
     decisionStatus: 'applied',
     log,
     event: {
       eventId: `evt:${record.nodeId}:${sequence}`,
       sequence,
-      occurredAt: new Date().toISOString(),
+      occurredAt,
       actorId,
       object: { type: 'node', id: record.nodeId },
       type,
@@ -1064,6 +1074,17 @@ function withExecutionEvent(
     },
   });
   if (!appended.ok || !appended.emitted) return undefined;
+  noteExecutionFact({
+    taskId: record.taskId,
+    planId: record.planId,
+    revision: record.revision,
+    nodeId: record.nodeId,
+    assigneeKind: record.handoff.assignee.kind,
+    eventType: type,
+    occurredAt,
+    status: record.command.status,
+    version: record.command.version,
+  });
   return { ...record, events: appended.log };
 }
 
@@ -5356,6 +5377,46 @@ export class ExecutionService {
   }
 
   /**
+   * 已记录的效率事实。未知历时保持空值。指定任务时，非参与者与不存在同一份 not-found。
+   */
+  exportEfficiency(caller: ExecutionCaller, body: unknown) {
+    return this.enqueue(async () => {
+      const actor = this.actor(caller, body);
+      if (!actor.ok) return actor;
+      const parsed = parseBody(efficiencyExportSchema, body);
+      if (!parsed.ok) return parsed;
+      const workbench = this.workbench.readWorkbench();
+      const requested = parsed.value.taskId;
+      if (
+        requested !== undefined &&
+        planMembership(workbench, requested, actor.value.actorId) !== 'allowed'
+      ) {
+        return fail('not-found');
+      }
+      const taskIds = new Set<string>();
+      if (requested !== undefined) taskIds.add(requested);
+      else {
+        for (const taskId of efficiencyTaskIds()) {
+          if (planMembership(workbench, taskId, actor.value.actorId) === 'allowed') {
+            taskIds.add(taskId);
+          }
+        }
+        for (const record of this.storage.listNodes()) {
+          if (!intactNode(record)) continue;
+          if (planMembership(workbench, record.taskId, actor.value.actorId) === 'allowed') {
+            taskIds.add(record.taskId);
+          }
+        }
+      }
+      this.projectEfficiencyFacts(taskIds);
+      return {
+        ok: true as const,
+        value: efficiencyDocument({ format: parsed.value.format, taskIds: [...taskIds] }),
+      };
+    });
+  }
+
+  /**
    * Confirmed plans this member may explicitly start. A task qualifies when it
    * is `ready`, the member owns or participates in it, the trusted directory
    * places its project in a space the member belongs to, and its latest
@@ -8032,6 +8093,70 @@ export class ExecutionService {
     return { ok: true, value: false };
   }
 
+  private noteEfficiencyPlan(taskId: string, planId: string, revision: number): void {
+    notePlanIfTerminal(
+      this.storage
+        .listNodes()
+        .filter((record) => intactNode(record) && samePlan(record, taskId, planId, revision)),
+    );
+  }
+
+  /** 用已经落盘的节点戳补齐效率日志。重复 sourceId 会被忽略。 */
+  private projectEfficiencyFacts(taskIds: ReadonlySet<string>): void {
+    const groups = new Map<
+      string,
+      { nodes: EfficiencyPlanNode[]; started?: string; ended?: string }
+    >();
+    for (const record of this.storage.listNodes()) {
+      if (!intactNode(record) || !taskIds.has(record.taskId)) continue;
+      const key = `${record.taskId}\0${record.planId}\0${record.revision}`;
+      const group = groups.get(key) ?? { nodes: [] };
+      group.nodes.push(record);
+      for (const event of Array.isArray(record.events) ? record.events : []) {
+        const status = event.payload?.status;
+        const version = event.payload?.version;
+        if (typeof status !== 'string' || typeof version !== 'number') continue;
+        noteExecutionFact({
+          taskId: record.taskId,
+          planId: record.planId,
+          revision: record.revision,
+          nodeId: record.nodeId,
+          assigneeKind: record.handoff.assignee.kind,
+          eventType: event.type,
+          occurredAt: event.occurredAt,
+          status,
+          version,
+        });
+        if (
+          event.type === 'node-started' &&
+          (group.started === undefined || event.occurredAt < group.started)
+        ) {
+          group.started = event.occurredAt;
+        }
+        if (
+          (status === 'completed' || status === 'failed' || status === 'cancelled') &&
+          (group.ended === undefined || event.occurredAt > group.ended)
+        ) {
+          group.ended = event.occurredAt;
+        }
+      }
+      groups.set(key, group);
+    }
+    for (const group of groups.values()) {
+      const head = group.nodes[0];
+      if (!head) continue;
+      if (group.started) {
+        noteTaskStarted({
+          taskId: head.taskId,
+          planId: head.planId,
+          revision: head.revision,
+          occurredAt: group.started,
+        });
+      }
+      if (group.ended) notePlanIfTerminal(group.nodes, group.ended);
+    }
+  }
+
   private async startPlanNow(caller: ExecutionCaller, body: unknown, beforeWrite?: () => void) {
     const actor = this.actor(caller, body);
     if (!actor.ok) return actor;
@@ -8098,6 +8223,7 @@ export class ExecutionService {
         .filter((record) => intactNode(record) && samePlan(record, taskId, planId, revision)),
     });
     if (!started.ok) return fail(started.code);
+    if (started.disposition === 'applied') noteTaskStarted({ taskId, planId, revision });
     for (const record of started.records) {
       const key = nodeRecordKey(record);
       if (this.storage.readNode(key) === record) continue;
@@ -8117,6 +8243,7 @@ export class ExecutionService {
     beforeWrite?.();
     const stored = await this.persist(() => this.storage.writePlan(key, receipt));
     if (!stored.ok) return stored;
+    this.noteEfficiencyPlan(taskId, planId, revision);
     return {
       ok: true as const,
       value: {
@@ -8213,6 +8340,7 @@ export class ExecutionService {
       }
       const stored = await this.persist(() => this.writeNode(record));
       if (!stored.ok) return stored;
+      this.noteEfficiencyPlan(current.taskId, current.planId, current.revision);
     }
     if (record.command.status === 'completed') {
       const unlocked = await this.unlockFrom(record);
