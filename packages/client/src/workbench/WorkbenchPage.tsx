@@ -1669,6 +1669,39 @@ export function WorkbenchPage({
                       />
                     </Field>
                     <div className="zm-creation-context">
+                      <Field label="任务名称">
+                        <input
+                          maxLength={160}
+                          value={dialog.value.title}
+                          onChange={(e) =>
+                            setDialog({
+                              ...dialog,
+                              value: { ...dialog.value, title: e.target.value },
+                            })
+                          }
+                          placeholder="可选，留空时从目标生成"
+                        />
+                      </Field>
+                      <div className="zm-task-owner-choice">
+                        <ParticipantSelect
+                          label="任务负责人"
+                          members={state.participants.filter(
+                            (p) => p.kind === 'human' && dialog.value.participantIds.includes(p.id),
+                          )}
+                          selected={dialog.value.ownerId ? [dialog.value.ownerId] : []}
+                          change={(ids) =>
+                            setDialog({
+                              ...dialog,
+                              planning:
+                                member && ids[0] !== member.actorId ? 'manual' : dialog.planning,
+                              value: { ...dialog.value, ownerId: ids[0] ?? null },
+                            })
+                          }
+                        />
+                        {!dialog.value.ownerId && <small>确认工作流前需指定负责人。</small>}
+                      </div>
+                    </div>
+                    <div className="zm-creation-context">
                       <div className="zm-task-project-choice">
                         <div className="zm-creation-field-heading">
                           <span>所属项目</span>
@@ -1829,6 +1862,7 @@ export function WorkbenchPage({
                         </div>
                         {dialog.template && selectedDefinition && (
                           <TemplateBindings
+                            key={dialog.template.assetId}
                             roles={selectedDefinition.roles}
                             resources={selectedDefinition.resources}
                             members={state.participants.filter((p) =>
@@ -1847,35 +1881,6 @@ export function WorkbenchPage({
                         )}
                       </section>
                     )}
-                    <Field label="任务名称">
-                      <input
-                        maxLength={160}
-                        value={dialog.value.title}
-                        onChange={(e) =>
-                          setDialog({
-                            ...dialog,
-                            value: { ...dialog.value, title: e.target.value },
-                          })
-                        }
-                        placeholder="可选，留空时从目标生成"
-                      />
-                    </Field>
-                    <ParticipantSelect
-                      label="任务负责人"
-                      members={state.participants.filter(
-                        (p) => p.kind === 'human' && dialog.value.participantIds.includes(p.id),
-                      )}
-                      selected={dialog.value.ownerId ? [dialog.value.ownerId] : []}
-                      change={(ids) =>
-                        setDialog({
-                          ...dialog,
-                          planning:
-                            member && ids[0] !== member.actorId ? 'manual' : dialog.planning,
-                          value: { ...dialog.value, ownerId: ids[0] ?? null },
-                        })
-                      }
-                    />
-                    {!dialog.value.ownerId && <small>确认工作流前需指定负责人。</small>}
                   </>
                 )}
               </fieldset>

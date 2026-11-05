@@ -43,13 +43,14 @@ if (module) {
   globalThis.requestAnimationFrame = window.requestAnimationFrame.bind(window);
   globalThis.cancelAnimationFrame = window.cancelAnimationFrame.bind(window);
 }
-const { createElement: h, act } = await import('react');
+const { createElement: h, act, useState } = await import('react');
 const { createRoot } = await import('react-dom/client');
 const { emptyWorkbench } = await import('@zhuma/agent-core');
 const { MemberAssetFilePicker } = await import('../dist/assets/MemberAssetFilePicker.js');
 const { MemberAssetsPanel } = await import('../dist/assets/MemberAssetsPanel.js');
 const { MemberAssetImportDialog } = await import('../dist/assets/MemberAssetImportDialog.js');
 const { CodeArtsSetupDialog } = await import('../dist/run/CodeArtsSetupDialog.js');
+const { TemplateBindings } = await import('../dist/workbench/TemplateBindings.js');
 const { MemberAssetClientError } = await import('../dist/assets/api.js');
 const { WorkbenchPage } = await import('../dist/workbench/WorkbenchPage.js');
 const { createMemberWorkbenchAdapter } = await import('../dist/workbench/member-adapter.js');
@@ -298,6 +299,177 @@ async function mount(t, data, component = MemberAssetsPanel, extra = {}) {
   return { host, click, button, field, input, choose, settle };
 }
 const dom = { skip: !module, timeout: 15000 };
+
+test(
+  'template mapping contract: collapsed exceptions remain actionable, with no automatic assignments or grants',
+  dom,
+  async (t) => {
+    const updates = [];
+    const members = [
+      {
+        id: 'ann',
+        name: '安',
+        kind: 'human',
+        role: '项目负责人',
+        capabilities: [],
+        instructions: '',
+        available: true,
+      },
+      {
+        id: 'expert',
+        name: '验证专家',
+        kind: 'expert',
+        role: '',
+        capabilities: [],
+        instructions: '',
+        available: true,
+        resourceBindings: { skillIds: ['method', 'retired'], mcpIds: [] },
+      },
+    ];
+    const assets = [
+      {
+        id: 'method',
+        kind: 'skill',
+        name: '接口检查',
+        content: '',
+        description: '',
+        available: true,
+      },
+      {
+        id: 'retired',
+        kind: 'skill',
+        name: '旧检查方法',
+        content: '',
+        description: '',
+        available: false,
+      },
+    ];
+    function Bindings() {
+      const [roles, setRoles] = useState({
+        analysis: null,
+        reviewer: 'removed',
+        delivery: 'expert',
+      });
+      const [resources, setResources] = useState({ check: 'method', other: 'removed' });
+      return h(TemplateBindings, {
+        roles: [
+          { id: 'analysis', name: '需求分析', preferredKind: 'human' },
+          { id: 'reviewer', name: '独立评审' },
+          { id: 'delivery', name: '交付' },
+        ],
+        resources: [
+          { id: 'check', name: '接口检查', kind: 'skill' },
+          { id: 'other', name: '回归检查', kind: 'skill' },
+        ],
+        members,
+        assets,
+        roleValues: roles,
+        resourceValues: resources,
+        changeRoles(value) {
+          updates.push({ roles: value });
+          setRoles(value);
+        },
+        changeResources(value) {
+          updates.push({ resources: value });
+          setResources(value);
+        },
+      });
+    }
+    const f = await mount(t, { api: {} }, Bindings);
+    const roleToggle = f.button('调整分工'),
+      resourceToggle = f.button('调整能力');
+    const roleFields = document.getElementById(roleToggle.getAttribute('aria-controls'));
+    const resourceFields = document.getElementById(resourceToggle.getAttribute('aria-controls'));
+    assert.equal(roleFields.hidden, true);
+    assert.equal(resourceFields.hidden, true);
+    assert.deepEqual(updates, []);
+    assert.ok(f.button('独立评审 · 原选择不可用'));
+    assert.ok(f.button('交付 · 1 项专家资源不可用'));
+    await f.click(f.button('需求分析 · 待选择'));
+    assert.equal(roleFields.hidden, false);
+    assert.equal(document.activeElement.getAttribute('aria-label'), '绑定角色：需求分析');
+    await f.choose('绑定角色：需求分析', '安 · 项目负责人');
+    assert.deepEqual(updates, [
+      { roles: { analysis: 'ann', reviewer: 'removed', delivery: 'expert' } },
+    ]);
+    await f.click(f.button('收起分工'));
+    assert.equal(roleFields.hidden, true);
+    assert.ok(f.host.textContent.includes('已选 2/3'));
+    assert.ok(f.button('交付 · 1 项专家资源不可用'));
+    await f.click(f.button('回归检查 · 原选择不可用'));
+    assert.equal(resourceFields.hidden, false);
+    assert.equal(document.activeElement.getAttribute('aria-label'), '绑定资源：回归检查');
+    await f.choose('绑定资源：回归检查', '接口检查');
+    assert.deepEqual(updates[1], { resources: { check: 'method', other: 'method' } });
+    await f.click(f.button('收起能力'));
+    assert.ok(f.host.textContent.includes('已匹配 2/2'));
+    assert.equal(f.host.querySelector('ul[aria-label="所需能力摘要"]'), null);
+    assert.equal(resourceFields.hidden, true);
+    assert.equal(
+      f.host.textContent.includes('MCP'),
+      false,
+      'empty expert MCP bindings add no noise',
+    );
+    assert.deepEqual(members[1].resourceBindings, { skillIds: ['method', 'retired'], mcpIds: [] });
+  },
+);
+
+test(
+  'import preview contract: selecting a distant item retains the list and per-item edits while resetting its detail',
+  dom,
+  async (t) => {
+    const items = Array.from({ length: 32 }, (_, index) => ({
+      key: `skill-${index}/SKILL.md`,
+      kind: 'skill',
+      name: `方法 ${index + 1}`,
+      description: '',
+      content: '完整内容\n' + 'x'.repeat(8000),
+      role: '',
+      capabilities: [],
+      skillKeys: [],
+      missing: [],
+      requirements: [],
+      filePaths: [`skill-${index}/SKILL.md`],
+    }));
+    let writes = 0;
+    const api = {
+      async previewImport() {
+        return { actorId: 'ann', spaceId, packageChecksum: 'c'.repeat(64), ignored: [], items };
+      },
+      async importDrafts() {
+        writes++;
+        assert.fail('Preview selection must not import');
+      },
+    };
+    const f = await mount(t, { api }, MemberAssetImportDialog, { close() {}, imported() {} });
+    const input = f.host.querySelector('input[aria-label="导入资产文件"]');
+    Object.defineProperty(input, 'files', {
+      configurable: true,
+      value: [new File(['synthetic preview package'], 'methods.zip')],
+    });
+    await act(async () => {
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      await new Promise(setImmediate);
+    });
+    await f.settle();
+    const list = f.host.querySelector('.zm-member-import-items'),
+      detail = f.host.querySelector('.zm-member-import-definition');
+    list.scrollTop = 600;
+    detail.scrollTop = 450;
+    await f.click(f.button('方法 32', list));
+    assert.equal(f.host.querySelector('.zm-member-import-items'), list);
+    assert.equal(list.scrollTop, 600);
+    assert.equal(detail.scrollTop, 0);
+    assert.equal(f.field('导入名称').value, '方法 32');
+    detail.scrollTop = 280;
+    await f.input('导入名称', '保留这项修改');
+    assert.equal(detail.scrollTop, 280);
+    await f.click(f.button('方法 1', list));
+    await f.click(f.button('保留这项修改', list));
+    assert.equal(f.field('导入名称').value, '保留这项修改');
+    assert.equal(writes, 0);
+  },
+);
 
 test(
   'selecting another asset resets only the detail pane, while editing and saving keep its position',
