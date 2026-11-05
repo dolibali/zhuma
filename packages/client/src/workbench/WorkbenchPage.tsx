@@ -13,7 +13,7 @@ import type { WorkbenchApi, WorkbenchWriteIntent } from './api.js';
 import { useUnsavedChanges } from './UnsavedChanges.js';
 import { Field, Modal, ParticipantSelect, MultiSelect } from './controls.js';
 import { TaskEditor, type InitialPlanning } from './TaskEditor.js';
-import { Appearance, type AppearanceStore } from './Appearance.js';
+import type { AppearanceStore } from './Appearance.js';
 import { Button } from './Button.js';
 import { SingleSelect } from './SingleSelect.js';
 import { TemplateBrowser } from './TemplateBrowser.js';
@@ -83,7 +83,6 @@ const labels: Record<Section, string> = {
 export function WorkbenchPage({
   api,
   initialSection,
-  appearance,
   expertLibrary = false,
   openWork,
   nativeRun,
@@ -94,7 +93,8 @@ export function WorkbenchPage({
 }: {
   api: WorkbenchApi;
   initialSection: Section;
-  appearance: AppearanceStore;
+  /** Accepted for existing embedders; theme preferences are managed in Settings. */
+  appearance?: AppearanceStore;
   expertLibrary?: boolean;
   openWork?: () => void;
   nativeRun?: { api: NativeRunApi; spaceId: string };
@@ -659,7 +659,6 @@ export function WorkbenchPage({
     !activeProject && !expertLibrary && ['projects', 'tasks', 'assets'].includes(section);
   const pageActions = (
     <div className="zm-actions">
-      <Appearance store={appearance} />
       {!(memberAssets && section === 'assets') && (
         <Button variant="quiet" onClick={() => void refresh()}>
           刷新
@@ -713,7 +712,6 @@ export function WorkbenchPage({
             setInitialPlanning(null);
             setActiveTaskId(null);
           }}
-          appearance={appearance}
           progress={progressFor(activeTask.id)}
           refreshProgress={progress.refresh}
           backLabel={activeProject ? '项目' : '任务清单'}

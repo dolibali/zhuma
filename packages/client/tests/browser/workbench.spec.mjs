@@ -4,8 +4,8 @@ import { test, expect, deferred, failure, plannedWorkflows, proposal } from './r
 const button = (page, name) => page.getByRole('button', { name, exact: true });
 const commands = (replay) => replay.requests.filter((r) => r.endpoint === 'command');
 const plans = (replay) => replay.requests.filter((r) => r.endpoint === 'plan');
-async function openTask(page) {
-  await page.goto('/');
+async function openTask(page, query = '') {
+  await page.goto('/' + query);
   await page.getByRole('button', { name: /^订单协作改进/ }).click();
 }
 async function selectPeople(page, label, names) {
@@ -61,19 +61,18 @@ test('创建任务、分工和多人评审配置可保存并在刷新后重开',
 });
 
 test('主题切换保留节点草稿、选择和画布位置，不触发保存或规划', async ({ page, replay }) => {
-  await openTask(page);
+  await openTask(page, '?appearance-probe');
   await page.getByLabel('节点名称', { exact: true }).fill('尚未保存的节点修改');
   await expect(page.locator('.react-flow__node.selected')).toHaveCount(1);
   const transform = await page.locator('.react-flow__viewport').getAttribute('style');
   const before = replay.requests.length;
+  const systemDark = await page.evaluate(() => matchMedia('(prefers-color-scheme: dark)').matches);
   for (const theme of ['dark', 'light', 'system']) {
-    await page.getByLabel('外观', { exact: true }).click();
-    const caption = { light: '浅色', dark: '深色', system: '跟随系统' }[theme];
-    await page.getByRole('option', { name: caption, exact: true }).click();
-    await expect(page.getByLabel('外观', { exact: true })).toHaveAttribute(
-      'title',
-      '外观切换（浅色／深色／跟随系统）',
-    );
+    await page.getByLabel('测试外观', { exact: true }).selectOption(theme);
+    await expect(page.getByLabel('测试外观', { exact: true })).toHaveValue(theme);
+    await expect
+      .poll(() => page.locator('body').evaluate((body) => body.hasAttribute('data-ds-dark-theme')))
+      .toBe(theme === 'dark' || (theme === 'system' && systemDark));
     await expect(page.getByLabel('节点名称', { exact: true })).toHaveValue('尚未保存的节点修改');
     await expect(page.locator('.react-flow__node.selected')).toHaveAttribute('data-id', 'node-0');
     await expect(page.locator('.react-flow__viewport')).toHaveAttribute('style', transform);

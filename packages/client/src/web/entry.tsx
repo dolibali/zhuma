@@ -139,7 +139,13 @@ function MemberWeb() {
         </aside>
       )}
       <div className="zm-web-main">
-        {accountOpen && <AccountTeamsDialog shell={shell} close={() => setAccountOpen(false)} />}
+        {accountOpen && (
+          <AccountTeamsDialog
+            shell={shell}
+            appearance={appearance}
+            close={() => setAccountOpen(false)}
+          />
+        )}
         <MemberExecutionPage
           shell={shell}
           view={view}
