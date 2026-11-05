@@ -1,4 +1,12 @@
-import type { ExecutionEngine, ExecutionFaultKind } from '@zhuma/agent-core';
+import {
+  checkPromptConstraints,
+  executionConstraintText,
+  PromptConstraintError,
+  readPromptConstraints,
+  type ExecutionEngine,
+  type ExecutionFaultKind,
+  type PromptConstraintSnapshot,
+} from '@zhuma/agent-core';
 import { resolveDevModelGateway } from './dev-model-gateway.js';
 
 /**
@@ -67,6 +75,8 @@ export interface AgentRunRequest {
     readonly bytes: Uint8Array;
   }[];
   readonly promptContext?: readonly { readonly id: string; readonly body: string }[];
+  /** 与规划读取的同一份冻结约束。缺省表示本轮没有项目或工作区约束。 */
+  readonly promptConstraints?: PromptConstraintSnapshot;
 }
 
 export interface AgentActivity {
@@ -363,9 +373,12 @@ function delay(ms: number): Promise<void> {
   });
 }
 
-/** 节点目标、输入说明、交付说明和本轮要求。空的说明不写入。 */
+/** 节点目标、输入说明、交付说明和本轮要求。空的说明不写入。有冻结约束时执行与规划读同一份。 */
 export function taskPrompt(
-  request: Pick<AgentRunRequest, 'goal' | 'instruction' | 'inputNote' | 'expectedOutput'>,
+  request: Pick<
+    AgentRunRequest,
+    'goal' | 'instruction' | 'inputNote' | 'expectedOutput' | 'promptConstraints' | 'toolAllowlist'
+  >,
 ): string {
   const parts = [`节点目标：${request.goal}`];
   const inputNote = request.inputNote?.trim() ?? '';
@@ -373,6 +386,24 @@ export function taskPrompt(
   if (inputNote.length > 0) parts.push(`输入说明：${inputNote}`);
   if (expectedOutput.length > 0) parts.push(`交付说明：${expectedOutput}`);
   parts.push(`本轮要求：${request.instruction}`);
+  if (request.promptConstraints) {
+    const frozen = readPromptConstraints(request.promptConstraints);
+    const texts = [request.goal, request.instruction, inputNote, expectedOutput].filter(
+      (text) => text.length > 0,
+    );
+    const checked = checkPromptConstraints(frozen, {
+      texts,
+      ...(request.toolAllowlist?.length ? { tools: [...request.toolAllowlist] } : {}),
+    });
+    if (!checked.ok) {
+      throw new PromptConstraintError(
+        'constraint-violation',
+        checked.issues.map((item) => `${item.code} ${item.target} ${item.reason}`).join('\n'),
+        checked.issues,
+      );
+    }
+    parts.push(executionConstraintText(frozen));
+  }
   return parts.join('\n');
 }
 
