@@ -74,7 +74,10 @@ import { registerNativeAcceptedInputTool } from './native-work-session-input-too
 import { registerNativeAcceptedFileTool } from './native-work-session-files-tool.js';
 import type { NativeRunAcceptedFiles } from './native-work-session-files-contract.js';
 import { NativeWorkError, type NativeWorkScope } from './native-work-session-contract.js';
-import { createHostRunStartupDiagnostic } from './host-run-startup-diagnostics.js';
+import {
+  createHostRunStartupDiagnostic,
+  emitHostRunStartupFailure,
+} from './host-run-startup-diagnostics.js';
 import { nativeScopeKey } from './native-work-session-record.js';
 import { createHostRunWorkspaces, type HostLocalExecutionConfig } from './host-run-workspaces.js';
 import { openHostWorkspaceApprovals } from './host-workspace-approvals.js';
@@ -1068,9 +1071,9 @@ export async function openHostRunOwner(
     previousScope?: NativeWorkScope,
   ): Promise<'received' | 'unknown'> {
     assertNativeDrive();
-    const diagnostic = createHostRunStartupDiagnostic(state.scope, (failure) => {
-      ctx.logger.warn('Native Run startup failed.', failure);
-    });
+    const diagnostic = createHostRunStartupDiagnostic(state.scope, (failure) =>
+      emitHostRunStartupFailure(ctx, failure),
+    );
     startup.set(state, diagnostic);
     try {
       assertAdmission(state);

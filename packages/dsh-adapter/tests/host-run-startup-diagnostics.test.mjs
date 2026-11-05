@@ -1,7 +1,12 @@
 /** Host-only fault classification contracts, not native startup/model proof. */
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createHostRunStartupDiagnostic } from '../dist/host-run-startup-diagnostics.js';
+import { spawnSync } from 'node:child_process';
+import { Context, Logger } from '@deepseek-ai/cordis';
+import {
+  createHostRunStartupDiagnostic,
+  emitHostRunStartupFailure,
+} from '../dist/host-run-startup-diagnostics.js';
 import { NativeWorkError } from '../dist/native-work-session-contract.js';
 import { ExecutionRunError } from '../dist/execution-run-state.js';
 
@@ -16,6 +21,88 @@ const scope = {
   generation: 1,
   segmentId: 'private-segment',
 };
+
+test('startup sink contract: the actual emitter reaches default Cordis buffer and exporter without raising levels', async () => {
+  const ctx = new Context(),
+    records = [];
+  try {
+    const exporter = {
+      export(message) {
+        records.push(message);
+      },
+    };
+    ctx.logger.exporter(exporter);
+    ctx.logger.warn('threshold probe');
+    assert.equal(records.length, 0);
+    assert.equal(ctx.logger.buffer.length, 0);
+    const diagnostic = createHostRunStartupDiagnostic(scope, (failure) =>
+      emitHostRunStartupFailure(ctx, failure),
+    );
+    diagnostic.at('resource-adoption');
+    diagnostic.failed(new Error('PRIVATE_MESSAGE /private/path sk-private-token'));
+    assert.equal(records.length, 1);
+    assert.equal(ctx.logger.buffer.length, 1);
+    assert.equal(records[0].type, 'error');
+    assert.equal(records[0].level, 0);
+    assert.equal(exporter.levels, undefined);
+    assert.equal(ctx.logger.buffer[0].args[1], records[0].args[1]);
+    assert.equal(records[0].args[1].event, 'zhuma-native-startup-failed');
+    assert.equal(records[0].args[1].stage, 'resource-adoption');
+    assert.equal(records[0].args[1].code, 'unexpected-error');
+    const line = Logger.format(exporter, records[0]);
+    assert.match(line, /zhuma-native-startup-failed/u);
+    assert.doesNotMatch(line, /PRIVATE|private|sk-/u);
+  } finally {
+    await ctx.fiber.dispose();
+  }
+});
+
+test('startup stdout contract: default is silent, exact opt-in writes only one safe JSON line, and a closed pipe preserves the original error', () => {
+  const diagnosticModule = new URL('../dist/host-run-startup-diagnostics.js', import.meta.url).href;
+  for (const [flag, closed] of [
+    [undefined, false],
+    ['0', false],
+    ['true', false],
+    ['1', false],
+    ['1', true],
+  ]) {
+    const script = `
+      import assert from 'node:assert/strict';
+      import { closeSync } from 'node:fs';
+      import { Context } from '@deepseek-ai/cordis';
+      import { createHostRunStartupDiagnostic, emitHostRunStartupFailure } from ${JSON.stringify(diagnosticModule)};
+      const ctx = new Context();
+      const original = new Error('PRIVATE_MESSAGE /private/path sk-private-token');
+      const diagnostic = createHostRunStartupDiagnostic(${JSON.stringify(scope)}, (failure) => emitHostRunStartupFailure(ctx, failure));
+      diagnostic.at('native-send');
+      ${closed ? 'closeSync(1);' : ''}
+      try { throw original; }
+      catch (error) { diagnostic.failed(error); assert.equal(error, original); }
+      diagnostic.failed(new Error('PRIVATE_DUPLICATE'));
+      assert.equal(ctx.logger.buffer.length, 1);
+      await ctx.fiber.dispose();
+    `;
+    const result = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+      cwd: new URL('../', import.meta.url),
+      env: flag === undefined ? {} : { ZHUMA_NATIVE_STARTUP_DIAGNOSTICS_STDOUT: flag },
+      encoding: 'utf8',
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stderr, '');
+    if (flag !== '1' || closed) assert.equal(result.stdout, '');
+    else {
+      const lines = result.stdout.trim().split('\n');
+      assert.equal(lines.length, 1);
+      const record = JSON.parse(lines[0]);
+      assert.deepEqual(Object.keys(record).sort(), ['code', 'correlation', 'event', 'stage']);
+      assert.equal(record.event, 'zhuma-native-startup-failed');
+      assert.equal(record.stage, 'native-send');
+      assert.equal(record.code, 'unexpected-error');
+      assert.match(record.correlation, /^[a-f0-9]{16}$/u);
+      assert.doesNotMatch(result.stdout, /PRIVATE|private|sk-/u);
+    }
+  }
+});
 
 test('startup diagnostic contract: success emits nothing and one failure keeps only fixed stage/code and a scope digest', () => {
   const records = [];
