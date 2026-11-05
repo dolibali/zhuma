@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { spawnSync } from 'node:child_process';
 import { createHostRunReader } from '../dist/host-run-reader.js';
 import { available, command, records } from './execution-run-fixture.mjs';
 import { beginExecutionRun } from '../dist/execution-run-state.js';
@@ -76,6 +77,144 @@ function fixture() {
     scope,
   };
 }
+
+// The real reader/emitter runs in a credential-free Node child over the existing
+// authority/native ports. This is a contract, not native history or Run proof.
+function terminalReadChild(mode, flag) {
+  const moduleUrl = (path) => new URL(path, import.meta.url).href;
+  const script = `
+    import assert from 'node:assert/strict';
+    import { closeSync, writeSync } from 'node:fs';
+    import { createHostRunReader } from ${JSON.stringify(moduleUrl('../dist/host-run-reader.js'))};
+    import { beginExecutionRun } from ${JSON.stringify(moduleUrl('../dist/execution-run-state.js'))};
+    import { available, command, records } from ${JSON.stringify(moduleUrl('./execution-run-fixture.mjs'))};
+    ${fixture.toString()}
+    const mode = ${JSON.stringify(mode)}, flag = process.env.ZHUMA_NATIVE_STARTUP_DIAGNOSTICS_STDOUT;
+    const f = fixture(), stored = f.node.nativeExecution.runs[0], caller = new AbortController();
+    stored.attempt.status = mode === 'running' ? 'running' : mode === 'completed' ? 'completed' : mode === 'cancelled' ? 'cancelled' : 'failed';
+    stored.resources = mode === 'held' || mode === 'running' ? 'held' : 'settled';
+    if (mode === 'running' || mode === 'completed') {
+      stored.attempt.acknowledged = true; stored.attempt.executorRunId = 'native-agent';
+    }
+    if (mode === 'running') f.node.command.status = 'running';
+    if (mode !== 'no-native') stored.attempt.sessionId = 'native-session';
+    f.native.open = () => mode === 'no-native' ? undefined : ({ binding: { scope: f.scope, nativeSessionId: 'native-session', nativeAgentId: 'native-agent' }, status: 'detached' });
+    let snapshots = 0, snapshotChecks = 0, privateReads = 0;
+    for (const name of ['connect', 'send', 'stop', 'retire', 'create', 'resume'])
+      Object.defineProperty(f.native, name, { get() { assert.fail('Read cannot access a native writer'); } });
+    const failure = { code: mode === 'unknown' ? 'PRIVATE_CODE' : 'UNSUPPORTED_REASONING_EFFORT' };
+    for (const name of ['message', 'stack', 'cause', 'toJSON']) Object.defineProperty(failure, name, { get() { privateReads++; throw Error('PRIVATE_GETTER'); } });
+    if (mode === 'getter') Object.defineProperty(failure, 'code', { get() { privateReads++; throw Error('PRIVATE_CODE_GETTER'); } });
+    const snapshot = {
+      events: [{ seq: 10, time: 1, type: 'turn/end', data: { turn: 1, reason: { kind: 'error', error: failure } } }],
+      check() { snapshotChecks++; if (mode === 'invalid-cut') throw Error('PRIVATE_STALE_CUT'); },
+    };
+    f.native.readResultSnapshot = async (grant, signal) => {
+      assert.equal(grant, f.grant); assert.equal(signal.aborted, false);
+      assert.ok(f.checks.includes('history')); snapshots++;
+      if (mode === 'read-error') throw Error('PRIVATE_READ_ERROR');
+      await Promise.resolve();
+      if (mode === 'revoke') f.revoked.abort();
+      if (mode === 'abort') caller.abort();
+      if (mode === 'run-version') f.node.nativeExecution.version++;
+      if (mode === 'node-version') f.node.command.version++;
+      if (mode === 'generation') stored.attempt.generation++;
+      if (mode === 'scope') f.scope.segmentId = 'PRIVATE_NEW_SEGMENT';
+      if (mode === 'session') stored.attempt.sessionId = 'PRIVATE_OTHER_SESSION';
+      if (mode === 'status') stored.resources = 'held';
+      if (mode === 'disable') process.env.ZHUMA_NATIVE_STARTUP_DIAGNOSTICS_STDOUT = '0';
+      return snapshot;
+    };
+    delete process.env.ZHUMA_NATIVE_STARTUP_DIAGNOSTICS_STDOUT;
+    const before = await f.reader.read(f.request, f.locator);
+    assert.equal(snapshots, 0);
+    if (flag !== undefined) process.env.ZHUMA_NATIVE_STARTUP_DIAGNOSTICS_STDOUT = flag;
+    if (mode === 'closed-output') closeSync(1);
+    const reading = f.reader.read(f.request, f.locator, caller.signal);
+    if (mode === 'revoke' || mode === 'abort') await assert.rejects(reading, { name: 'AbortError' });
+    else assert.deepEqual(await reading, before, 'All original public fields must stay identical');
+    assert.equal(privateReads, 0); assert.equal(f.counters.opened, 2); assert.equal(f.counters.disposed, 2);
+    writeSync(2, JSON.stringify({ mode, snapshots, snapshotChecks, disposed: f.counters.disposed }) + '\\n');
+  `;
+  const result = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+    cwd: new URL('../', import.meta.url),
+    env: flag === undefined ? {} : { ZHUMA_NATIVE_STARTUP_DIAGNOSTICS_STDOUT: flag },
+    encoding: 'utf8',
+    timeout: 15000,
+  });
+  assert.equal(result.status, 0, result.stderr || result.error?.message);
+  return {
+    records: result.stdout.trim()
+      ? result.stdout
+          .trim()
+          .split('\n')
+          .map((line) => JSON.parse(line))
+      : [],
+    summary: JSON.parse(result.stderr.trim()),
+  };
+}
+
+test('terminal reader contract: default/nonexact flags and running/held/nonfailed/missing-native views perform no extra snapshot read', () => {
+  for (const flag of [undefined, '0', 'true']) {
+    const result = terminalReadChild('success', flag);
+    assert.deepEqual(result.records, []);
+    assert.equal(result.summary.snapshots, 0);
+  }
+  for (const mode of ['running', 'held', 'completed', 'cancelled', 'no-native']) {
+    const result = terminalReadChild(mode, '1');
+    assert.deepEqual(result.records, []);
+    assert.equal(result.summary.snapshots, 0);
+  }
+});
+
+test('terminal reader contract: an authorized failed/settled cut emits only four safe fields without changing the original view', () => {
+  for (const mode of ['success', 'unknown', 'getter']) {
+    const { records, summary } = terminalReadChild(mode, '1');
+    assert.equal(summary.snapshots, 1);
+    assert.ok(summary.snapshotChecks >= 1);
+    assert.equal(records.length, 1);
+    assert.deepEqual(Object.keys(records[0]).sort(), ['code', 'correlation', 'event', 'stage']);
+    assert.equal(records[0].event, 'zhuma-native-run-failed');
+    assert.equal(records[0].stage, 'terminal-history');
+    assert.equal(
+      records[0].code,
+      mode === 'success' ? 'UNSUPPORTED_REASONING_EFFORT' : 'unclassified-error',
+    );
+    assert.match(records[0].correlation, /^[a-f0-9]{16}$/u);
+    assert.doesNotMatch(
+      JSON.stringify(records),
+      /PRIVATE|private|native-session|contract-model|north|run-1/u,
+    );
+  }
+});
+
+test('terminal reader contract: revocation, abort, changed scope/versions/session/state and invalid cuts cannot emit stale metadata', () => {
+  for (const mode of [
+    'revoke',
+    'abort',
+    'run-version',
+    'node-version',
+    'generation',
+    'scope',
+    'session',
+    'status',
+    'invalid-cut',
+    'disable',
+  ]) {
+    const result = terminalReadChild(mode, '1');
+    assert.equal(result.summary.snapshots, 1);
+    assert.deepEqual(result.records, [], mode);
+  }
+});
+
+test('terminal reader contract: snapshot and real stdout failures preserve the original read and release its lease', () => {
+  for (const mode of ['read-error', 'closed-output']) {
+    const result = terminalReadChild(mode, '1');
+    assert.equal(result.summary.snapshots, 1);
+    assert.equal(result.summary.disposed, 2);
+    assert.deepEqual(result.records, []);
+  }
+});
 
 test('Host Run reader contract: every read opens and releases fresh authority and never creates native work', async () => {
   const f = fixture();
