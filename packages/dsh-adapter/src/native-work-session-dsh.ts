@@ -20,7 +20,11 @@ import {
 } from '@deepseek-ai/dsh-session-persistence';
 import type {} from '@deepseek-ai/dsh-tools';
 import { PERSONA_PREFIX_SECTION, joinContextSections } from '@deepseek-ai/dsh-system-prompt';
-import { assertNativeInputReadOwner } from './native-work-session.js';
+import {
+  assertNativeInputReadOwner,
+  traceNativeRetirementStage,
+  type NativeRetirementStage,
+} from './native-work-session.js';
 import { nativeWorkspaceAttachment } from './native-work-session-workspace.js';
 import {
   NativeSessionPurpose,
@@ -1454,21 +1458,51 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
     signal: AbortSignal,
     allowAbsent = false,
   ): Promise<NativeMigrationDrain> {
-    if (signal.aborted || this.lifetime.signal.aborted) throw new NativeWorkError('cancelled');
-    assertNativeInputReadOwner(sessionId, this);
+    traceNativeRetirementStage(this, sessionId, 'runtime-owner', 'wait');
+    if (signal.aborted || this.lifetime.signal.aborted) {
+      traceNativeRetirementStage(this, sessionId, 'runtime-owner', 'error', 'cancelled');
+      throw new NativeWorkError('cancelled');
+    }
+    try {
+      assertNativeInputReadOwner(sessionId, this);
+    } catch (error) {
+      traceNativeRetirementStage(this, sessionId, 'runtime-owner', 'error', error);
+      throw error;
+    }
     const owner = resourceEpochs.get(sessionId);
-    if (owner && owner.owner !== this && !owner.basis) throw new NativeWorkError('unavailable');
+    if (owner && owner.owner !== this && !owner.basis) {
+      traceNativeRetirementStage(this, sessionId, 'runtime-owner', 'error', 'unavailable');
+      throw new NativeWorkError('unavailable');
+    }
+    traceNativeRetirementStage(this, sessionId, 'runtime-owner', 'done');
     this.retired.add(sessionId);
     let work = this.retiring.get(sessionId);
     if (!work) {
+      let waiting: NativeRetirementStage | undefined, failedAt: NativeRetirementStage | undefined;
+      let last: NativeRetirementStage = 'runtime-owner';
+      const mark = (
+        stage: NativeRetirementStage,
+        phase: 'wait' | 'done' | 'error',
+        error?: unknown,
+      ) => {
+        last = stage;
+        if (phase === 'wait') waiting = stage;
+        else if (phase === 'done' && waiting === stage) waiting = undefined;
+        else if (phase === 'error') failedAt = stage;
+        traceNativeRetirementStage(this, sessionId, stage, phase, error);
+      };
       work = Promise.resolve().then(async () => {
         this.touch(sessionId);
+        mark('runtime-source-identity', 'wait');
         const persistence = this.ctx.sessionPersistence.identity;
         const registry = registryIdentity(this.ctx);
+        mark('runtime-source-identity', 'done');
         const connecting = this.connecting.get(sessionId);
         if (connecting) {
+          mark('runtime-connect', 'wait');
           connecting.abort.abort();
           await connecting.promise.catch(() => undefined);
+          mark('runtime-connect', 'done');
         }
         // Join the original handle's memoized teardown: it drains the scope
         // and writer even when its provider already detached the session.
@@ -1476,47 +1510,74 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
         // persistence barrier below still independently verifies durable closure.
         const live = this.live.get(sessionId);
         if (live) {
+          mark('runtime-agent-idle', 'wait');
           live.handle.agent.cancel({ kind: 'user' }, { keepInbox: true });
           await live.handle.agent.whenIdle();
+          mark('runtime-agent-idle', 'done');
+          mark('runtime-handle-dispose', 'wait');
           await this.disconnect(sessionId);
+          mark('runtime-handle-dispose', 'done');
         }
         const disposing = this.disconnecting.get(sessionId);
-        if (disposing) await disposing;
+        if (disposing) {
+          mark('runtime-dispose-join', 'wait');
+          await disposing;
+          mark('runtime-dispose-join', 'done');
+        }
+        mark('runtime-registry', 'wait');
         if (this.ctx.agents.get(SessionId(sessionId))) throw new NativeWorkError('unavailable');
+        mark('runtime-registry', 'done');
         let basis: NativeMigrationDrain['basis'] = 'flushed-and-closed';
         let handle: SessionHandle | undefined;
         try {
           // Explicit cleanup only: history never write-opens, creates or resumes.
+          mark('runtime-writer-open', 'wait');
           handle = await this.ctx.sessionPersistence.open(SessionId(sessionId), 'write');
           this.barrierHandles.set(sessionId, handle);
+          mark('runtime-writer-open', 'done');
+          mark('runtime-writer-flush', 'wait');
           await handle.flush();
+          mark('runtime-writer-flush', 'done');
         } catch (error) {
+          mark(
+            waiting ?? last,
+            'error',
+            error instanceof SessionPersistenceNotFoundError ? 'persistence-not-found' : error,
+          );
           if (!handle && allowAbsent && error instanceof SessionPersistenceNotFoundError)
             basis = 'absent-unadmitted';
           else throw error;
         } finally {
           if (handle) {
+            mark('runtime-writer-close', 'wait');
             await handle.close();
+            mark('runtime-writer-close', 'done');
             if (this.barrierHandles.get(sessionId) === handle)
               this.barrierHandles.delete(sessionId);
           }
         }
+        mark('runtime-identity', 'wait');
         if (
           this.ctx.sessionPersistence.identity !== persistence ||
           registryIdentity(this.ctx) !== registry
         )
           throw new NativeWorkError('unavailable');
+        mark('runtime-identity', 'done');
+        mark('runtime-epoch', 'wait');
         const epoch = resourceEpochs.get(sessionId);
         if (!epoch || epoch.owner !== this) throw new NativeWorkError('unavailable');
         epoch.basis = basis;
         epoch.proof = { persistence, registry };
+        mark('runtime-epoch', 'done');
+        mark('runtime-barrier', 'done');
       });
       this.retiring.set(sessionId, work);
       const owned = work;
       const release = () => {
         if (this.retiring.get(sessionId) === owned) this.retiring.delete(sessionId);
       };
-      void owned.then(release, () => {
+      void owned.then(release, (error: unknown) => {
+        mark(waiting ?? failedAt ?? last, 'error', error);
         const epoch = resourceEpochs.get(sessionId);
         if (epoch?.owner === this) {
           epoch.failed = true;
