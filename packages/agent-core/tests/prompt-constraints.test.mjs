@@ -120,18 +120,22 @@ test('prompt constraints: scope, format and forbidden paths fail planning and ex
   assert.throws(
     () =>
       parsePlanningResult(
-        planText(task, '接口定义', '写入 secrets/token.txt'),
+        planText(task, '接口定义', '读取 docs/spec.md 作为输入，禁止读取 secrets/token.txt'),
         state,
         task,
         context,
       ),
     (error) =>
       error.code === 'constraint-violation' &&
-      /forbidden-path/.test(error.message) &&
-      /output-format-mismatch/.test(error.message),
+      /output-format-mismatch/.test(error.message) &&
+      !/forbidden-path|scope-exceeded/.test(error.message),
   );
   parsePlanningResult(
-    planText(task, '交付 json', '只改 packages/agent-core/src/a.ts'),
+    planText(
+      task,
+      '交付 json',
+      '读取 docs/spec.md 作为输入，仅修改 packages/agent-core/src/a.ts；禁止读取 secrets/token.txt',
+    ),
     state,
     task,
     context,
@@ -145,6 +149,56 @@ test('prompt constraints: scope, format and forbidden paths fail planning and ex
   assert.throws(
     () => acceptExecutionDraft(snapshot, { text: '不是 JSON', paths: ['secrets/key.txt'] }),
     (error) => error.code === 'constraint-violation' && error.issues.length >= 2,
+  );
+});
+
+test('prompt constraints: an explicit pin is checked even when only one Skill candidate exists', () => {
+  const missing = loadPromptConstraints({
+    skills: [skill('review', '2', 'Write', '第二版说明')],
+    skillPins: [{ id: 'review', version: '1' }],
+  });
+  assert.equal(missing.ok, false);
+  assert.equal(missing.snapshot, undefined);
+  assert.equal(missing.issues[0].code, 'skill-version-conflict');
+  assert.match(missing.issues[0].reason, /钉住版本 1 不存在/);
+  const matched = loadPromptConstraints({
+    skills: [skill('review', '1', 'Read', '第一版说明')],
+    skillPins: [{ id: 'review', version: '1' }],
+  });
+  assert.equal(matched.ok, true);
+  assert.deepEqual(
+    matched.snapshot.skills.map((item) => item.version),
+    ['1'],
+  );
+  assert.deepEqual(matched.snapshot.skills[0].allowedTools, ['Read']);
+});
+
+test('prompt constraints: prose may name inputs and forbidden paths; structured targets stay checked', () => {
+  const result = loadPromptConstraints({
+    agentsMd: '生成范围: src/\n禁止路径: secrets\n',
+  });
+  assert.equal(result.ok, true);
+  const snapshot = result.snapshot;
+  const inputNote = '读取 docs/spec.md 作为输入，仅修改 src/a.ts';
+  const prohibition = '仅修改 src/a.ts；禁止读取 secrets/token.txt';
+  assert.equal(checkPromptConstraints(snapshot, { texts: [inputNote] }).ok, true);
+  assert.equal(checkPromptConstraints(snapshot, { texts: [prohibition] }).ok, true);
+  assert.equal(acceptExecutionDraft(snapshot, { text: inputNote }), snapshot);
+  assert.equal(
+    acceptExecutionDraft(snapshot, { text: prohibition, paths: ['src/a.ts'] }),
+    snapshot,
+  );
+  const outside = checkPromptConstraints(snapshot, { paths: ['docs/spec.md'] });
+  assert.equal(outside.ok, false);
+  assert.equal(outside.issues[0].code, 'scope-exceeded');
+  const forbidden = checkPromptConstraints(snapshot, { paths: ['src/secrets/token.txt'] });
+  assert.equal(forbidden.ok, false);
+  assert.equal(forbidden.issues[0].code, 'forbidden-path');
+  assert.throws(
+    () => acceptExecutionDraft(snapshot, { paths: ['docs/spec.md'] }),
+    (error) => {
+      return error.code === 'constraint-violation' && error.issues[0].code === 'scope-exceeded';
+    },
   );
 });
 

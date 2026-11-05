@@ -388,11 +388,7 @@ export function taskPrompt(
   parts.push(`本轮要求：${request.instruction}`);
   if (request.promptConstraints) {
     const frozen = readPromptConstraints(request.promptConstraints);
-    const texts = [request.goal, request.instruction, inputNote, expectedOutput].filter(
-      (text) => text.length > 0,
-    );
     const checked = checkPromptConstraints(frozen, {
-      texts,
       ...(request.toolAllowlist?.length ? { tools: [...request.toolAllowlist] } : {}),
     });
     if (!checked.ok) {

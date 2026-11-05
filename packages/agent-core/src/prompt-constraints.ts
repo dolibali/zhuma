@@ -100,7 +100,9 @@ export type PromptConstraintLoadResult =
   | { readonly ok: false; readonly issues: readonly ConstraintIssue[] };
 
 export interface ConstraintSubject {
+  /** 结构化操作目标。只有这些路径做范围和禁止路径硬校验。 */
   readonly paths?: readonly string[];
+  /** 说明文字只进入提示，不从中提取路径做硬拒绝。 */
   readonly texts?: readonly string[];
   readonly outputFormat?: string;
   readonly outputText?: string;
@@ -487,6 +489,16 @@ export function loadPromptConstraints(
       ].sort(),
     });
   }
+  for (const pin of pins) {
+    if (kept.some((skill) => skill.id === pin.id && skill.version === pin.version)) continue;
+    issues.push(
+      issue(
+        'skill-version-conflict',
+        `${pin.id}@${pin.version}`,
+        `Skill「${pin.id}」的钉住版本 ${pin.version} 不存在，不能改用其他版本。`,
+      ),
+    );
+  }
   if (issues.length) return { ok: false, issues: Object.freeze(issues) };
   kept.sort((a, b) => a.id.localeCompare(b.id) || a.version.localeCompare(b.version));
   resolvedPins.sort((a, b) => a.id.localeCompare(b.id) || a.version.localeCompare(b.version));
@@ -556,19 +568,6 @@ export function executionConstraintText(snapshot: PromptConstraintSnapshot): str
   return `约束快照 ${frozen.id}\n${frozen.text}`;
 }
 
-const PATH_PATTERN = /(?<![\w@])(?:\.?[\w.-]+\/)+[\w.@/-]*|(?<![\w@])\.env(?:\.[\w.-]+)?(?![\w])/gu;
-
-function pathsIn(text: string): string[] {
-  const found: string[] = [];
-  for (const match of text.matchAll(PATH_PATTERN)) {
-    const token = match[0]?.replace(/[),.;，。）]+$/u, '');
-    if (!token || token.includes('://')) continue;
-    const path = normalizePath(token);
-    if (path) found.push(path);
-  }
-  return found;
-}
-
 function normalizePath(value: string): string | undefined {
   const path = value
     .replace(/\\/g, '/')
@@ -593,7 +592,7 @@ function inScope(path: string, scopes: readonly string[]): boolean {
   return scopes.some((scope) => path === scope || path.startsWith(`${scope}/`));
 }
 
-/** 生成范围、输出格式、禁止路径和 allowed-tools 的最小检查。 */
+/** 生成范围、输出格式、禁止路径和 allowed-tools 的最小检查。说明文字不参与路径硬校验。 */
 export function checkPromptConstraints(
   snapshot: PromptConstraintSnapshot,
   subject: ConstraintSubject,
@@ -601,7 +600,7 @@ export function checkPromptConstraints(
   const frozen = readPromptConstraints(snapshot);
   const issues: ConstraintIssue[] = [];
   const seen = new Set<string>();
-  for (const raw of [...(subject.paths ?? []), ...(subject.texts ?? []).flatMap(pathsIn)]) {
+  for (const raw of subject.paths ?? []) {
     const path = normalizePath(raw);
     if (!path || seen.has(path)) continue;
     seen.add(path);
@@ -647,7 +646,7 @@ export function checkPromptConstraints(
   return issues.length ? { ok: false, issues: Object.freeze(issues) } : { ok: true };
 }
 
-/** 草案节点上的范围、格式和禁止路径。失败时由规划校验抛出。 */
+/** 草案节点的说明文字不做路径硬校验；交付说明仍须写出要求的输出格式。 */
 export function checkPlanningWorkflows(
   snapshot: PromptConstraintSnapshot,
   workflows: readonly { readonly nodes: readonly PlanningConstraintNode[] }[],
@@ -655,13 +654,6 @@ export function checkPlanningWorkflows(
   const frozen = readPromptConstraints(snapshot);
   const issues: ConstraintIssue[] = [];
   for (const node of workflows.flatMap((workflow) => workflow.nodes)) {
-    const checked = checkPromptConstraints(frozen, {
-      texts: [node.title, node.description, node.input, node.output, node.rationale],
-    });
-    if (!checked.ok) {
-      for (const item of checked.issues)
-        issues.push({ ...item, target: `${node.id}:${item.target}` });
-    }
     const format = frozen.limits.outputFormat;
     if (format && !node.output.toLowerCase().includes(format.toLowerCase())) {
       issues.push(
@@ -687,7 +679,7 @@ export function acceptExecutionDraft(
 ): PromptConstraintSnapshot {
   const frozen = readPromptConstraints(snapshot);
   const checked = checkPromptConstraints(frozen, {
-    ...(draft.text !== undefined ? { texts: [draft.text], outputText: draft.text } : {}),
+    ...(draft.text !== undefined ? { outputText: draft.text } : {}),
     ...(draft.paths ? { paths: [...draft.paths] } : {}),
     ...(draft.tools ? { tools: [...draft.tools] } : {}),
   });

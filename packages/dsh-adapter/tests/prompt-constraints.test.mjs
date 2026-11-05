@@ -37,6 +37,22 @@ function service() {
   );
 }
 
+test('prompt constraints: execution prompt keeps input and prohibition wording', () => {
+  const prose = loadPromptConstraints({
+    agentsMd: '生成范围: src/\n禁止路径: secrets\n',
+  });
+  assert.equal(prose.ok, true);
+  const wording = taskPrompt({
+    goal: '读取 docs/spec.md 作为输入，仅修改 src/a.ts',
+    instruction: '仅修改 src/a.ts；禁止读取 secrets/token.txt',
+    inputNote: '上游输入 docs/spec.md',
+    promptConstraints: prose.snapshot,
+  });
+  assert.match(wording, /docs\/spec\.md/);
+  assert.match(wording, /secrets\/token\.txt/);
+  assert.ok(wording.includes(prose.snapshot.text));
+});
+
 test('prompt constraints: execution prompt reads the pinned snapshot and rejects a forbidden tool', () => {
   const frozen = snapshot();
   const prompt = taskPrompt({
