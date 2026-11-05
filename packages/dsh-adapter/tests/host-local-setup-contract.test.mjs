@@ -205,7 +205,15 @@ test('first setup desktop forwarding source contract: validated local owner POST
     const calls = [];
     globalThis.fetch = async (url, init) => {
       calls.push({ url, headers: new Headers(init.headers) });
-      return new Response('{}');
+      return new Response('{}', {
+        headers:
+          new URL(url).pathname === '/zhuma-id/login'
+            ? {
+                'set-cookie':
+                  'zhuma-member=synthetic-member; Max-Age=3600; Path=/; HttpOnly; SameSite=Strict',
+              }
+            : {},
+      });
     };
     const host = 'http://127.0.0.1:39071',
       owner = 'dsh-session=synthetic-owner-only';
@@ -227,6 +235,26 @@ test('first setup desktop forwarding source contract: validated local owner POST
     );
     assert.equal(calls.length, 1);
     for (const endpoint of ['options', 'approve', 'revoke']) {
+      const denied = new Request(`dsh-app://app/api/zhuma-workspaces/${endpoint}`, {
+        method: 'POST',
+        body: '{}',
+        headers: { origin: 'dsh-app://app' },
+      });
+      assert.equal((await module.forwardWebRequest(denied, host, owner)).status, 401);
+    }
+    assert.equal(calls.length, 1, 'workspace actions require a member before dispatch');
+    const login = await module.forwardWebRequest(
+      new Request('dsh-app://app/zhuma-id/login', {
+        method: 'POST',
+        body: '{}',
+        headers: { origin: 'dsh-app://app' },
+      }),
+      host,
+      owner,
+    );
+    assert.equal(login.status, 200);
+    assert.equal(login.headers.get('set-cookie'), null);
+    for (const endpoint of ['options', 'approve', 'revoke']) {
       const allowed = new Request(`dsh-app://app/api/zhuma-workspaces/${endpoint}`, {
         method: 'POST',
         body: '{}',
@@ -234,6 +262,7 @@ test('first setup desktop forwarding source contract: validated local owner POST
       });
       assert.equal((await module.forwardWebRequest(allowed, host, owner)).status, 200);
       assert.equal(calls.at(-1).headers.get('origin'), host);
+      assert.equal(calls.at(-1).headers.get('cookie'), `${owner}; zhuma-member=synthetic-member`);
       const foreign = new Request(`dsh-app://app/api/zhuma-workspaces/${endpoint}`, {
         method: 'POST',
         body: '{}',
@@ -241,7 +270,7 @@ test('first setup desktop forwarding source contract: validated local owner POST
       });
       assert.equal((await module.forwardWebRequest(foreign, host, owner)).status, 403);
     }
-    assert.equal(calls.length, 4);
+    assert.equal(calls.length, 5);
     const configure = new Request('dsh-app://app/api/zhuma-codearts/configure', {
       method: 'POST',
       body: '{}',
@@ -249,6 +278,7 @@ test('first setup desktop forwarding source contract: validated local owner POST
     });
     await module.forwardWebRequest(configure, host, owner);
     assert.equal(calls.at(-1).headers.get('origin'), host);
+    assert.equal(calls.at(-1).headers.get('cookie'), owner);
     for (const path of [
       '/api/zhuma-codearts/configure/extra',
       '/api/zhuma-codearts/%63onfigure',
