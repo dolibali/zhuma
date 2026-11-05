@@ -11,7 +11,11 @@ import {
   AssetImportError,
 } from '@zhuma/agent-core';
 import { WorkbenchService, type PlanningModel } from './workbench-service.js';
-import { createPlanningModels, type PlanningModelCatalog } from './planning-model.js';
+import {
+  createPlanningModels,
+  type MemberPlanningModels,
+  type PlanningModelCatalog,
+} from './planning-model.js';
 import { createHostRunSkillPolicies } from './host-run-skill-policy.js';
 import { openHostTeamCatalog } from './host-team-catalog.js';
 import {
@@ -75,8 +79,7 @@ export interface OpenedWorkbench {
   ): ReturnType<typeof createHostRunSkillPolicies>;
   readWorkbench(): ReturnType<WorkbenchService['snapshot']>;
   planningModel(): PlanningModel | undefined;
-  planningModels: {
-    catalog(signal: AbortSignal): Promise<PlanningModelCatalog>;
+  planningModels: MemberPlanningModels & {
     select(input: unknown, signal: AbortSignal): Promise<PlanningModelCatalog>;
   };
   /** Facade over this already-opened Workbench and the same member catalog. */
@@ -264,13 +267,26 @@ export async function openWorkbench(
     },
     planningModel,
     planningModels: {
-      async catalog(signal) {
+      async catalog(signal, scope) {
         if (lifetime.signal.aborted) throw new WorkbenchError('unavailable', '工作台已关闭。');
-        return models.catalog(AbortSignal.any([signal, lifetime.signal]));
+        return models.catalog(AbortSignal.any([signal, lifetime.signal]), scope);
+      },
+      modelFor(scope) {
+        if (lifetime.signal.aborted) return undefined;
+        return models.modelFor(scope);
       },
       async select(input, signal) {
         if (lifetime.signal.aborted) throw new WorkbenchError('unavailable', '工作台已关闭。');
         return models.select(input, AbortSignal.any([signal, lifetime.signal]));
+      },
+      async selectForMember(scope, input, signal, confirm) {
+        if (lifetime.signal.aborted) throw new WorkbenchError('unavailable', '工作台已关闭。');
+        return models.selectForMember(
+          scope,
+          input,
+          AbortSignal.any([signal, lifetime.signal]),
+          confirm,
+        );
       },
     },
     openMemberAssets: (memberCtx, options) => {

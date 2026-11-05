@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { WorkbenchError } from '@zhuma/agent-core';
 import type { PlanningModelChoices, WorkbenchApi } from './api.js';
 import { Button } from './Button.js';
@@ -42,22 +42,43 @@ export function usePlanningReadiness(api: WorkbenchApi, initialModel: string) {
   const [selecting, setSelecting] = useState(false);
   const [error, setError] = useState('');
   const active = useRef<AbortController>(undefined);
-  const alive = useRef(true);
-  useEffect(
-    () => () => {
+  const alive = useRef(false);
+  const generation = useRef(0);
+  const seenApi = useRef(api);
+  const initialModelRef = useRef(initialModel);
+  initialModelRef.current = initialModel;
+  // Each setup restores the guard. Cleanup invalidates requests already in flight.
+  // StrictMode runs that cleanup and then setup again; generation only moves on cleanup
+  // so a catalog load started by the following setup is not treated as stale.
+  useLayoutEffect(() => {
+    alive.current = true;
+    if (seenApi.current !== api) {
+      seenApi.current = api;
+      setChoices(undefined);
+      setModel(initialModelRef.current);
+      setError('');
+      setChecking(false);
+      setSelecting(false);
+    }
+    return () => {
       alive.current = false;
+      generation.current += 1;
       active.current?.abort();
-    },
-    [],
-  );
+    };
+  }, [api]);
   useEffect(() => {
     setModel(initialModel);
   }, [initialModel]);
   const begin = useCallback(() => {
     const request = new AbortController();
+    const ticket = generation.current;
     active.current?.abort();
     active.current = request;
-    const current = () => alive.current && active.current === request && !request.signal.aborted;
+    const current = () =>
+      alive.current &&
+      generation.current === ticket &&
+      active.current === request &&
+      !request.signal.aborted;
     return { request, current };
   }, []);
   const loadCatalog = useCallback(
@@ -119,6 +140,9 @@ export function usePlanningReadiness(api: WorkbenchApi, initialModel: string) {
     },
     [api, begin, checking, choices, selecting],
   );
+  const activate = useCallback(() => {
+    alive.current = true;
+  }, []);
   return {
     model,
     choices,
@@ -129,15 +153,17 @@ export function usePlanningReadiness(api: WorkbenchApi, initialModel: string) {
     refresh,
     loadCatalog,
     selectModel,
+    activate,
   };
 }
 
 export function PlanningReadiness({ value }: { value: ReturnType<typeof usePlanningReadiness> }) {
   useEffect(() => {
+    value.activate();
     const request = new AbortController();
     void value.loadCatalog(request.signal);
     return () => request.abort();
-  }, [value.loadCatalog]);
+  }, [value.activate, value.loadCatalog]);
   const switchable = value.choices?.kind === 'ready' && value.choices.items.length > 0;
   const selected =
     switchable && value.choices?.selectedId

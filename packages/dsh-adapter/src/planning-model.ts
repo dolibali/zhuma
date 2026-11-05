@@ -27,6 +27,25 @@ export interface PlanningModelCatalog {
   readonly message: string;
   readonly items: readonly PlanningModelOption[];
 }
+/** One member in one space. Not a Host-wide default. */
+export interface PlanningMemberScope {
+  readonly actorId: string;
+  readonly spaceId: string;
+}
+/**
+ * Member catalog and choice. `selectForMember` never writes the shared Host default.
+ * `confirm` runs after the catalog check and before the choice is stored.
+ */
+export interface MemberPlanningModels {
+  catalog(signal: AbortSignal, scope?: PlanningMemberScope): Promise<PlanningModelCatalog>;
+  modelFor(scope: PlanningMemberScope): PlanningModel | undefined;
+  selectForMember(
+    scope: PlanningMemberScope,
+    input: { readonly provider: string; readonly model: string },
+    signal: AbortSignal,
+    confirm: () => Promise<void>,
+  ): Promise<PlanningModelCatalog>;
+}
 
 const unavailableMessage = '模型目录暂不可用，请检查模型配置后刷新。';
 
@@ -85,14 +104,21 @@ function sameRoute(
   return !!left && !!right && left.provider === right.provider && left.model === right.model;
 }
 
+function memberKey(scope: PlanningMemberScope): string {
+  return `${scope.actorId}/${scope.spaceId}`;
+}
+
 /**
- * Planning reads the Host's shared default model and the same provider catalog
- * used for configured routes. A panel choice is kept for later plan calls even
- * when the deployment has no configuration editor to persist the shared default.
+ * Planning reads the Host's shared default and the same provider catalog used
+ * for configured routes. Operator `select` may persist that shared default.
+ * A member choice is kept only for that member and space, and never calls
+ * `saveSelection` or replaces another member's route.
  */
 export function createPlanningModels(ctx: Context) {
   let override: PlanningRoute | undefined;
   let generation = 0;
+  const memberChoices = new Map<string, PlanningRoute>();
+  const memberGeneration = new Map<string, number>();
 
   function readOfficial() {
     const defaults = ctx.get('agentDefaultModel');
@@ -110,19 +136,27 @@ export function createPlanningModels(ctx: Context) {
     }
   }
 
-  function effective(): PlanningRoute | undefined {
+  function sharedDefault(): PlanningRoute | undefined {
     const official = readOfficial();
     if (!override) return official;
     if (sameRoute(official, override)) return official;
     return override;
   }
 
+  function routeFor(scope?: PlanningMemberScope): PlanningRoute | undefined {
+    if (scope) {
+      const chosen = memberChoices.get(memberKey(scope));
+      if (chosen) return chosen;
+    }
+    return sharedDefault();
+  }
+
   function catalogFrom(
     items: readonly PlanningModelOption[],
     message: string,
     kind: PlanningModelCatalog['kind'],
+    route: PlanningRoute | undefined,
   ): PlanningModelCatalog {
-    const route = effective();
     const selected = items.find((item) => sameRoute(item, route));
     return {
       kind,
@@ -133,34 +167,38 @@ export function createPlanningModels(ctx: Context) {
     };
   }
 
-  async function listed(signal: AbortSignal): Promise<PlanningModelCatalog> {
+  async function listed(
+    signal: AbortSignal,
+    scope?: PlanningMemberScope,
+  ): Promise<PlanningModelCatalog> {
     try {
       const models = await readHostRunModels(ctx, signal);
       signal.throwIfAborted();
+      const route = routeFor(scope);
       if (models.kind !== 'ready')
-        return catalogFrom([], models.message || unavailableMessage, 'unavailable');
+        return catalogFrom([], models.message || unavailableMessage, 'unavailable', route);
       const items = models.items.map((item) => ({
         id: item.id,
         label: `${item.value.provider} / ${item.value.model}`,
         provider: item.value.provider,
         model: item.value.model,
       }));
-      return catalogFrom(items, '', 'ready');
+      return catalogFrom(items, '', 'ready', route);
     } catch (error) {
       if (signal.aborted) throw error;
-      return catalogFrom([], unavailableMessage, 'unavailable');
+      return catalogFrom([], unavailableMessage, 'unavailable', routeFor(scope));
     }
   }
 
-  /** Reading and manual editing do not require a configured model service. */
-  function planningModel(): PlanningModel | undefined {
+  /** The route is fixed when the caller asks, so a later choice cannot retarget it. */
+  function bind(route: PlanningRoute | undefined): PlanningModel | undefined {
     const llm = ctx.get('llm');
-    const route = effective();
     if (!llm || !route) return undefined;
+    const selected = route;
     return {
-      name: routeLabel(route),
+      name: routeLabel(selected),
       generate: async (system, input, abort) => {
-        const call = await llm.prepareCall({ ...route, maxTokens: 12000 }, abort);
+        const call = await llm.prepareCall({ ...selected, maxTokens: 12000 }, abort);
         let text = '';
         let stopped = false;
         for await (const chunk of call.stream({
@@ -188,25 +226,38 @@ export function createPlanningModels(ctx: Context) {
     };
   }
 
+  async function accepted(input: unknown, signal: AbortSignal, scope?: PlanningMemberScope) {
+    const requested = selectSchema.parse(input);
+    const current = await listed(signal, scope);
+    if (current.kind !== 'ready')
+      throw new WorkbenchError('model-unavailable', current.message || unavailableMessage);
+    const match = current.items.find((item) => sameRoute(item, requested));
+    if (!match)
+      throw new WorkbenchError('model-unavailable', '所选规划模型当前不可用，请刷新后重试。');
+    const official = readOfficial();
+    const next =
+      sameRoute(official, match) && official
+        ? official
+        : { provider: match.provider, model: match.model };
+    signal.throwIfAborted();
+    return next;
+  }
+
   return {
-    planningModel,
-    catalog(signal: AbortSignal) {
-      return listed(signal);
+    planningModel() {
+      return bind(sharedDefault());
     },
+    modelFor(scope: PlanningMemberScope) {
+      return bind(routeFor(scope));
+    },
+    catalog(signal: AbortSignal, scope?: PlanningMemberScope) {
+      return listed(signal, scope);
+    },
+    /** Operator path: may persist the shared Host default. Members must not call this. */
     async select(input: unknown, signal: AbortSignal): Promise<PlanningModelCatalog> {
       const ticket = ++generation;
-      const requested = selectSchema.parse(input);
-      const current = await listed(signal);
-      if (current.kind !== 'ready')
-        throw new WorkbenchError('model-unavailable', current.message || unavailableMessage);
-      const match = current.items.find((item) => sameRoute(item, requested));
-      if (!match)
-        throw new WorkbenchError('model-unavailable', '所选规划模型当前不可用，请刷新后重试。');
-      const official = readOfficial();
-      const next =
-        sameRoute(official, match) && official
-          ? official
-          : { provider: match.provider, model: match.model };
+      const next = await accepted(input, signal);
+      if (ticket !== generation) return listed(signal);
       const defaults = ctx.get('agentDefaultModel');
       if (defaults && typeof defaults.saveSelection === 'function') {
         try {
@@ -223,6 +274,25 @@ export function createPlanningModels(ctx: Context) {
       }
       signal.throwIfAborted();
       return listed(signal);
+    },
+    async selectForMember(
+      scope: PlanningMemberScope,
+      input: { readonly provider: string; readonly model: string },
+      signal: AbortSignal,
+      confirm: () => Promise<void>,
+    ): Promise<PlanningModelCatalog> {
+      const key = memberKey(scope);
+      const ticket = (memberGeneration.get(key) ?? 0) + 1;
+      memberGeneration.set(key, ticket);
+      const next = await accepted(input, signal, scope);
+      await confirm();
+      signal.throwIfAborted();
+      if (memberGeneration.get(key) !== ticket) return listed(signal, scope);
+      // Matching the shared default keeps that route, including fields this
+      // chooser does not own. Any other listed route is only this member's.
+      if (sameRoute(sharedDefault(), next)) memberChoices.delete(key);
+      else memberChoices.set(key, { provider: next.provider, model: next.model });
+      return listed(signal, scope);
     },
   };
 }

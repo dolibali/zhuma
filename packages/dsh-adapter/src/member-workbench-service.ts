@@ -586,7 +586,7 @@ export class MemberWorkbenchService {
       fail('conflict', '目录读取期间内容已变化，请刷新。');
     const space = fresh.directory.space(spaceId);
     if (!space) fail('not-found', '空间不可用。');
-    const model = this.options.model?.();
+    const model = this.planningModelFor(fresh);
     const {
       memberAssets: _privateAssetFacts,
       memberAssetFolders: _privateFolders,
@@ -1000,7 +1000,7 @@ export class MemberWorkbenchService {
       );
     };
     await read();
-    const model = this.options.model?.();
+    const model = this.planningModelFor(initial);
     if (!model) fail('model-unavailable', '请先配置可用模型。');
     const proposal = await this.workbench.plan(request, model, signal, {
       scopeKey: `${initial.actorId}/${spaceId}`,
@@ -1019,10 +1019,20 @@ export class MemberWorkbenchService {
     return { initial, source };
   }
 
+  /** Member choice when the chooser is mounted; otherwise the injected shared model. */
+  private planningModelFor(scope: { actorId: string; spaceId: string }) {
+    const source = this.options.planningModels;
+    if (source) return source.modelFor(scope);
+    return this.options.model?.();
+  }
+
   async planningModels(raw: unknown, signal: AbortSignal) {
     const { spaceId } = MemberWorkbenchScopeSchema.parse(raw);
     const { initial, source } = await this.planningSource(spaceId, signal);
-    const catalog = await source.catalog(signal);
+    const catalog = await source.catalog(signal, {
+      actorId: initial.actorId,
+      spaceId,
+    });
     await this.scope(spaceId, initial.actorId);
     signal.throwIfAborted();
     return { actorId: initial.actorId, spaceId, ...catalog };
@@ -1031,8 +1041,10 @@ export class MemberWorkbenchService {
   async selectPlanningModel(raw: unknown, signal: AbortSignal) {
     const { spaceId, provider, model } = MemberPlanningModelSelectSchema.parse(raw);
     const { initial, source } = await this.planningSource(spaceId, signal);
-    const catalog = await source.select({ provider, model }, signal);
-    await this.scope(spaceId, initial.actorId);
+    const scope = { actorId: initial.actorId, spaceId };
+    const catalog = await source.selectForMember(scope, { provider, model }, signal, async () => {
+      await this.scope(spaceId, initial.actorId);
+    });
     signal.throwIfAborted();
     return { actorId: initial.actorId, spaceId, ...catalog };
   }

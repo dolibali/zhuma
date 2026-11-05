@@ -38,7 +38,7 @@ if (domModule) {
   globalThis.cancelAnimationFrame = window.cancelAnimationFrame.bind(window);
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 }
-const { createElement: el, act } = await import('react');
+const { createElement: el, act, StrictMode, useState } = await import('react');
 const { createRoot } = await import('react-dom/client');
 const { renderToStaticMarkup } = await import('react-dom/server');
 const { PlanningReadiness, choosePlanningModel, readPlanningReadiness, usePlanningReadiness } =
@@ -259,6 +259,166 @@ test(
       );
     } finally {
       await act(async () => root.unmount());
+      node.remove();
+    }
+  },
+);
+
+async function flush() {
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  });
+}
+
+test(
+  'StrictMode setup, cleanup, setup still loads the catalog and can refresh or select',
+  { skip: !domModule && 'set ZHUMA_NATIVE_PANEL_DOM_MODULE for in-memory DOM contracts' },
+  async () => {
+    assert.notEqual(process.env.NODE_ENV, 'production');
+    let model = current.label;
+    let catalogs = 0;
+    let snapshots = 0;
+    const selected = [];
+    const api = {
+      member: { actorId: 'ann', capabilities: () => ({ planning: true, tasks: [] }) },
+      async snapshot() {
+        snapshots += 1;
+        return { state: {}, model };
+      },
+      async planningModels() {
+        catalogs += 1;
+        return readyCatalog(model === alternate.label ? alternate : current);
+      },
+      async selectPlanningModel(provider, selectedModel) {
+        selected.push([provider, selectedModel]);
+        model = alternate.label;
+        return readyCatalog(alternate);
+      },
+    };
+    const node = document.createElement('div');
+    document.body.append(node);
+    const root = createRoot(node);
+    function Harness() {
+      const value = usePlanningReadiness(api, current.label);
+      return el(PlanningReadiness, { value });
+    }
+    try {
+      await act(async () => {
+        root.render(el(StrictMode, null, el(Harness)));
+      });
+      await flush();
+      assert.ok(catalogs >= 2);
+      assert.ok(node.querySelector('[aria-label="规划模型"]'));
+      assert.equal(snapshots, 0);
+      const refresh = [...node.querySelectorAll('button')].find((button) =>
+        (button.querySelector('.zm-button-label')?.textContent ?? '').includes('刷新模型'),
+      );
+      assert.ok(refresh);
+      await act(async () => {
+        refresh.click();
+      });
+      await flush();
+      assert.ok(snapshots >= 1);
+      const trigger = node.querySelector('[aria-label="规划模型"]');
+      await act(async () => {
+        trigger.click();
+      });
+      await flush();
+      const option = [...document.querySelectorAll('[role="option"]')].find((item) =>
+        item.textContent.includes(alternate.label),
+      );
+      assert.ok(option);
+      await act(async () => {
+        option.click();
+      });
+      await flush();
+      assert.deepEqual(selected, [[alternate.provider, alternate.model]]);
+      assert.match(
+        node.textContent,
+        new RegExp(alternate.label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+      );
+    } finally {
+      await act(async () => root.unmount());
+      node.remove();
+    }
+  },
+);
+
+test(
+  'a replaced planning api drops the previous catalog, and unmount aborts its request',
+  { skip: !domModule && 'set ZHUMA_NATIVE_PANEL_DOM_MODULE for in-memory DOM contracts' },
+  async () => {
+    const stale = Promise.withResolvers();
+    const signals = [];
+    const oldApi = {
+      member: { actorId: 'ann', capabilities: () => ({ planning: true, tasks: [] }) },
+      async snapshot() {
+        return { state: {}, model: current.label };
+      },
+      async planningModels(signal) {
+        signals.push(signal);
+        return stale.promise;
+      },
+    };
+    const nextApi = {
+      member: { actorId: 'ann', capabilities: () => ({ planning: true, tasks: [] }) },
+      async snapshot() {
+        return { state: {}, model: alternate.label };
+      },
+      async planningModels(signal) {
+        signals.push(signal);
+        return readyCatalog(alternate);
+      },
+    };
+    const node = document.createElement('div');
+    document.body.append(node);
+    const root = createRoot(node);
+    function Harness() {
+      const [api, setApi] = useState(oldApi);
+      const value = usePlanningReadiness(api, current.label);
+      return el(
+        'div',
+        null,
+        el('button', { type: 'button', onClick: () => setApi(nextApi) }, '更换'),
+        el(PlanningReadiness, { value }),
+      );
+    }
+    try {
+      await act(async () => {
+        root.render(el(StrictMode, null, el(Harness)));
+      });
+      await flush();
+      assert.ok(signals.length >= 1);
+      const previous = signals.slice();
+      await act(async () => {
+        node.querySelector('button').click();
+      });
+      await flush();
+      assert.ok(previous.every((item) => item.aborted));
+      assert.match(
+        node.textContent,
+        new RegExp(alternate.label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+      );
+      stale.resolve({
+        kind: 'ready',
+        label: 'stale-route / secret',
+        selectedId: 'stale',
+        message: '',
+        items: [
+          {
+            id: 'stale',
+            label: 'stale-route / secret',
+            provider: 'stale-route',
+            model: 'secret',
+          },
+        ],
+      });
+      await flush();
+      assert.doesNotMatch(node.textContent, /stale-route/);
+      const pending = signals.at(-1);
+      await act(async () => root.unmount());
+      assert.equal(pending.aborted, true);
+    } finally {
       node.remove();
     }
   },
