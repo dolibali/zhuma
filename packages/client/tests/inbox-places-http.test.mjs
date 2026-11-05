@@ -36,7 +36,7 @@ test('places member HTTP uses the existing scoped inbox route and preserves the 
   const c = scoped();
   const value = await c.api.inbox();
   assert.deepEqual(value.places, groupedInbox().places);
-  assert.deepEqual(c.calls[0].request.payload, { spaceId: 'team' });
+  assert.deepEqual(c.calls[0].request.payload, { spaceId: 'team', detail: 'waiting' });
   assert.equal(c.calls[0].url, '/api/zhuma-exec/inbox');
   assert.deepEqual(c.failures, { member: 0, space: 0 });
 });

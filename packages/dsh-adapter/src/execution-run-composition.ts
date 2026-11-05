@@ -168,9 +168,13 @@ const knowledgeToolSchema = toolSchema
   );
 const teamAssetToolSchema = toolSchema
   .extend({ name: z.literal('team_asset'), sourceVersion: z.literal('zhuma-native-team-assets@1') })
-  .refine(
-    (value) => hash(value) === '2c1ad05a92c3234960ae32ce7c7fe7251ad511c426ade5274d4fd36a35127b68',
-  );
+  .refine((value) => {
+    const digest = hash(value);
+    return (
+      digest === '2c1ad05a92c3234960ae32ce7c7fe7251ad511c426ade5274d4fd36a35127b68' ||
+      digest === 'e236b45ae90019f6e975617f65c8c792a39d661077bb9dae551db3e227fae8aa'
+    );
+  });
 const teamAssetSnapshotSchema = MemberAssetFileSnapshotSchema.refine(
   (value) => hash(memberAssetFileSnapshotDigestInput(value)) === value.sha256,
 );

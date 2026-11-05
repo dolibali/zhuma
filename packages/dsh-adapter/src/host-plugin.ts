@@ -39,6 +39,7 @@ import { openHostKnowledge } from './host-knowledge.js';
 import { openHostMemberAssets } from './host-member-assets.js';
 import { mountHostSharedBackend } from './host-shared-backend-http.js';
 import { openHostMemberLocalOptionsHttp } from './host-member-local-options-http.js';
+import { openHostCodeArtsSetup } from './host-codearts-setup.js';
 import {
   createHostNativeOwnerLifecycle,
   HostNativeOpenRefusal,
@@ -214,6 +215,7 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
   // Registers fail-closed streaming gates before the first asynchronous domain open.
   // The same clone-producing closure is shared with execution; no second workbench domain.
   let closed = false;
+  const codeArtsSetup = openHostCodeArtsSetup(ctx);
   const directoryLifecycle = createHostDirectoryLifecycle(() => spaceDirectoryFor(ctx));
   const memberDirectory = createHostMemberDirectory(ctx);
   let memberOpening: Promise<{ close(): Promise<void> } | undefined> | undefined;
@@ -343,6 +345,7 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
   }
   const beforeClose = async () => {
     closed = true;
+    const codeArtsClosing = codeArtsSetup.close();
     sessionAdmission?.close();
     const identityClosing = identityHttp?.close();
     const assetClosing = memberAssets?.close();
@@ -358,7 +361,7 @@ export async function apply(ctx: Context, rawConfig: unknown): Promise<void> {
       // Keep the shared Workbench facts available until native cleanup has
       // committed through the original execution owner.
       try {
-        const results = await Promise.allSettled([setupClosing, assetClosing]);
+        const results = await Promise.allSettled([setupClosing, assetClosing, codeArtsClosing]);
         const errors = results.flatMap((value) =>
           value.status === 'rejected' ? [value.reason] : [],
         );

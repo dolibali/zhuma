@@ -829,7 +829,14 @@ export function createExecutionApi(rpc: ClientConnectionRpc, spaceId?: string): 
       );
     },
     async inbox(signal) {
-      return scoped(readInbox(await call('inbox', scope, signal)));
+      const opted = { ...scope, detail: 'waiting' as const };
+      try {
+        return scoped(readInbox(await call('inbox', opted, signal)));
+      } catch (error) {
+        signal?.throwIfAborted();
+        if (!(error instanceof ExecutionError) || error.code !== 'unknown-field') throw error;
+        return scoped(readInbox(await call('inbox', scope, signal)));
+      }
     },
     async revision(query, signal) {
       const payload = {

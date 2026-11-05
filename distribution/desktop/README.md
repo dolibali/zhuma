@@ -1,14 +1,14 @@
-# Zhuma macOS Desktop 发行指南
+# Zhuma Desktop 发行指南
 
 Zhuma 使用固定的官方 DSH Electron 实现，自有工作台通过插件预装，必要的上游改动保存在 `patches/deepseek-harness/zhuma-desktop.patch`。构建脚本在 `.build/desktop/deepseek-harness/` 创建一次性的 DSH Git worktree，**不修改** `upstream/deepseek-harness/` 的已固定代码。
 
 ## 安装与首发边界
 
-本轮目标产品版本为 `1.2.0`，计划 tag 为 `v1.2.0`；工程包、Draft PR 或候选资产不等于正式 Release。当前已有候选构建集中于 **macOS arm64（Apple Silicon）**，使用 ad-hoc 临时签名、未公证，不认证 Intel Mac、Windows 或 Linux。Developer ID 签名、公证和自动更新尚未提供；正式 v1.2.0 的支持平台、安装限制、签名状态与必要验收按最终发行说明核对。
+当前源码版本为 `1.5.0`，发行目标为新 tag `v1.5.0`，范围与实际验收见[v1.5.0 说明](../../docs/release-v1.5.0.md)和 [#394](https://github.com/dolibali/zhuma/issues/394)。已发布的 [v1.4.0](https://github.com/dolibali/zhuma/releases/tag/v1.4.0) 与原资产保留；工程包或候选产物不等于新版本已公开。平台为 macOS arm64（Apple Silicon）、Windows x64 客户端及 Linux amd64 服务。macOS 为 ad-hoc、未公证，Windows 未签名；Developer ID、公证、Authenticode 和自动更新尚未提供，不认证 Intel Mac、Windows arm64 或 Linux 桌面。
 
 安装时打开已核对来源的候选 DMG，将 Zhuma 拖入 Applications 后运行。正常首次账号／团队、模型与交付入口见[工作台正常操作](../workbench/README.md#正常操作)。已有 profile 不因安装新包而自动迁移或更改部署模式。
 
-源码／服务契约、历史安装操作与最终候选验收分别留证。正常界面、真实模型＋Skill、独立 Agent 评审、下游及安装／恢复按准确候选验证；实时结果见 [#25](https://github.com/dolibali/zhuma/issues/25) 和 [#294](https://github.com/dolibali/zhuma/issues/294)，不从构建成功或既往记录推定全链路通过。本轮六项范围、同机隔离成员验证及后置边界见 [v1.2.0 说明](../../docs/release-v1.2.md)。
+源码／服务契约、历史安装操作与最终候选验收分别留证。正常界面、真实模型＋Skill、独立 Agent 评审、下游及安装／恢复按准确候选验证；实时结果见 [#25](https://github.com/dolibali/zhuma/issues/25) 和 [#310](https://github.com/dolibali/zhuma/issues/310)，不从构建成功或既往记录推定全链路通过。本轮增量与必要验收见 [v1.3.0 说明](../../docs/release-v1.3.md)；[v1.2.0 说明](../../docs/release-v1.2.md)保留原范围与证据。
 
 ## 前置条件
 
@@ -26,7 +26,24 @@ pnpm desktop:verify:mac          # 校验安装包名称、App ID、图标、签
 
 桌面预览开发应用位于 `.build/desktop/deepseek-harness/apps/desktop/.desktop-build/development/Zhuma Dev.app`，Renderer CDP 默认 `127.0.0.1:9222`，Main/Host 分别为 `9229`/`9230`。切换 DevTools 使用 `Command + Option + I`。
 
-候选 DMG 输出位于 `.build/desktop/deepseek-harness/apps/desktop/.desktop-build/targets/mac-arm64/unsigned-artifacts/`，具体名称以构建产物为准，构建成功后脚本同时复制到项目根目录下**不会提交 Git 的 `dist/`**。目录名沿用 `unsigned-artifacts`；当前验收候选采用 ad-hoc 临时签名、未公证。此为开发者测试包，正式发行状态以最终 v1.2.0 说明为准。
+候选 DMG 输出位于 `.build/desktop/deepseek-harness/apps/desktop/.desktop-build/targets/mac-arm64/unsigned-artifacts/`，具体名称以构建产物为准，构建成功后脚本同时复制到项目根目录下**不会提交 Git 的 `dist/`**。目录名沿用 `unsigned-artifacts`；候选采用 ad-hoc 临时签名、未公证。正式发行来源与状态以对应版本的 Release 和来源清单为准。
+
+## Windows x64 工程候选
+
+以下入口用于补齐 Windows 原生构建证据，尚不扩大上述正式发行支持范围。需要 Windows x64、Node.js `24.15.0`、根 pnpm `12.4.2` 和 Corepack。SDK 仍使用自己的固定 pnpm；脚本通过 Node 调用 Corepack 的 JavaScript 入口，不执行 `.cmd` 包装器。先冻结产品源码，保持工作树干净，再在 PowerShell 执行：
+
+```powershell
+pnpm install --frozen-lockfile --ignore-scripts
+pnpm desktop:prepare
+pnpm desktop:package:win
+pnpm desktop:verify:win --source-sha (git rev-parse HEAD)
+```
+
+脚本使用原 SDK 的 `package:desktop:win:x64:unsigned`，输出到 `dist/windows-x64/`。产品 unsigned 配方沿用原本地环境隔离，不读取 `.env.windows`、签名凭据或供应商更新策略；signed 原门禁保留。来源核验检查准备配方、固定 SDK、独立产品来源字段 `zhumaSourceCommit`／`zhumaSourceDirty`、原 SDK 构建来源、产品／构建／SDK版本、x64 应用 PE、九个工作台文件，以及三个必须解包的 CodeArts 物理文件；保留许可，并生成 `SOURCE.json` 和 `SHA256SUMS`。已有来源记录拒绝覆盖，后续候选应先保存到独立证据目录。NSIS 安装器引导本身允许为 x86，不据此误判应用架构。
+
+从本次命名调整后的后续候选和发行起，产品安装包统一命名为 `zhuma-<版本>-windows-x64-unsigned.exe`，完整标明 Windows、x64 和未签名状态。原 SDK 内部 `win-x64` target 和安装器名称不变，产品导出只复制原字节；候选校验和、总来源清单与 Release 资产使用公开名称。已发布 v1.4.0 继续保留真实原名 `zhuma-1.4.0-win-x64-unsigned.exe` 及原摘要，参见[历史版本说明](../../docs/release-v1.4.md)，不回改或重发。
+
+CI 的 **CI → Run workflow** 可选择 `task=windows-package`，填写与 dispatch ref 相同的完整 `source_sha`。该模式仅在 `windows-2025` 构建并保存候选资产；普通 push／PR 的 scaffold 检查保持原流程。候选 job 只有读取权限，不创建 tag 或 Release。编译和字节核验不代替实际安装、窗口、模型、本机权限、业务链路或恢复验收；这些证据由对应 Windows 环境按准确候选另行提供。
 
 ## 本地优先，登录策略与数据隔离
 
@@ -79,8 +96,12 @@ pnpm desktop:dev:host --prepare-only
 
 由测试操作者自行设置 `DSH_HOME`、`DSH_DESKTOP_USER_DATA_DIR`，然后执行 `pnpm desktop:dev:host`；已有 profile 的凭据只从原入口使用，不复制进开发树。窗口复用官方 `dev.ts --skip-build`，Main／Renderer／Host 端口分别由 `DSH_DESKTOP_MAIN_INSPECT_PORT`、`DSH_DESKTOP_RENDERER_DEBUG_PORT`、`DSH_DESKTOP_HOST_INSPECT_PORT` 配置。首次正常创建官方 Dev.app 仍由上游 launcher 负责。Host 修改后先正常退出窗口，刷新 Host，再启动；这不是运行中热替换或业务验收证明。
 
-真实 Host 核心链路通过、最终源码合入 main 且其既有 CI 成功后，从 Actions 手动运行 **Desktop Release**，填写已验的 **main 完整 40 位 SHA**。`mode=build-artifact` 默认只保存 DMG、`SOURCE.json` 和 `SHA256SUMS`；`mode=publish` 在同次运行中构建一次，再发布同一组产物。无需为 Release 重跑 CI 测试矩阵。工作流须先合入默认分支才会出现手动入口。
+真实 Host 和受影响平台链路通过、最终源码合入 main 且其既有 CI 成功后，先从原 **Linux server qualification** 以该 main 完整 SHA 完成正式 `workflow_dispatch`，取得成功的完整资格 run ID。然后从 **Product Release** 填入相同的 **main 完整 40 位 SHA** 和 `server_run_id`。原生 Mac/Windows 使用各自原配方在对应 runner 构建，服务资产复用该准确 Linux run，不另开第二条 SDK 构建路线。PR 产物、纯原生诊断、旧版本或另一个 SHA 都拒绝。
 
-工作流固定标准 `macos-15` arm64 runner，并在运行时核对架构；依据 [GitHub runner 官方说明](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)。Actions 固定完整提交，产品和 SDK 使用各自 frozen lock。发布复查 main SHA、同 SHA 最新 CI、版本／构建版本一致及 tag／Release 不存在；不覆盖旧 tag 或资产。只有发布 job 获得 `contents: write`，默认构建 job 只有读取权限。发行仍为 macOS arm64、ad-hoc、未公证；没有新增收费签名或自动更新。
+`mode=build-artifact` 默认只保存完整多平台资产；`mode=publish` 在同次运行中构建一次并发布同一组资产。不要先跑 artifact 模式又无故重复完整正式构建；调试候选应先验收，再明确执行最终发布。无需为 Release 重跑 CI 测试矩阵。工作流须先合入默认分支才会出现手动入口。
+
+工作流固定标准 `macos-15` arm64 和 `windows-2025` x64 runner，并核对原生架构。Actions 固定完整提交，产品和 SDK 使用各自 frozen lock。Linux 接收前核实际工作流、main/ref/SHA、完整 qualify 成功和 native-probe 跳过、原 artifact ZIP digest、六文件摘要、内外 SOURCE、Docker SAVE image ID／平台／非 root 入口；仅对原镜像压缩，不重建或 import。部署归档取同一准确 Git 提交，Windows 与后端保留各自原始来源清单。
+
+发布复查 main SHA、同 SHA 最新 CI、版本／构建版本一致、各平台准确 source/tree/摘要、原 Linux run/attempt/artifact 仍一致，且 tag／Release 不存在；不覆盖旧 tag 或资产。只有发布 job 获得 `contents: write`，构建和装配只有读取权限。macOS ad-hoc、未公证，Windows 未签名，没有新增收费签名或自动更新；这些源检查不能代替实际安装与业务验收。
 
 发布先创建固定 SHA 的新 tag 和 Draft Release，逐项上传并核对服务器 SHA-256 后才公开。若中途失败，新建 draft/tag 保留供人工核查，后续运行会拒绝冲突，不自动删除、覆盖或重试发布。Release 使用 [GitHub 官方 REST 接口](https://docs.github.com/en/rest/releases/releases)，未引入第三方发布框架。本地静态／契约检查不认证首次 GitHub macOS 冷构建或真实安装。

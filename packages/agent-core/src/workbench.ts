@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { validatePlan } from './plan.js';
 import {
   MemberAssetRegistrySchema,
+  MemberAssetFoldersSchema,
   MemberAssetReferenceSchema,
   MemberAssetFileReferencesSchema,
   memberAssetDefinitionId,
@@ -215,6 +216,7 @@ export const WorkbenchSchema = z.strictObject({
   assets: z.array(AssetSchema).max(100),
   // One original Workbench fact owner; absence keeps existing snapshots byte-compatible.
   memberAssets: MemberAssetRegistrySchema.optional(),
+  memberAssetFolders: MemberAssetFoldersSchema.optional(),
   tasks: z.array(WorkTaskSchema).max(300),
   appliedPlans: z.array(AppliedPlanSchema).max(1000).default([]),
   receipts: z

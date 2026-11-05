@@ -70,6 +70,15 @@ export {
   selectAgentExecutor,
 } from './agent-executor.js';
 export {
+  DEV_MODEL_GATEWAY_API_KEY_ENV,
+  DEV_MODEL_GATEWAY_IMAGE_IDS_ENV,
+  DEV_MODEL_GATEWAY_PROVIDER_ID,
+  isNonProductionEnv,
+  renderDevModelGatewayCordisPatch,
+  resolveDevModelGateway,
+  type ResolvedDevModelGateway,
+} from './dev-model-gateway.js';
+export {
   DshChatExecutor,
   describeDshSessionEvent,
   dshSessionHome,
@@ -459,3 +468,4 @@ export type {
   CodeArtsLaunchArtifact,
   CodeArtsProfileRegistration,
 } from './executors/codearts/registration.js';
+export { describeCodeArtsRoutingCapability } from './executors/codearts/routing-metadata.js';
