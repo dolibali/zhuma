@@ -725,7 +725,7 @@ export function WorkbenchPage({
       </div>
     );
   return (
-    <div className="zhuma">
+    <div className={`zhuma${section === 'assets' && memberAssets ? ' zm-assets-workbench' : ''}`}>
       {knowledgeLeave.dialog}
       <div className={`zm-page${activeProject ? ' zm-project-page' : ''}`}>
         {catalogHeading && (

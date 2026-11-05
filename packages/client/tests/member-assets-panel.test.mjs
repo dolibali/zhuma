@@ -300,6 +300,39 @@ async function mount(t, data, component = MemberAssetsPanel, extra = {}) {
 const dom = { skip: !module, timeout: 15000 };
 
 test(
+  'selecting another asset resets only the detail pane, while editing and saving keep its position',
+  dom,
+  async (t) => {
+    const first = summary({ name: '接口专家' }),
+      second = summary({ name: '验证专家' }),
+      data = source([first, second]),
+      f = await mount(t, data),
+      list = f.host.querySelector('.zm-member-assets-list'),
+      detail = f.host.querySelector('.zm-member-asset-detail');
+    await f.click(f.button(first.name, list));
+    list.scrollTop = 230;
+    detail.scrollTop = 470;
+    const catalogReads = data.calls.catalog.length;
+    await f.click(f.button(second.name, list));
+    assert.equal(f.host.querySelector('.zm-member-assets-list'), list);
+    assert.equal(f.host.querySelector('.zm-member-asset-detail'), detail);
+    assert.equal(list.scrollTop, 230);
+    assert.equal(detail.scrollTop, 0);
+    assert.equal(data.calls.catalog.length, catalogReads, 'selection must not reload the list');
+    assert.equal(document.activeElement, detail);
+    assert.equal(list.tabIndex, 0);
+    assert.equal(detail.tabIndex, 0);
+    detail.scrollTop = 280;
+    await f.input('名称', '独立验证专家');
+    assert.equal(detail.scrollTop, 280, 'typing must not jump back to the heading');
+    await f.click(f.button('保存草稿', detail));
+    assert.equal(data.calls.command.length, 1);
+    assert.equal(detail.scrollTop, 280, 'saving the same asset must not jump back to the heading');
+    assert.equal(f.field('名称').value, '独立验证专家');
+  },
+);
+
+test(
   'material category uses a full-width authoritative folder browser and opens bodies only on explicit preview',
   dom,
   async (t) => {

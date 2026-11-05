@@ -2,6 +2,9 @@
 .zhuma .zm-member-assets {
   min-width: 0;
 }
+.zhuma.zm-assets-workbench {
+  container: member-assets / inline-size;
+}
 .zm-dialog > .zm-member-asset-import {
   display: grid;
   gap: 16px;
@@ -78,8 +81,8 @@
 }
 .zhuma .zm-member-assets-layout {
   display: grid;
-  grid-template-columns: minmax(230px, 0.85fr) minmax(0, 1.4fr);
-  gap: 22px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
   align-items: start;
   margin-top: 18px;
 }
@@ -92,6 +95,77 @@
 }
 .zhuma .zm-member-asset-detail {
   padding: 22px;
+}
+.zhuma .zm-member-assets-layout .zm-member-asset-text {
+  max-height: none;
+  overflow: visible;
+}
+.zm-dialog > .zm-member-asset-detail,
+.zm-dialog > .zm-member-asset-preview {
+  min-height: 0;
+  overflow: auto;
+}
+.zm-dialog > .zm-member-asset-preview > .zm-member-asset-text {
+  max-height: none;
+  overflow: visible;
+}
+/* Keep a single page scroller when panes cannot fit comfortably. */
+@media (min-height: 561px) {
+  @container member-assets (min-width: 781px) {
+    .zm-assets-workbench > .zm-page {
+      display: flex;
+      flex-direction: column;
+      width: 100%;
+      height: 100%;
+      min-height: 0;
+      margin: 0 auto;
+      padding-bottom: 24px;
+    }
+    .zm-assets-workbench > .zm-page > :not(.zm-member-assets) {
+      flex-shrink: 0;
+    }
+    .zhuma .zm-member-assets {
+      display: flex;
+      flex-direction: column;
+      flex: 1;
+      min-height: 0;
+    }
+    .zhuma .zm-member-assets > .zm-member-assets-toolbar,
+    .zhuma .zm-member-assets > .zm-asset-categories {
+      flex-shrink: 0;
+    }
+    .zhuma .zm-member-assets-layout {
+      flex: 1;
+      min-height: 0;
+      grid-template-columns: minmax(230px, 0.85fr) minmax(0, 1.4fr);
+      grid-template-rows: minmax(0, 1fr);
+      align-items: stretch;
+      gap: 22px;
+    }
+    .zhuma .zm-member-assets-layout > .zm-member-assets-list,
+    .zhuma .zm-member-assets-layout > .zm-member-asset-detail {
+      min-height: 0;
+      overflow: auto;
+      overscroll-behavior: contain;
+      scrollbar-gutter: stable;
+    }
+    .zhuma .zm-member-assets > .zm-file-browser {
+      display: flex;
+      flex-direction: column;
+      flex: 1;
+      min-height: 0;
+    }
+    .zhuma .zm-member-assets > .zm-file-browser > :not(.zm-file-browser-table-wrap) {
+      flex-shrink: 0;
+    }
+    .zhuma .zm-member-assets > .zm-file-browser > .zm-file-browser-table-wrap {
+      flex: 1;
+      min-height: 0;
+      overflow: auto;
+      overscroll-behavior: contain;
+      scrollbar-gutter: stable;
+    }
+  }
 }
 .zhuma .zm-member-asset-row {
   display: grid;
