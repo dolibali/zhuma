@@ -1,0 +1,5 @@
+order_id,customer,quantity,unit_price
+ORD-1001,林可,2,12.30
+ ORD-1001 ,陈宁,1,1.00
+ORD-1002,周禾,0,1.00
+ORD-1002,周禾,3,1.00
