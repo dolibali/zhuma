@@ -432,6 +432,48 @@ test('member planning choices stay on that member while an in-flight plan keeps 
   );
 });
 
+test('member selection rechecks scope after the final model catalog read', async (t) => {
+  for (const revoke of [false, true]) {
+    await t.test(
+      revoke ? 'revocation rejects the reply' : 'authorized reply keeps its scope',
+      async () => {
+        const host = catalogHost({ persist: true });
+        const originalList = host.ctx.llm.listModels.bind(host.ctx.llm);
+        const models = createPlanningModels(host.ctx);
+        const { f, ann, bob } = await preparedMember(host, models);
+        let reads = 0;
+        host.ctx.llm.listModels = async (provider) => {
+          const listed = await originalList(provider);
+          if (++reads === 2 && revoke) f.grants.delete('north/ann');
+          return listed;
+        };
+
+        const selected = ann.selectPlanningModel({ spaceId: 'north', ...alternate }, signal());
+        if (revoke) {
+          await assert.rejects(selected, rejected('not-found'));
+          await assert.rejects(
+            ann.planningModels({ spaceId: 'north' }, signal()),
+            rejected('not-found'),
+          );
+        } else {
+          const reply = await selected;
+          assert.equal(reply.actorId, 'ann');
+          assert.equal(reply.spaceId, 'north');
+          assert.equal(reply.label, 'fixture-provider / fixture-alternate');
+        }
+        assert.equal(reads, 2);
+        assert.equal(host.prepared.length, 0);
+        assert.equal(host.saves.length, 0);
+        assert.equal(host.selection().model, 'fixture-current');
+        assert.equal(
+          (await bob.snapshot({ spaceId: 'north' })).model,
+          'fixture-provider / fixture-current',
+        );
+      },
+    );
+  }
+});
+
 test('revoked, aborted, and late member planning choices do not write', async () => {
   const host = catalogHost({ persist: true });
   host.setListed([

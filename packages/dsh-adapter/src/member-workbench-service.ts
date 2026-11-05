@@ -1045,6 +1045,7 @@ export class MemberWorkbenchService {
     const catalog = await source.selectForMember(scope, { provider, model }, signal, async () => {
       await this.scope(spaceId, initial.actorId);
     });
+    await this.scope(spaceId, initial.actorId);
     signal.throwIfAborted();
     return { actorId: initial.actorId, spaceId, ...catalog };
   }
