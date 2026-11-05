@@ -2,9 +2,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFile } from 'node:fs/promises';
 import { randomUUID, createHash } from 'node:crypto';
-import { emptyWorkbench, instantiateWorkflowTemplate } from '@zhuma/agent-core';
+import { canonicalPayload, emptyWorkbench, instantiateWorkflowTemplate } from '@zhuma/agent-core';
 import {
   defaultMemberEngineeringSkills,
+  defaultMemberEngineeringSkillSource,
   mergeDefaultMemberEngineeringSkills,
   ENGINEERING_SKILL_SOURCE,
 } from '../dist/member-engineering-skill-catalog.js';
@@ -29,11 +30,46 @@ const bundle = {
 };
 const hash = (text) => createHash('sha256').update(text).digest('hex');
 
-test('default engineering Skills: ten exact public bodies, stable IDs, cloned projection and retained license sources', async () => {
+test('default engineering Skill source: only complete current public definitions prove their fixed source', () => {
+  for (const asset of bundle.assets) {
+    assert.deepEqual(defaultMemberEngineeringSkillSource(asset), {
+      sourceCommit: ENGINEERING_SKILL_SOURCE,
+      definitionSha256: hash(canonicalPayload(asset)),
+    });
+  }
+});
+
+for (const change of [
+  'id',
+  'name',
+  'description',
+  'body',
+  'kind',
+  'disabled',
+  'origin',
+  'publication',
+  'extra',
+]) {
+  test(`default engineering Skill source: ${change} mismatch cannot claim the trusted complete definition`, () => {
+    const asset = structuredClone(bundle.assets[0]);
+    if (change === 'id') asset.id = 'another-skill';
+    if (change === 'name') asset.name += ' changed';
+    if (change === 'description') asset.description = 'caller metadata';
+    if (change === 'body') asset.content += ' ';
+    if (change === 'kind') asset.kind = 'mcp';
+    if (change === 'disabled') asset.available = false;
+    if (change === 'origin') asset.origin = undefined;
+    if (change === 'publication') asset.memberAsset = undefined;
+    if (change === 'extra') asset.actorId = undefined;
+    assert.equal(defaultMemberEngineeringSkillSource(asset), undefined);
+  });
+}
+
+test('default engineering Skills: eleven exact public bodies, stable IDs, cloned projection and retained license sources', async () => {
   const input = structuredClone(bundle);
   input.assets.reverse();
   const value = defaultMemberEngineeringSkills(input);
-  assert.equal(value.length, 10);
+  assert.equal(value.length, 11);
   assert.deepEqual(
     value.map((asset) => asset.id),
     manifest.skills.map((entry) => entry.id),
@@ -101,7 +137,7 @@ test('default engineering Skills: authorized catalog merge is idempotent and nev
   const before = structuredClone(prior);
   const once = mergeDefaultMemberEngineeringSkills(prior, bundle);
   const twice = mergeDefaultMemberEngineeringSkills(once, bundle);
-  assert.equal(once.length, 11);
+  assert.equal(once.length, 12);
   assert.deepEqual(twice, once);
   assert.deepEqual(prior, before);
   once[0].content = 'changed return';
@@ -151,7 +187,7 @@ test('default engineering Skills: same-ID imported source cannot be silently rep
   assert.deepEqual(imported, before);
 });
 
-test('default engineering Skills: all four actual workflow resource suggestions resolve without inventing participants', async () => {
+test('default engineering Skills: all five actual workflow resource suggestions resolve without inventing participants', async () => {
   const skills = defaultMemberEngineeringSkills(bundle);
   for (const entry of manifest.workflows) {
     const content = await readFile(

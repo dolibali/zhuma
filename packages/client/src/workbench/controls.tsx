@@ -422,15 +422,31 @@ export function ExpandableText({
 export function Field({
   label,
   children,
+  hint,
 }: {
   label: string;
-  children: ReactElement<{ id?: string }>;
+  children: ReactElement<{ id?: string; 'aria-describedby'?: string }>;
+  hint?: string;
 }) {
   const id = useId();
   return (
     <div className="zm-field">
       <label htmlFor={id}>{label}</label>
-      {cloneElement(children, { id })}
+      {cloneElement(children, {
+        id,
+        ...(hint
+          ? {
+              'aria-describedby': [children.props['aria-describedby'], `${id}-hint`]
+                .filter(Boolean)
+                .join(' '),
+            }
+          : {}),
+      })}
+      {hint && (
+        <small id={`${id}-hint`} className="zm-field-hint">
+          {hint}
+        </small>
+      )}
     </div>
   );
 }
