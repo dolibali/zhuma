@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { Button } from '../workbench/Button.js';
 import { Field, Modal } from '../workbench/controls.js';
-import { Appearance, type AppearanceStore } from '../workbench/Appearance.js';
 import type { MemberShell } from './shell.js';
 import { changePasswordAndInvalidate } from './password-change.js';
 import {
@@ -15,12 +14,10 @@ export function AccountTeamsDialog({
   shell,
   close,
   fetcher = globalThis.fetch,
-  appearance,
 }: {
   shell: MemberShell;
   close(): void;
   fetcher?: typeof fetch;
-  appearance?: AppearanceStore;
 }) {
   const snapshot = useSyncExternalStore(shell.subscribe, shell.getSnapshot, shell.getSnapshot);
   const account = snapshot.session.status === 'authenticated' ? snapshot.session : undefined;
@@ -129,12 +126,6 @@ export function AccountTeamsDialog({
             修改密码
           </button>
         </nav>
-        {appearance && (
-          <section aria-label="外观设置">
-            <h3>外观</h3>
-            <Appearance store={appearance} />
-          </section>
-        )}
         {error && (
           <p role="alert" className="zm-login-error">
             {error}

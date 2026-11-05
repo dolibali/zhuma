@@ -6,8 +6,13 @@ import { createMemberShell } from '../identity/shell.js';
 import { SidebarAccountFooter } from '../identity/SidebarAccountFooter.js';
 import { AccountTeamsDialog } from '../identity/AccountTeamsDialog.js';
 import { Button } from '../workbench/Button.js';
+import { Modal } from '../workbench/controls.js';
 import { SettingsIcon } from '../workbench/ControlIcon.js';
-import type { AppearancePreference, AppearanceStore } from '../workbench/Appearance.js';
+import {
+  Appearance,
+  type AppearancePreference,
+  type AppearanceStore,
+} from '../workbench/Appearance.js';
 import workbenchStyles from '../workbench/workbench.css';
 import flowStyles from '@xyflow/react/dist/style.css';
 import nativeRunStyles from '../run/NativeRunPanel.css';
@@ -54,15 +59,27 @@ const appearance: AppearanceStore = {
 /** Only product HTTP APIs are loaded; this entry has no SDK owner Connection. */
 function MemberWeb() {
   const [accountOpen, setAccountOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [view, setView] = useState<'catalog' | 'work'>('catalog');
   const snapshot = useSyncExternalStore(shell.subscribe, shell.getSnapshot, shell.getSnapshot);
+  const signedIn = snapshot.session.status === 'authenticated';
   useEffect(() => {
     shell.start();
     return () => shell.stop();
   }, []);
   useEffect(() => shell.setPageActive(true, view), [view]);
+  useEffect(() => {
+    if (!signedIn) {
+      setSettingsOpen(false);
+      setAccountOpen(false);
+    }
+  }, [signedIn]);
   const navigate = (next: typeof view) => shell.requestLeave(() => setView(next));
-  const signedIn = snapshot.session.status === 'authenticated';
+  const manageAccount = () =>
+    shell.requestLeave(() => {
+      setSettingsOpen(false);
+      setAccountOpen(true);
+    });
   return (
     <div className="zhuma zm-web-shell">
       {signedIn && (
@@ -121,16 +138,16 @@ function MemberWeb() {
                 shell={shell}
                 wide
                 openWork={() => navigate('work')}
-                manageAccount={() => shell.requestLeave(() => setAccountOpen(true))}
+                manageAccount={manageAccount}
               />
               <button
                 type="button"
                 className="zm-settings-trigger"
-                aria-label="账号与团队"
-                title="账号与团队"
+                aria-label="设置"
+                title="设置"
                 aria-haspopup="dialog"
-                aria-expanded={accountOpen}
-                onClick={() => shell.requestLeave(() => setAccountOpen(true))}
+                aria-expanded={settingsOpen}
+                onClick={() => setSettingsOpen(true)}
               >
                 <SettingsIcon />
               </button>
@@ -139,13 +156,18 @@ function MemberWeb() {
         </aside>
       )}
       <div className="zm-web-main">
-        {accountOpen && (
-          <AccountTeamsDialog
-            shell={shell}
-            appearance={appearance}
-            close={() => setAccountOpen(false)}
-          />
+        {signedIn && settingsOpen && (
+          <Modal title="设置" close={() => setSettingsOpen(false)}>
+            <div className="zhuma zm-form-body">
+              <section aria-label="外观设置">
+                <h3>外观</h3>
+                <Appearance store={appearance} />
+              </section>
+              <Button onClick={manageAccount}>账号与团队</Button>
+            </div>
+          </Modal>
         )}
+        {accountOpen && <AccountTeamsDialog shell={shell} close={() => setAccountOpen(false)} />}
         <MemberExecutionPage
           shell={shell}
           view={view}
