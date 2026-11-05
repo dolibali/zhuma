@@ -53,6 +53,7 @@ test('six-node flow has concrete implementation Skill and fixed-input human revi
     ['requirements', 'design', 'implement', 'verify', 'review', 'deliver'],
   );
   assert.deepEqual(nodes[2].skillIds, ['controlled-implementation']);
+  assert.deepEqual(nodes[2].dependsOn, ['requirements', 'design']);
   assert.equal(template.roles.find((role) => role.id === 'human-approver').preferredKind, 'human');
   for (const id of ['design', 'review']) {
     const node = nodes.find((value) => value.id === id);

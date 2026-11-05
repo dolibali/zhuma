@@ -144,7 +144,7 @@
           "assigneeId": "implementer",
           "reviewerIds": [],
           "reviewRequired": false,
-          "dependsOn": ["design"],
+          "dependsOn": ["requirements", "design"],
           "skillIds": ["controlled-implementation"],
           "mcpIds": [],
           "input": "已接受的设计任务固定版本、需求/场景编号、授权文件范围、真实工作区与代码基线。",
