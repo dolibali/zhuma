@@ -14,6 +14,7 @@ import { MemberSpacesProbe } from './member-spaces-probe.jsx';
 import { MemberExecutionSpacesProbe } from './member-execution-spaces-probe.jsx';
 import { createMemberAccountProbe } from './member-account-probe.jsx';
 import { WorkbenchPage } from '../../src/workbench/WorkbenchPage.js';
+import { Appearance } from '../../src/workbench/Appearance.js';
 import { createWorkbenchApi } from '../../src/workbench/api.js';
 import styles from '../../src/workbench/workbench.css';
 import flowStyles from '@xyflow/react/dist/style.css';
@@ -103,6 +104,22 @@ const content = new URL(location.href).searchParams.has('member-account') ? (
 // Explicit fixture-only driver for testing host theme changes without a product shortcut.
 const staged = (
   <>
+    {new URL(location.href).searchParams.has('appearance-menu-probe') && (
+      <section
+        className="zhuma"
+        aria-label="外观菜单契约夹具"
+        style={{
+          height: 'auto',
+          padding: '8px 28px',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 12,
+        }}
+      >
+        <span>契约夹具：外观菜单</span>
+        <Appearance store={appearance} />
+      </section>
+    )}
     {new URL(location.href).searchParams.has('appearance-probe') && (
       <label>
         契约夹具：测试外观
