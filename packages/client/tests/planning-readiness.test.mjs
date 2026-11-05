@@ -110,6 +110,8 @@ test('list and select change the readiness label the panel renders', async () =>
     el(PlanningReadiness, { value: view({ model: chosen.model, choices: chosen.choices }) }),
   );
   assert.match(before, /规划模型 · /);
+  assert.match(before, /生成计划前可确认当前规划模型/);
+  assert.match(after, /生成计划前可确认当前规划模型/);
   assert.match(before, new RegExp(current.label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   assert.match(after, new RegExp(alternate.label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   assert.doesNotMatch(after, /fixture-current/);
