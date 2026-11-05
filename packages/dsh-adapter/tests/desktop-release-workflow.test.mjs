@@ -28,9 +28,9 @@ const context = {
   source: 'a'.repeat(40),
   tree: 'b'.repeat(40),
   repository: 'example/product',
-  version: '1.4.0',
-  tag: 'v1.4.0',
-  filename: 'zhuma-1.4.0-mac-arm64-unsigned.dmg',
+  version: '1.5.0',
+  tag: 'v1.5.0',
+  filename: 'zhuma-1.5.0-mac-arm64-unsigned.dmg',
   sdkPin: 'c'.repeat(40),
   sdkVersion: '0.2.1-rc.4',
   rootLockSha256: 'd'.repeat(64),
@@ -107,7 +107,7 @@ function fakeApi(options = {}) {
       return {
         draft: false,
         tag_name: context.tag,
-        html_url: 'https://github.com/example/product/releases/tag/v1.4.0',
+        html_url: `https://github.com/example/product/releases/tag/${context.tag}`,
       };
     }
     assert.fail('Unexpected synthetic API request');
@@ -272,11 +272,14 @@ test('release contracts: publish verifies provenance/checksums and all remote as
     h = fakeApi();
   assert.equal(
     await publish(context, directory, h.api),
-    'https://github.com/example/product/releases/tag/v1.4.0',
+    `https://github.com/example/product/releases/tag/${context.tag}`,
   );
   const writes = h.calls.filter((call) => call.method !== 'GET');
   assert.equal(writes.length, 16);
   assert.equal(writes[0].path, 'repos/example/product/git/refs');
+  assert.ok(
+    writes[1].body.body.includes(`/blob/${context.source}/docs/release-v${context.version}.md`),
+  );
   assert.equal(writes.at(-1).method, 'PATCH');
   assert.equal(
     h.calls.some((call) => call.method === 'DELETE'),
