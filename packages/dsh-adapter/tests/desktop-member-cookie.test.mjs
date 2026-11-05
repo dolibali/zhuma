@@ -57,6 +57,88 @@ async function sentCookie(bridge, path = '/zhuma-id/session', host = HOST, owner
   return sent;
 }
 
+test('desktop lookup carrier: only the exact POST carries an available member without requiring one for owner navigation', async () => {
+  const bridge = createDesktopMemberCookieBridge();
+  const lookup = '/api/zhuma-member-native/lookup';
+  const forward = async (path = lookup, method = 'POST') => {
+    let sent;
+    const result = await bridge.forward(
+      request(path, { method, headers: { cookie: 'zhuma-member=renderer-forgery' } }),
+      HOST,
+      OWNER,
+      async (credential) => {
+        sent = credential;
+        return new Response('{}');
+      },
+    );
+    assert.equal(result.status, 200);
+    return { sent, result };
+  };
+  // Ordinary and remote owner navigation do not require a local member login.
+  assert.equal((await forward()).sent, OWNER);
+  await login(bridge);
+  const current = await forward();
+  assert.equal(current.sent, `${OWNER}; zhuma-member=${COOKIE_A}`);
+  assert.equal(current.result.headers.get('cache-control'), 'no-store');
+  const ownerDenied = await bridge.forward(
+    request(lookup, { method: 'POST' }),
+    HOST,
+    OWNER,
+    async () => new Response('{}', { status: 401 }),
+  );
+  assert.equal(ownerDenied.status, 401);
+  assert.equal(await sentCookie(bridge), `${OWNER}; zhuma-member=${COOKIE_A}`);
+  for (const path of [
+    lookup + '/extra',
+    lookup + '%2Fextra',
+    lookup + 'x',
+    '/api/zhuma-member-native/%6cookup',
+    '/api/zhuma-member-native/read',
+  ])
+    assert.equal((await forward(path)).sent, OWNER);
+  assert.equal((await forward(lookup, 'GET')).sent, OWNER);
+  bridge.clear();
+  assert.equal((await forward()).sent, OWNER);
+  assert.equal(
+    await sentCookie(bridge),
+    undefined,
+    'Mandatory member routes still reject owner fallback',
+  );
+});
+
+test('desktop lookup carrier: logout and a newer login fence late replies without exposing or replacing credentials', async () => {
+  const bridge = createDesktopMemberCookieBridge();
+  await login(bridge);
+  const pending = deferred();
+  let carried;
+  const reading = bridge.forward(
+    request('/api/zhuma-member-native/lookup', { method: 'POST' }),
+    HOST,
+    OWNER,
+    async (sent) => {
+      carried = sent;
+      return pending.promise;
+    },
+  );
+  bridge.clear();
+  await login(bridge, COOKIE_B);
+  pending.resolve(new Response('{}'));
+  assert.equal((await reading).status, 401);
+  assert.equal(carried, `${OWNER}; zhuma-member=${COOKIE_A}`);
+  assert.equal(await sentCookie(bridge), `${OWNER}; zhuma-member=${COOKIE_B}`);
+  const rejected = await bridge.forward(
+    request('/api/zhuma-member-native/lookup', {
+      method: 'POST',
+      headers: { origin: 'https://foreign.invalid' },
+    }),
+    HOST,
+    OWNER,
+    async () => assert.fail('Foreign origins cannot dispatch lookup'),
+  );
+  assert.equal(rejected.status, 403);
+  assert.equal(await sentCookie(bridge), `${OWNER}; zhuma-member=${COOKIE_B}`);
+});
+
 test('desktop transport contract: only exact member routes carry the private member cookie', async () => {
   const bridge = createDesktopMemberCookieBridge();
   await login(bridge);
