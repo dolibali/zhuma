@@ -11,6 +11,9 @@ import {
 
 const CALL_TIMEOUT_MS = 8_000;
 const SUMMARY_LIMIT = 240;
+const SUMMARY_DEPTH = 6;
+const SUMMARY_NODES = 48;
+const SECRET_KEY = /key|token|secret|password|authorization/i;
 
 /**
  * 用户 MCP 的最小调用路径。
@@ -336,18 +339,56 @@ function toolBody(result: unknown): { isError: boolean; text: string } {
 }
 
 function summarizeArgs(args: Readonly<Record<string, unknown>>): string {
-  const redacted: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(args)) {
-    redacted[key] = /key|token|secret|password|authorization/i.test(key) ? '[redacted]' : value;
-  }
   let text: string;
   try {
-    text = JSON.stringify(redacted) ?? '{}';
+    text = JSON.stringify(redactArgs(args, 0, { nodes: SUMMARY_NODES }, new WeakSet())) ?? '{}';
   } catch {
     text = '[unserializable]';
   }
   const flat = text.replace(/\s+/g, ' ');
   return flat.length > SUMMARY_LIMIT ? `${flat.slice(0, SUMMARY_LIMIT - 3)}...` : flat;
+}
+
+/** 按键名递归遮住敏感值。超深度、超节点或循环时截断，不再原样写下剩余内容。 */
+function redactArgs(
+  value: unknown,
+  depth: number,
+  budget: { nodes: number },
+  seen: WeakSet<object>,
+): unknown {
+  if (budget.nodes <= 0 || depth > SUMMARY_DEPTH) return '[truncated]';
+  if (value === null || typeof value !== 'object') {
+    return typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean'
+      ? value
+      : value === null
+        ? null
+        : '[unserializable]';
+  }
+  if (seen.has(value)) return '[truncated]';
+  seen.add(value);
+  budget.nodes -= 1;
+  if (Array.isArray(value)) {
+    const items: unknown[] = [];
+    for (const item of value) {
+      if (budget.nodes <= 0) {
+        items.push('[truncated]');
+        break;
+      }
+      items.push(redactArgs(item, depth + 1, budget, seen));
+    }
+    return items;
+  }
+  const redacted: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(value)) {
+    if (budget.nodes <= 0) {
+      redacted['…'] = '[truncated]';
+      break;
+    }
+    redacted[key] = SECRET_KEY.test(key)
+      ? '[redacted]'
+      : redactArgs(child, depth + 1, budget, seen);
+  }
+  return redacted;
 }
 
 function elapsed(started: number): number {

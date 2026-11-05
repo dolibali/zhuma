@@ -13,7 +13,7 @@ const handle = serveStdio(() => {
   const server = new McpServer({ name: 'user-mcp-fixture', version: '1.0.0' });
   server.registerTool(
     'echo',
-    { description: '回显文本', inputSchema: z.object({ text: z.string() }) },
+    { description: '回显文本', inputSchema: z.object({ text: z.string() }).passthrough() },
     async ({ text }) => {
       note('echo');
       return { content: [{ type: 'text', text }] };
@@ -30,10 +30,14 @@ const handle = serveStdio(() => {
       return { content: [{ type: 'text', text: String(a + b) }] };
     },
   );
-  server.registerTool('fail', { description: '固定失败', inputSchema: z.object({}) }, async () => {
-    note('fail');
-    return { content: [{ type: 'text', text: 'fixture-failed' }], isError: true };
-  });
+  server.registerTool(
+    'fail',
+    { description: '固定失败', inputSchema: z.object({}).passthrough() },
+    async () => {
+      note('fail');
+      return { content: [{ type: 'text', text: 'fixture-failed' }], isError: true };
+    },
+  );
   return server;
 });
 

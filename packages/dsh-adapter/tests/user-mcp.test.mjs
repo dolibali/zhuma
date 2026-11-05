@@ -77,6 +77,57 @@ test('非空 stdio：配置被接受，列出工具，并真调两项', { timeou
   }
 });
 
+test(
+  '真实 stdio：嵌套对象和数组里的敏感值不进日志，失败调用同样遮住',
+  { timeout: 20_000 },
+  async () => {
+    const nestedSecret = 'synthetic-nested-field-a';
+    const headerSecret = 'synthetic-nested-field-b';
+    const deepSecret = 'synthetic-nested-field-c';
+    const deep = (left) => (left <= 0 ? { note: deepSecret } : { note: deep(left - 1) });
+    const args = {
+      text: 'pong',
+      region: 'local',
+      credentials: { apiKey: nestedSecret, region: 'local' },
+      headers: [{ name: 'Accept', value: 'text/plain' }, { Authorization: headerSecret }],
+      deep: deep(12),
+    };
+    const root = await mkdtemp(join(tmpdir(), 'zhuma-user-mcp-'));
+    const callsFile = join(root, 'calls.txt');
+    try {
+      const result = await invokeUserMcpTools({
+        option: option({ args: [fixture, callsFile] }),
+        selection: selection(),
+        calls: [
+          { toolName: 'echo', args },
+          { toolName: 'fail', args },
+        ],
+      });
+      assert.equal(result.ok, true);
+      assert.equal(result.results[0].ok, true);
+      assert.equal(result.results[0].text, 'pong');
+      assert.equal(result.results[1].ok, false);
+      assert.equal(result.results[1].code, 'mcp-call-failed');
+      const records = readMcpCalls(result.log);
+      assert.deepEqual(
+        records.map((item) => item.outcome),
+        ['ok', 'fail'],
+      );
+      for (const record of records) {
+        assert.equal(record.argsSummary.includes(nestedSecret), false);
+        assert.equal(record.argsSummary.includes(headerSecret), false);
+        assert.equal(record.argsSummary.includes(deepSecret), false);
+        assert.equal(record.argsSummary.includes('[redacted]'), true);
+        assert.equal(record.argsSummary.includes('credentials'), true);
+        assert.equal(record.argsSummary.includes('local'), true);
+      }
+      assert.equal(await readFile(callsFile, 'utf8'), 'echo\nfail\n');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+);
+
 test('工具返回错误时记下失败，未知工具不会打到服务器', { timeout: 20_000 }, async () => {
   const root = await mkdtemp(join(tmpdir(), 'zhuma-user-mcp-'));
   const callsFile = join(root, 'calls.txt');
