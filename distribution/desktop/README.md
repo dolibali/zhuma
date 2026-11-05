@@ -1,10 +1,10 @@
-# Zhuma macOS Desktop 发行指南
+# Zhuma Desktop 发行指南
 
 Zhuma 使用固定的官方 DSH Electron 实现，自有工作台通过插件预装，必要的上游改动保存在 `patches/deepseek-harness/zhuma-desktop.patch`。构建脚本在 `.build/desktop/deepseek-harness/` 创建一次性的 DSH Git worktree，**不修改** `upstream/deepseek-harness/` 的已固定代码。
 
 ## 安装与首发边界
 
-产品候选版本为 `1.4.0`，拟对应新 tag `v1.4.0`；工程包、Draft PR 或候选资产不等于正式 Release。本版分别交付 macOS arm64（Apple Silicon）、Windows x64 与 Linux amd64 服务，真实支持与必要验收按 [v1.4 说明](../../docs/release-v1.4.md)和 [#372](https://github.com/dolibali/zhuma/issues/372)核对。macOS 为 ad-hoc、未公证，Windows 未签名；Developer ID、公证、Authenticode 和自动更新尚未提供，不认证 Intel Mac、Windows arm64 或 Linux 桌面。
+当前源码版本为 `1.5.0`，发行目标为新 tag `v1.5.0`，范围与实际验收见[v1.5.0 说明](../../docs/release-v1.5.0.md)和 [#394](https://github.com/dolibali/zhuma/issues/394)。已发布的 [v1.4.0](https://github.com/dolibali/zhuma/releases/tag/v1.4.0) 与原资产保留；工程包或候选产物不等于新版本已公开。平台为 macOS arm64（Apple Silicon）、Windows x64 客户端及 Linux amd64 服务。macOS 为 ad-hoc、未公证，Windows 未签名；Developer ID、公证、Authenticode 和自动更新尚未提供，不认证 Intel Mac、Windows arm64 或 Linux 桌面。
 
 安装时打开已核对来源的候选 DMG，将 Zhuma 拖入 Applications 后运行。正常首次账号／团队、模型与交付入口见[工作台正常操作](../workbench/README.md#正常操作)。已有 profile 不因安装新包而自动迁移或更改部署模式。
 
@@ -26,7 +26,7 @@ pnpm desktop:verify:mac          # 校验安装包名称、App ID、图标、签
 
 桌面预览开发应用位于 `.build/desktop/deepseek-harness/apps/desktop/.desktop-build/development/Zhuma Dev.app`，Renderer CDP 默认 `127.0.0.1:9222`，Main/Host 分别为 `9229`/`9230`。切换 DevTools 使用 `Command + Option + I`。
 
-候选 DMG 输出位于 `.build/desktop/deepseek-harness/apps/desktop/.desktop-build/targets/mac-arm64/unsigned-artifacts/`，具体名称以构建产物为准，构建成功后脚本同时复制到项目根目录下**不会提交 Git 的 `dist/`**。目录名沿用 `unsigned-artifacts`；当前验收候选采用 ad-hoc 临时签名、未公证。此为开发者测试包，正式发行状态以最终 v1.4.0 说明为准。
+候选 DMG 输出位于 `.build/desktop/deepseek-harness/apps/desktop/.desktop-build/targets/mac-arm64/unsigned-artifacts/`，具体名称以构建产物为准，构建成功后脚本同时复制到项目根目录下**不会提交 Git 的 `dist/`**。目录名沿用 `unsigned-artifacts`；候选采用 ad-hoc 临时签名、未公证。正式发行来源与状态以对应版本的 Release 和来源清单为准。
 
 ## Windows x64 工程候选
 
