@@ -210,6 +210,7 @@ export async function bootIdentity(imported, mode, spaces, lifecycle) {
   return {
     ctx,
     web,
+    directoryLifecycle,
     async login(accountId, password) {
       const response = await callWeb(web, {
         method: 'POST',

@@ -6,6 +6,7 @@ import { pathToFileURL } from 'node:url';
 import { applyWorkbenchCommand } from '@zhuma/agent-core';
 import { createDesktopMemberCookieBridge } from '../dist/desktop-member-cookie.js';
 import { hostWorkflowEndpoints } from '../dist/host-workflow-http.js';
+import { hostWorkspaceApprovalEndpoints } from '../dist/host-workspace-approval-http.js';
 import { knowledgeEndpoints } from '../dist/knowledge-http.js';
 import { hashPassword } from '../dist/identity-session.js';
 import { openIdentityMemberHttp } from '../dist/identity-member-http.js';
@@ -117,6 +118,50 @@ const memberLifecycleRequests = [
   ['/zhuma-id/team-members', 'POST'],
   ['/zhuma-id/password', 'POST'],
 ];
+
+test('desktop workspace carrier: exact owner/member controls carry the current member and never fall back after revocation', async () => {
+  const bridge = createDesktopMemberCookieBridge();
+  for (const endpoint of hostWorkspaceApprovalEndpoints) {
+    const denied = await bridge.forward(
+      request(`/api/zhuma-workspaces/${endpoint}`, { method: 'POST' }),
+      HOST,
+      OWNER,
+      async () => assert.fail('A signed-out workspace action must not dispatch as owner'),
+    );
+    assert.equal(denied.status, 401);
+  }
+  await login(bridge);
+  for (const endpoint of hostWorkspaceApprovalEndpoints) {
+    const result = await bridge.forward(
+      request(`/api/zhuma-workspaces/${endpoint}`, {
+        method: 'POST',
+        headers: { cookie: 'zhuma-member=renderer-forgery' },
+      }),
+      HOST,
+      OWNER,
+      async (sent) => {
+        assert.equal(sent, `${OWNER}; zhuma-member=${COOKIE_A}`);
+        return new Response('{}');
+      },
+    );
+    assert.equal(result.status, 200);
+  }
+  await bridge.forward(
+    request('/api/zhuma-workspaces/options', { method: 'POST' }),
+    HOST,
+    OWNER,
+    async () => new Response(null, { status: 401 }),
+  );
+  for (const endpoint of hostWorkspaceApprovalEndpoints) {
+    const denied = await bridge.forward(
+      request(`/api/zhuma-workspaces/${endpoint}`, { method: 'POST' }),
+      HOST,
+      OWNER,
+      async () => assert.fail('A revoked workspace member must not dispatch as owner'),
+    );
+    assert.equal(denied.status, 401);
+  }
+});
 
 test('desktop account lifecycle transport: exact reads and writes carry only the main-owned member; public registration stays separate', async () => {
   const bridge = createDesktopMemberCookieBridge();
@@ -256,9 +301,12 @@ test('desktop workflow carrier contract: unknown or near-prefix paths and origin
     '/api/zhuma-workflow/%72ead',
     '/api/zhuma-workflows/read',
     '/api/zhuma-local-setup/initialize',
-    '/api/zhuma-workspaces/options',
-    '/api/zhuma-workspaces/approve',
-    '/api/zhuma-workspaces/revoke',
+    '/api/zhuma-codearts/configure',
+    '/api/zhuma-workspaces/unknown',
+    '/api/zhuma-workspaces/options/extra',
+    '/api/zhuma-workspaces/approve%2Fextra',
+    '/api/zhuma-workspaces/%72evoke',
+    '/api/zhuma-workspace/options',
   ])
     assert.equal(await sentCookie(bridge, path), OWNER, path);
 });
