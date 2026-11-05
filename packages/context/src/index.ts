@@ -52,3 +52,6 @@ export {
   claimWritableWorkspace,
   releaseWritableWorkspace,
 } from './run-context.js';
+
+export type { McpCallLog, McpCallQuery, McpCallRecord } from './mcp-call-log.js';
+export { appendMcpCall, createMcpCallLog, readMcpCalls } from './mcp-call-log.js';
