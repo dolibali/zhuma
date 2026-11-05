@@ -3,6 +3,9 @@ const MEMBER = 'zhuma-member';
 const APP_ORIGIN = 'dsh-app://app';
 const MEMBER_PATH =
   /^\/(?:zhuma-id\/(?:login|logout|session|teams|team-members|password|(?:spaces|notes)\/[a-z0-9-]{1,64})|api\/zhuma-member\/(?:snapshot|command|plan|planning-models|select-planning-model|asset-folder-list|asset-folder-create|asset-list|asset-read|asset-reference|asset-command|asset-sources|asset-source|asset-catalog|asset-preview-import|asset-import-drafts|asset-file-upload|asset-file-read|asset-file-text)|api\/zhuma-exec\/(?:start-plan|inbox-counts|inbox|startable|submit|ballot|settle|report|revision|review-outcome|draft|events|upstream-content|project-artifacts|task-progress|upload-file|file)|api\/zhuma-run\/(?:begin|send|stop|read|history|options|inbox|observe)|api\/zhuma-workflow\/(?:options|read|start|resume|stop)|api\/zhuma-workspaces\/(?:options|approve|revoke)|api\/zhuma-knowledge\/(?:libraries|list|search|read|drafts|draft|save-draft|propose-draft|publish|project-links|save-project-links))$/;
+// Local task lookup also reads member-authorized Run facts. Remote/ordinary
+// lookup retains its owner path when there is no local member credential.
+const OPTIONAL_MEMBER_LOOKUP_PATH = /^\/api\/zhuma-member-native\/lookup$/;
 // Used only by the owned desktop forwarding operation after its original
 // application-origin fence. These exact POSTs need the real Host CSRF origin.
 const OWNER_POST_PATH =
@@ -96,19 +99,21 @@ export function createDesktopMemberCookieBridge(now: () => number = Date.now) {
       }
       if (member && member.expiresAt <= now()) clear();
       const product = MEMBER_PATH.test(source.pathname);
+      const memberContext =
+        product || (request.method === 'POST' && OPTIONAL_MEMBER_LOOKUP_PATH.test(source.pathname));
       const login = product && request.method === 'POST' && source.pathname === '/zhuma-id/login';
       const logout = product && request.method === 'POST' && source.pathname === '/zhuma-id/logout';
       // Logout revokes the previous Host session, so capture that credential before clearing locally.
       const credential = member;
       if (login || logout) clear();
       const current = epoch;
-      const carried = !login && product ? credential : undefined;
+      const carried = !login && memberContext ? credential : undefined;
       // Even a legacy-configured Host must never receive an owner-only product operation.
       if (product && !login && !carried) return rejected(401);
       const response = await dispatch(
         carried ? `${ownerCookie}; ${MEMBER}=${carried.value}` : ownerCookie,
       );
-      if (request.signal.aborted || (product && current !== epoch)) {
+      if (request.signal.aborted || (memberContext && current !== epoch)) {
         await response.body?.cancel();
         if (request.signal.aborted) throw new DOMException('Request aborted', 'AbortError');
         return rejected(401);
@@ -124,7 +129,7 @@ export function createDesktopMemberCookieBridge(now: () => number = Date.now) {
       }
       const headers = new Headers(response.headers);
       headers.delete('set-cookie');
-      if (product) headers.set('cache-control', 'no-store');
+      if (memberContext) headers.set('cache-control', 'no-store');
       return new Response(response.body, {
         status: response.status,
         statusText: response.statusText,
