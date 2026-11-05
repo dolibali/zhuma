@@ -758,6 +758,21 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
       await handle.dispose();
       throw new NativeWorkError('configuration-mismatch');
     }
+    if (!stored) {
+      try {
+        // JSONL create is lazy. Persist the empty session through its original
+        // live writer before connect permits a durable receipt reservation.
+        if (!(await this.ctx.sessions.flush(handle.agent.session)))
+          throw new NativeWorkError('unavailable');
+        if (signal.aborted) throw new NativeWorkError('cancelled');
+        this.current(grant);
+        directory.assert(handle.agent);
+        if (this.ctx.agents.get(id) !== handle.agent) throw new NativeWorkError('unavailable');
+      } catch (error) {
+        await handle.dispose();
+        throw error;
+      }
+    }
     const revoke = () => {
       presentation.close();
       // Revocation cannot wake parked input or grant authority to a late frame.
