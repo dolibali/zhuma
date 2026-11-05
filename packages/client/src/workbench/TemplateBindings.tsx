@@ -4,6 +4,27 @@ import { SingleSelect } from './SingleSelect.js';
 
 export type TemplateBindingValues = Record<string, string | null>;
 
+function expertResources(person: Participant | undefined, assets: TeamAsset[]): string | undefined {
+  if (person?.kind !== 'expert') return undefined;
+  const summarize = (ids: readonly string[], kind: 'skill' | 'mcp') => {
+    const selected = [...new Set(ids)];
+    if (!selected.length) return '未绑定';
+    const available = selected.flatMap((id) => {
+      const asset = assets.find(
+        (value) => value.id === id && value.kind === kind && value.available,
+      );
+      return asset ? [asset.name] : [];
+    });
+    const missing = selected.length - available.length;
+    return [
+      ...available.slice(0, 2),
+      ...(available.length > 2 ? [`另 ${available.length - 2} 项`] : []),
+      ...(missing ? [`${missing} 项不可用`] : []),
+    ].join('、');
+  };
+  return `Skills：${summarize(person.resourceBindings?.skillIds ?? [], 'skill')} · MCP：${summarize(person.resourceBindings?.mcpIds ?? [], 'mcp')}`;
+}
+
 export function TemplateBindings({
   roles,
   resources,
@@ -30,7 +51,16 @@ export function TemplateBindings({
           <h4>角色分工</h4>
           <div className="zm-template-binding-grid">
             {roles.map((r) => (
-              <Field key={r.id} label={r.name}>
+              <Field
+                key={r.id}
+                label={r.name}
+                hint={
+                  expertResources(
+                    members.find((p) => p.id === roleValues[r.id]),
+                    assets,
+                  ) ?? ''
+                }
+              >
                 <SingleSelect
                   label={`绑定角色：${r.name}`}
                   value={roleValues[r.id] ?? ''}
