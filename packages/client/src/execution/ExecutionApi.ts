@@ -25,6 +25,14 @@ export interface ExecutionArtifactWire {
   readonly files?: readonly ArtifactFileRef[];
 }
 
+export interface ExecutionCommentWire {
+  readonly id: string;
+  readonly status: string;
+  readonly versionId?: string;
+  readonly targetId?: string;
+  readonly body?: string;
+}
+
 export interface ExecutionBallotWire {
   readonly reviewerId: string;
   readonly action: string;
@@ -54,7 +62,7 @@ export interface ExecutionNodeWire {
   readonly currentRoundId?: string;
   readonly artifacts: readonly ExecutionArtifactWire[];
   readonly rounds: readonly ExecutionRoundWire[];
-  readonly comments: readonly { readonly id: string; readonly status: string }[];
+  readonly comments: readonly ExecutionCommentWire[];
   readonly reviewOutcome?: string;
   readonly blockReason?: string;
   readonly acceptedArtifactVersionId?: string;
@@ -137,6 +145,7 @@ export interface ReviewDraft {
   readonly artifactVersionId: string;
   readonly action: 'approve' | 'request-changes' | 'comment';
   readonly comment?: string;
+  readonly unresolvedCommentIds?: readonly string[];
 }
 
 export interface StartPlanDraft {
@@ -557,6 +566,26 @@ export function readRevisionView(value: unknown): RevisionViewWire {
   return { ...(reviewed ? { reviewed } : {}), ...(previous ? { previous } : {}), notes };
 }
 
+function pinnedId(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length > 0 && value.trim() === value
+    ? value
+    : undefined;
+}
+
+function readComment(value: unknown): ExecutionCommentWire {
+  if (value === null || typeof value !== 'object') invalid('返回的评论不正确。');
+  const comment = value as Record<string, unknown>;
+  const versionId = pinnedId(comment.versionId);
+  const targetId = pinnedId(comment.targetId);
+  return {
+    id: text(comment.id, '评论'),
+    status: text(comment.status, '评论状态'),
+    ...(versionId === undefined ? {} : { versionId }),
+    ...(targetId === undefined ? {} : { targetId }),
+    ...(typeof comment.body === 'string' && comment.body.length > 0 ? { body: comment.body } : {}),
+  };
+}
+
 function readBallot(value: unknown): ExecutionBallotWire {
   if (value === null || typeof value !== 'object') invalid('返回的评审票不正确。');
   const record = value as Record<string, unknown>;
@@ -608,11 +637,7 @@ export function readExecutionNode(value: unknown): ExecutionNodeWire {
     ...(typeof record.currentRoundId === 'string' ? { currentRoundId: record.currentRoundId } : {}),
     artifacts: record.artifacts.map(readArtifact),
     rounds: record.rounds.map(readRound),
-    comments: record.comments.map((item) => {
-      if (item === null || typeof item !== 'object') invalid('返回的评论不正确。');
-      const comment = item as Record<string, unknown>;
-      return { id: text(comment.id, '评论'), status: text(comment.status, '评论状态') };
-    }),
+    comments: record.comments.map(readComment),
     ...(typeof record.reviewOutcome === 'string' ? { reviewOutcome: record.reviewOutcome } : {}),
     ...(typeof record.blockReason === 'string' ? { blockReason: record.blockReason } : {}),
     ...(typeof record.acceptedArtifactVersionId === 'string'
@@ -888,6 +913,9 @@ export function createExecutionApi(rpc: ClientConnectionRpc, spaceId?: string): 
         artifactVersionId: draft.artifactVersionId,
         action: draft.action,
         ...(draft.comment === undefined ? {} : { comment: draft.comment }),
+        ...(draft.unresolvedCommentIds === undefined
+          ? {}
+          : { unresolvedCommentIds: [...draft.unresolvedCommentIds] }),
       };
       return readCommand(await call('ballot', payload, signal), draft);
     },

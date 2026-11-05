@@ -57,6 +57,7 @@ import {
   unlockDownstream,
   unlockKey,
   castBallot,
+  bindVersionedReviewComment,
   WorkbenchError,
   WorkTaskSchema,
   type ArtifactFileRef,
@@ -871,6 +872,21 @@ function draftKeyLimit(
     };
   }
   return undefined;
+}
+
+/** Stable id for the comment created by one ballot idempotency key. */
+function reviewCommentId(idempotencyKey: string): string {
+  return `c-${createHash('sha256').update(idempotencyKey).digest('hex').slice(0, 32)}`;
+}
+
+/** Keep caller citations, and add the comment this return just pinned to the version. */
+function withVersionCitation(
+  requested: readonly string[] | undefined,
+  citedId: string | undefined,
+): readonly string[] | undefined {
+  if (citedId === undefined) return requested;
+  if (requested?.some((id) => id.trim() === citedId)) return requested;
+  return [...(requested ?? []), citedId];
 }
 
 function parseBody<T>(schema: z.ZodType<T>, body: unknown): ExecutionResult<T> {
@@ -6537,22 +6553,54 @@ export class ExecutionService {
         body,
         ballotSchema,
         (actorId, request, record) => {
+          const ballot = {
+            reviewerId: actorId,
+            roundId: request.roundId,
+            artifactVersionId: request.artifactVersionId,
+            action: request.action,
+            ...(request.comment === undefined ? {} : { comment: request.comment }),
+            ...(request.unresolvedCommentIds === undefined
+              ? {}
+              : { unresolvedCommentIds: request.unresolvedCommentIds }),
+          };
+          if (record.receipts.some((item) => item.idempotencyKey === request.idempotencyKey)) {
+            // Legacy receipts predate the generated version-comment citation. Only a full
+            // replay of the original request may return before the current binding path.
+            const replay = castBallot({
+              record,
+              actorId,
+              idempotencyKey: request.idempotencyKey,
+              expectedVersion: request.expectedVersion,
+              ballot,
+              comments: record.comments,
+              receiptComments: [],
+            });
+            if (replay.ok && replay.disposition === 'replayed')
+              return { result: replay, settle: true };
+          }
+          const bound = bindVersionedReviewComment({
+            existing: record.comments,
+            id: reviewCommentId(request.idempotencyKey),
+            artifactVersionId: request.artifactVersionId,
+            action: request.action,
+            authorId: actorId,
+            ...(request.comment === undefined ? {} : { comment: request.comment }),
+          });
+          const unresolvedCommentIds = withVersionCitation(
+            request.unresolvedCommentIds,
+            bound.citedId,
+          );
           const result = castBallot({
             record,
             actorId,
             idempotencyKey: request.idempotencyKey,
             expectedVersion: request.expectedVersion,
             ballot: {
-              reviewerId: actorId,
-              roundId: request.roundId,
-              artifactVersionId: request.artifactVersionId,
-              action: request.action,
-              ...(request.comment === undefined ? {} : { comment: request.comment }),
-              ...(request.unresolvedCommentIds === undefined
-                ? {}
-                : { unresolvedCommentIds: request.unresolvedCommentIds }),
+              ...ballot,
+              ...(unresolvedCommentIds === undefined ? {} : { unresolvedCommentIds }),
             },
-            comments: record.comments,
+            comments: bound.comments,
+            receiptComments: bound.owned === undefined ? [] : [bound.owned],
           });
           return { result, settle: true };
         },

@@ -76,6 +76,55 @@ test('panels render delivery and review without an actor control', () => {
   assert.match(review, /通过/);
   assert.match(review, /退回修改/);
   assert.equal(review.includes('type="hidden"'), false);
+  assert.equal(review.includes('与上一版的差异'), false);
+
+  const compared = renderToStaticMarkup(
+    createElement(ReviewWorkspace, {
+      api,
+      onSubmitted() {},
+      node: {
+        ...node,
+        artifacts: [
+          { id: 'artifact-1', version: 1, text: '第一行\n保留' },
+          { id: 'artifact-2', version: 2, text: '第一行\n已改' },
+          { id: 'artifact-3', version: 3, text: '后来的正文' },
+        ],
+        rounds: [
+          {
+            id: 'round-1',
+            status: 'open',
+            artifactVersionId: 'artifact-2',
+            reviewerIds: ['lin'],
+            ballots: [],
+          },
+        ],
+        comments: [
+          {
+            id: 'c-old',
+            status: 'open',
+            versionId: 'artifact-1',
+            targetId: 'artifact-1',
+            body: '旧版意见',
+          },
+          {
+            id: 'c-now',
+            status: 'open',
+            versionId: 'artifact-2',
+            targetId: 'artifact-2',
+            body: '请改第二行',
+          },
+        ],
+      },
+    }),
+  );
+  assert.match(compared, /第一行/);
+  assert.match(compared, /已改/);
+  assert.match(compared, /与上一版的差异/);
+  assert.match(compared, /-保留/);
+  assert.match(compared, /\+已改/);
+  assert.match(compared, /请改第二行/);
+  assert.equal(compared.includes('旧版意见'), false);
+  assert.equal(compared.includes('后来的正文'), false);
 
   const workspace = renderToStaticMarkup(
     createElement(ExecutionWorkspace, {

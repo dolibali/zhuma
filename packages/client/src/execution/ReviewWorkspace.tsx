@@ -1,14 +1,27 @@
 import { useId, useState } from 'react';
+import { previewFixedDelivery } from '@zhuma/agent-core';
 import { FileReferences } from './FileReferences.js';
 import { Button } from '../workbench/Button.js';
 import { Field } from '../workbench/controls.js';
 import { useUnsavedChanges } from '../workbench/UnsavedChanges.js';
-import type { ExecutionApi, ExecutionNodeWire, ReviewDraft } from './ExecutionApi.js';
+import type {
+  ExecutionApi,
+  ExecutionCommentWire,
+  ExecutionNodeWire,
+  ReviewDraft,
+} from './ExecutionApi.js';
 import { reviewIdentity, useExecutionCommand, useFormKey } from './interaction.js';
 import { createExecutionGoalView } from '../execution-view.js';
 import type { NativeReviewApi } from '../run/review-api.js';
 import { NativeReviewLauncher } from '../run/NativeReviewWorkspace.js';
 import { ReviewBallots } from './ReviewBallots.js';
+
+function commentOnVersion(comment: ExecutionCommentWire, artifactId: string): boolean {
+  if (comment.versionId === undefined && comment.targetId === undefined) return false;
+  if (comment.versionId !== undefined && comment.versionId !== artifactId) return false;
+  if (comment.targetId !== undefined && comment.targetId !== artifactId) return false;
+  return true;
+}
 
 type Props = {
   api: ExecutionApi;
@@ -30,12 +43,21 @@ function ReviewForm({ api, node, onSubmitted, nativeReview }: Props) {
   useUnsavedChanges(!!comment);
   const command = useExecutionCommand();
   const unavailable = !round || round.status !== 'open' || !artifact;
+  const preview = artifact ? previewFixedDelivery(node.artifacts, artifact.id) : undefined;
+  const pinned = preview?.ok ? preview.preview : undefined;
+  const versionComments = artifact
+    ? node.comments.filter((item) => commentOnVersion(item, artifact.id))
+    : [];
   function vote(action: ReviewDraft['action']) {
     if (unavailable || !round || !artifact) return;
     if (action !== 'approve' && !comment.trim()) {
       command.setError('请填写评审意见。');
       return;
     }
+    const cited = versionComments
+      .filter((item) => item.status === 'open')
+      .map((item) => item.id)
+      .filter((id, index, ids) => ids.indexOf(id) === index);
     const payload = {
       taskId: node.taskId,
       planId: node.planId,
@@ -46,6 +68,7 @@ function ReviewForm({ api, node, onSubmitted, nativeReview }: Props) {
       artifactVersionId: artifact.id,
       action,
       ...(comment.trim() ? { comment: comment.trim() } : {}),
+      ...(action === 'request-changes' && cited.length > 0 ? { unresolvedCommentIds: cited } : {}),
     };
     void command.run(
       payload,
@@ -87,7 +110,27 @@ function ReviewForm({ api, node, onSubmitted, nativeReview }: Props) {
       {unavailable && <p role="status">当前评审轮次或对应产物不可用，请刷新待办。</p>}
       <article className="zm-execution-artifact" aria-label="本轮提交产物">
         <h3>提交内容{artifact ? ` · 第 ${artifact.version} 版` : ''}</h3>
-        <div className="zm-execution-text">{artifact?.text || '无文字正文'}</div>
+        <div className="zm-execution-text">{pinned?.text || artifact?.text || '无文字正文'}</div>
+        {pinned?.diff ? (
+          <pre className="zm-execution-text" aria-label="与上一版的差异">
+            {pinned.diff}
+          </pre>
+        ) : pinned?.baseVersion !== undefined ? (
+          <p className="zm-muted">与第 {pinned.baseVersion} 版正文相同。</p>
+        ) : null}
+        {versionComments.length > 0 && (
+          <div aria-label="绑定本版的评论">
+            <h4>绑定本版的评论</h4>
+            <ul>
+              {versionComments.map((item) => (
+                <li key={item.id}>
+                  <span className="zm-kind">{item.status === 'open' ? '未解决' : '已解决'}</span>
+                  <span className="zm-execution-text">{item.body || '未写正文'}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
         {artifact?.links?.map((link, index) => {
           let safe = false;
           try {
