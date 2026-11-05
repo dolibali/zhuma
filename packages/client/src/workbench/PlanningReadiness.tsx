@@ -191,14 +191,14 @@ export function PlanningReadiness({ value }: { value: ReturnType<typeof usePlann
           <p>请由服务操作者配置后刷新。本机模型设置不会自动配置共享服务，仍可手工编排。</p>
         )}
         {value.choices?.kind === 'unavailable' && value.choices.message && (
-          <p role="alert">{value.choices.message}</p>
+          <p>{value.choices.message}</p>
         )}
         {value.choices?.kind === 'ready' && !value.choices.items.length && value.ready && (
           <p>
             当前没有可切换的规划模型。请由服务操作者配置后刷新。本机模型设置不会自动配置共享服务。
           </p>
         )}
-        {value.error && <p role="alert">{value.error}</p>}
+        {value.error && <p>{value.error}</p>}
       </div>
       <Button
         variant="quiet"

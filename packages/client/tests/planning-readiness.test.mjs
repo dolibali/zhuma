@@ -160,6 +160,7 @@ test('refresh still reads the catalog and the unavailable path keeps operator gu
   assert.match(html, /本机模型设置不会自动配置共享服务/);
   assert.match(html, /模型目录暂不可用，请检查模型配置后刷新。/);
   assert.match(html, /暂时无法确认规划模型，请重试。/);
+  assert.doesNotMatch(html, /role="alert"/);
   assert.match(html, /刷新模型/);
   assert.doesNotMatch(html, /zm-single-select/);
   const empty = renderToStaticMarkup(
