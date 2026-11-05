@@ -77,16 +77,10 @@
       "suggestedAssetId": "zhuma-eng-focused-verification"
     },
     {
-      "id": "change-review",
-      "name": "变更代码审查",
+      "id": "bounded-fix",
+      "name": "有界问题修复",
       "kind": "skill",
-      "suggestedAssetId": "zhuma-eng-change-review"
-    },
-    {
-      "id": "acceptance-review",
-      "name": "验收与内容评审",
-      "kind": "skill",
-      "suggestedAssetId": "zhuma-eng-acceptance-review"
+      "suggestedAssetId": "zhuma-eng-bounded-fix"
     },
     {
       "id": "engineering-writing",
@@ -166,7 +160,7 @@
           "skillIds": ["focused-verification"],
           "mcpIds": [],
           "input": "需求场景、已接受设计、实现固定版本与实际项目命令；缺少执行权限或依赖时明确阻塞。",
-          "output": "逐场景真实证据：源码版本、环境、argv、工作目录、退出码、报告位置及摘要；失败保留原输出，返工使用原退回/修正/重提，不降低断言。",
+          "output": "逐场景真实证据：源码版本、环境、argv、工作目录、退出码、报告位置及摘要；保留失败原输出交给下一送审与修正节点的实现者，不降低断言，也不把失败当通过。",
           "rationale": "依赖只表达所需上游固定输入；没有新增条件调度或自动可信测试门禁。资源/身份/独立性不足时保留可编辑草稿并报告缺项。",
           "position": {
             "x": 1080,
@@ -175,17 +169,17 @@
         },
         {
           "id": "review",
-          "title": "独立与人工评审",
-          "description": "独立报告及人工正式票绑定同一固定版本；退回后沿既有重提。",
-          "assigneeId": "independent-reviewer",
-          "reviewerIds": ["human-approver"],
+          "title": "送审与修正",
+          "description": "实现者提交最终代码与复验报告，独立评审者和人工对同一版本正式评审；退回仍由本节点实现者修正重提。",
+          "assigneeId": "implementer",
+          "reviewerIds": ["independent-reviewer", "human-approver"],
           "reviewRequired": true,
           "dependsOn": ["requirements", "design", "implement", "verify"],
-          "skillIds": ["change-review", "acceptance-review"],
+          "skillIds": ["bounded-fix", "focused-verification"],
           "mcpIds": [],
-          "input": "上述节点指定固定版本、代码差异、验收映射及验证报告；评审角色必须与代码作者实际独立。",
-          "output": "有位置与影响的发现、原失败修复复核、建议结论及边界；由指定人工对本轮固定版本正式通过/退回。作者自检、测试exit0和报告建议均不代票。",
-          "rationale": "依赖只表达所需上游固定输入；没有新增条件调度或自动可信测试门禁。资源/身份/独立性不足时保留可编辑草稿并报告缺项。",
+          "input": "需求、设计、初始实现与验证固定产物，以及当前轮退回意见。评审者须与作者实际不同；选独立专家时须实际配置其自己的change-review/acceptance-review资源，缺项保持草稿并显式绑定，节点Skill不授予评审者。",
+          "output": "每次送审都固定提交本轮最终源码或完整补丁及基线、实际重跑的项目/独立验收报告和文件摘要；验证失败先有界修正再复验。两位指定评审者对同一版本正式通过才完成；任一退回由本节点实现者修正并以新代码/报告版本重提，旧票不迁移。",
+          "rationale": "沿现有节点退回/修正/重提，不重开已完成的implement/verify，不新增调度或可信测试门禁。独立评审者使用自己的冻结资源配置；作者自检、报告建议和测试exit0均不代正式票。",
           "position": {
             "x": 1440,
             "y": 80
@@ -198,12 +192,12 @@
           "assigneeId": "human-approver",
           "reviewerIds": [],
           "reviewRequired": false,
-          "dependsOn": ["implement", "verify", "review"],
+          "dependsOn": ["requirements", "design", "review"],
           "skillIds": ["engineering-writing"],
           "mcpIds": [],
-          "input": "本轮已正式接受的代码/报告/评审产物版本及当前提交范围；不能用较新未评审草稿替换。",
-          "output": "通过正常固定文件/正文提交交付准确源码引用或补丁、可复现命令、实际报告和限制；列每个交付文件SHA-256与对应提交版本，不读取或打包凭据。",
-          "rationale": "依赖只表达所需上游固定输入；没有新增条件调度或自动可信测试门禁。资源/身份/独立性不足时保留可编辑草稿并报告缺项。",
+          "input": "只以送审与修正节点最新正式接受的固定版本提供最终代码及复验报告；需求/设计固定输入供追溯。implement/verify旧产物只作历史，不作为最终代码或测试证据，也不能换成未评审草稿。",
+          "output": "通过正常固定文件/正文提交交付第五节点已接受的最终源码或完整补丁、可复现命令、同版本实际报告和评审结论；列每个文件SHA-256与对应接受版本及限制，不读取或打包凭据。",
+          "rationale": "只消费第五节点最新正式接受的代码/报告版本；保持需求设计追溯，不从初始实现/验证重取旧文件。沿既有固定提交与依赖交接，不新增调度。",
           "position": {
             "x": 1800,
             "y": 80
