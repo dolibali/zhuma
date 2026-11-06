@@ -555,6 +555,21 @@ export function installMemberNativeNavigation(
   return state;
 }
 type NavigationState = ReturnType<typeof installMemberNativeNavigation>;
+function nativeTaskConversationStatus(run: NativeRunRead) {
+  if (run.stopPhase === 'receipt-rejected') return '停止未确认';
+  if (run.stopPhase === 'requested') return '正在停止';
+  if (run.status === 'cancelled' || run.stopPhase === 'confirmed')
+    return run.stopPhase === 'confirmed' && run.resources === 'settled' ? '已停止' : '等待停止确认';
+  if (run.status === 'completed')
+    return run.resources === 'settled' ? '已完成' : '任务已结束，正在收尾';
+  if (run.status === 'failed')
+    return run.resources === 'settled' ? '执行失败' : '执行失败，正在收尾';
+  return run.status === 'running'
+    ? '执行中'
+    : run.status === 'waiting-for-input'
+      ? '等待输入'
+      : '准备中';
+}
 function NativeTaskConversationControls({
   state,
   sessionId,
@@ -570,18 +585,7 @@ function NativeTaskConversationControls({
   return (
     <div className="zhuma zm-task-conversation-controls" aria-label="任务执行控制">
       <span title={`${entry.target.taskId} · ${entry.target.nodeId}`}>
-        任务 ·{' '}
-        {run.status === 'running'
-          ? '执行中'
-          : run.status === 'waiting-for-input'
-            ? '等待输入'
-            : run.status === 'completed'
-              ? '已完成'
-              : run.status === 'cancelled'
-                ? '已停止'
-                : run.status === 'failed'
-                  ? '执行失败'
-                  : '准备中'}
+        任务 · {nativeTaskConversationStatus(run)}
       </span>
       <span
         className="zm-task-conversation-hint"

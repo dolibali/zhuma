@@ -193,6 +193,12 @@ function setup() {
       const main = views.find((v) => v.options.name === 'main');
       return renderToStaticMarkup(createElement(main.view, { state }));
     },
+    renderTaskControls: (sessionId) => {
+      const controls = views.find(
+        (v) => v.options.name === 'conversation.session.header.utilities',
+      );
+      return renderToStaticMarkup(createElement(controls.view, { state, sessionId }));
+    },
     change() {
       session = { ...session, epoch: 2 };
       listeners.forEach((fn) => fn());
@@ -289,6 +295,61 @@ test('local unqualified or unsupported bindings preserve original task controls 
     assert.equal(h.panel(), nativeSessionPanel);
     h.close();
   }
+});
+test('task Conversation controls wait for physical stop confirmation and resource settlement', async () => {
+  const h = setup();
+  h.setBackend({ phase: 'ready', selection: { origin: null, connectionId: null } });
+  h.setLookup(async () => task);
+  let phase = { status: 'cancelled', resources: 'held', stopPhase: 'requested' };
+  h.setFetcher(async (path, init) => {
+    if (path === '/zhuma-id/session')
+      return Response.json({
+        ok: true,
+        accountId: 'member',
+        peerId: 'fixture',
+        principal: { kind: 'zhuma-member', memberId: 'member' },
+        spaces: [{ id: 'team', kind: 'team', name: 'Team' }],
+      });
+    assert.equal(path, '/api/zhuma-run/read');
+    const wire = JSON.parse(init.body);
+    return Response.json({
+      type: 'server-response',
+      rpcId: wire.rpcId,
+      result: {
+        ok: true,
+        value: {
+          ...task.target,
+          nodeVersion: 1,
+          runVersion: 1,
+          dispatch: 'received',
+          acknowledged: true,
+          ...phase,
+          native: { sessionId: task.sessionId, agentId: task.sessionId, status: 'idle' },
+          sendCapabilities: {
+            followup: { kind: 'available' },
+            queue: { kind: 'available' },
+            steer: { kind: 'available' },
+          },
+        },
+      },
+    });
+  });
+  assert.equal(await h.guard(task.sessionId, new AbortController().signal), true);
+  assert.match(h.renderTaskControls(task.sessionId), /正在停止/);
+  assert.doesNotMatch(h.renderTaskControls(task.sessionId), /已停止/);
+  for (const [next, expected] of [
+    [{ status: 'cancelled', resources: 'held', stopPhase: 'confirmed' }, /等待停止确认/],
+    [{ status: 'cancelled', resources: 'settled', stopPhase: 'confirmed' }, /已停止/],
+    [{ status: 'cancelled', resources: 'held', stopPhase: 'receipt-rejected' }, /停止未确认/],
+    [{ status: 'completed', resources: 'held', stopPhase: 'none' }, /任务已结束，正在收尾/],
+  ]) {
+    phase = next;
+    await h.state.getSnapshot().conversation.refresh();
+    assert.match(h.renderTaskControls(task.sessionId), expected);
+    if (next.stopPhase !== 'confirmed' || next.resources !== 'settled')
+      assert.doesNotMatch(h.renderTaskControls(task.sessionId), /已停止/);
+  }
+  h.close();
 });
 test('original review Session opens its read-only purpose view with no work/model API call', async () => {
   const h = setup();

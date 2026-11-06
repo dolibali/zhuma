@@ -719,7 +719,7 @@ diff --git a/packages/client/ui-workspace/README.md b/packages/client/ui-workspa
 +
 +## Externally revoked selections
 +
-+`uiWorkspace.clearSessionSelection(sessionId)` releases the original main-view reference and selection only when that exact Session is current. An external authority owner can use it with Session delegate revocation without replacing the ordinary navigation or selecting another Session.
++`uiWorkspace.clearSessionSelection(sessionId)` releases the original main-view reference and selection only when that exact Session is current. An external authority owner can use it with Session delegate revocation without starting a layout navigation or selecting another Session. Ordinary navigation and archive actions retain their existing panel behavior.
 diff --git a/packages/client/ui-workspace/src/client/navigation.ts b/packages/client/ui-workspace/src/client/navigation.ts
 --- a/packages/client/ui-workspace/src/client/navigation.ts
 +++ b/packages/client/ui-workspace/src/client/navigation.ts
@@ -732,14 +732,82 @@ diff --git a/packages/client/ui-workspace/src/client/navigation.ts b/packages/cl
  
    /**
     * Select a Session and show its Conversation as one UI navigation action.
-@@ -170,6 +172,10 @@
+@@ -170,6 +172,14 @@
    private mainReference: SessionReference | undefined
    private sessionNavigation: { readonly guard: SessionNavigationGuard } | undefined
    private waitingNavigation: AbortController | undefined
 +
 +  clearSessionSelection(sessionId: SessionId): void {
-+    if (this.mainReference?.sessionId === sessionId) this.clearMain()
++    if (this.mainReference?.sessionId !== sessionId) return
++    const previous = this.mainReference
++    this.mainReference = undefined
++    this.selection.set({})
++    previous.release()
 +  }
  
    registerSessionNavigationGuard(guard: SessionNavigationGuard): () => void {
      if (this.sessionNavigation !== undefined) throw new Error('Session navigation guard is already registered')
+diff --git a/packages/client/ui-workspace/tests/workspaces-service.client.spec.ts b/packages/client/ui-workspace/tests/workspaces-service.client.spec.ts
+--- a/packages/client/ui-workspace/tests/workspaces-service.client.spec.ts
++++ b/packages/client/ui-workspace/tests/workspaces-service.client.spec.ts
+@@ -136,6 +136,7 @@
+ }
+ 
+ class FakeSessions implements ISessions {
++  declare readonly registerSessionDelegate: ISessions['registerSessionDelegate']
+   readonly list: MutableSource<SessionListState>
+   readonly create: ReturnType<typeof vi.fn<ISessions['create']>>
+   readonly fork = vi.fn<ISessions['fork']>(async () => sid('forked'))
+@@ -320,6 +321,38 @@
+ }
+ 
+ describe('UiWorkspaceService', () => {
++  it.each(['native-B', 'ordinary'])('native exact selection keeps one A to %s navigation alive', async (nextId) => {
++    const b = bench()
++    b.uiWorkspace.openSession(sid('native-A'))
++    const old = b.sessions.retained[0]!
++    const aborted: boolean[] = []
++    b.uiWorkspace.registerSessionNavigationGuard(async (_target, signal) => {
++      b.uiWorkspace.clearSessionSelection(sid('native-A'))
++      aborted.push(signal.aborted)
++      return true
++    })
++    b.uiWorkspace.openSession(sid(nextId))
++    await setImmediate()
++    expect(aborted).toEqual([false])
++    expect(b.sessions.retained.map(item => item.reference.sessionId)).toEqual([sid('native-A'), sid(nextId)])
++    expect(old.release).toHaveBeenCalledOnce()
++    expect(b.sessions.retained[1]!.release).not.toHaveBeenCalled()
++  })
++
++  it('native exact selection revokes only the matching reference without selecting a panel', () => {
++    const b = bench()
++    b.uiWorkspace.openSession(sid('native-A'))
++    const old = b.sessions.retained[0]!
++    b.selectPanel.mockClear()
++    const pending = b.layout.beginNavigation()
++    b.uiWorkspace.clearSessionSelection(sid('other'))
++    expect(old.release).not.toHaveBeenCalled()
++    b.uiWorkspace.clearSessionSelection(sid('native-A'))
++    expect(old.release).toHaveBeenCalledOnce()
++    expect(pending.aborted).toBe(false)
++    expect(b.selectPanel).not.toHaveBeenCalled()
++  })
++
+   it('prepares and selects the default Workspace after both startup baselines', async () => {
+     const b = bench({ configureWorkspaces: (workspaces) => {
+       workspaces.initializeDefault.mockImplementation(async () => {
+diff --git a/packages/test-support/client-runtime/src/sessions.ts b/packages/test-support/client-runtime/src/sessions.ts
+--- a/packages/test-support/client-runtime/src/sessions.ts
++++ b/packages/test-support/client-runtime/src/sessions.ts
+@@ -300,6 +300,10 @@
+  * behavior/calls/stubs) are bench-only surface.
+  */
+ export class TestSessions implements ISessions {
++  registerSessionDelegate(): never {
++    throw new Error('Delegation tests require the original ClientSessions transport')
++  }
++
+   /** The useSessions catalog feed, independent of view ownership. */
+   readonly list: SnapshotStore<SessionListState>
+   private readonly records = new Map<SessionId, SessionRecord>()
