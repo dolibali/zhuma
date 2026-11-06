@@ -68,6 +68,12 @@ export function createMemberNativeClient(
       return response;
     }
     return {
+      conversationRequest: (
+        endpoint: 'session-page' | 'session-follow',
+        query: unknown,
+        rpcId: string,
+        signal: AbortSignal,
+      ) => invoke(endpoint, query, rpcId, signal),
       fetcher: (async (input, init) => {
         if (
           typeof input !== 'string' ||

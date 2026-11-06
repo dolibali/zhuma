@@ -8,6 +8,7 @@ import { join } from 'node:path';
 export const PRODUCT_SOURCE_PATCHES = Object.freeze([
   'patches/deepseek-harness/zhuma-desktop.patch',
   'patches/deepseek-harness/zhuma-ui-branding.patch',
+  'patches/deepseek-harness/zhuma-native-conversation.patch',
 ]);
 export function assertReversiblePatchSeries(stage, patches) {
   assert(patches.length > 0, 'Product patch series is empty.');

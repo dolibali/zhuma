@@ -32,6 +32,10 @@ import {
 } from './host-run-reader.js';
 import { observeHostNativeRun, type HostNativeClaim } from './host-run-observation.js';
 import type { HostRunOperations } from './host-run-http.js';
+import {
+  createHostNativeConversation,
+  type PassiveSessionHistory,
+} from './host-native-conversation.js';
 import type {
   ExecutionService,
   ExecutionResult,
@@ -580,6 +584,19 @@ export async function openHostRunOwner(
     readSendCapabilities,
     (scope) => owned.get(nativeScopeKey(scope))?.resultPending,
   );
+  const conversation = createHostNativeConversation({
+    authorities,
+    native: native.service,
+    history: () => {
+      const history = ctx.get('sessionController') as unknown as PassiveSessionHistory;
+      if (typeof history?.followReadOnly !== 'function') throw new NativeWorkError('unavailable');
+      const identity: unknown = Reflect.get(history, symbols.original);
+      if (!identity || typeof identity !== 'object') throw new NativeWorkError('unavailable');
+      return { source: history, identity };
+    },
+    signal: lifetime.signal,
+    assertCurrent: active,
+  });
 
   async function readSendCapabilities(
     request: MemberRequest,
@@ -1536,6 +1553,7 @@ export async function openHostRunOwner(
 
   return {
     lookupNativeSession: native.lookupNativeSession,
+    conversation,
     canSwitchBackend() {
       if (
         fenced ||
