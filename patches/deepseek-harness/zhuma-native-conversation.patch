@@ -544,11 +544,93 @@ diff --git a/packages/api/session-controller/src/list.ts b/packages/api/session-
      const projections = this.projectionsFor(header, undefined)
      const metadata = projections?.values.sessionListMetadata
      return {
+diff --git a/packages/api/session-controller/tests/native-catalog-retirement.client.spec.ts b/packages/api/session-controller/tests/native-catalog-retirement.client.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/api/session-controller/tests/native-catalog-retirement.client.spec.ts
+@@ -0,0 +1,77 @@
++/** Original Client catalog consuming public wire data; no Host services, Agent or model. */
++import { Context } from '@deepseek-ai/cordis'
++import { SessionId } from '@deepseek-ai/dsh-session/types'
++import { ok } from '@deepseek-ai/dsh-remote-mock'
++import { expect, it, vi } from 'vitest'
++import type { SessionSummary } from '../src/types.ts'
++import { ClientSessions } from '../src/client/sessions/service.ts'
++import type { SessionRemotes } from '../src/client/sessions/remotes.ts'
++
++function summary(id: string, updatedAt = 1, agentAvailable = true): SessionSummary {
++  return { sessionId: SessionId(id), updatedAt, agentAvailable, running: false, blank: false, cwd: '/fixture' }
++}
++
++function bench(list?: SessionRemotes['session']['list']) {
++  const ctx = new Context()
++  const unexpected = vi.fn((): never => { throw new Error('unexpected client mutation or read') })
++  const remote: SessionRemotes = {
++    $stream: unexpected, commands: { execute: unexpected }, subagents: { prompt: unexpected, interruptByParent: unexpected },
++    session: { attachment: unexpected, cancel: unexpected, canOpenWorkspacePath: unexpected,
++      control: unexpected, create: unexpected, follow: unexpected, fork: unexpected,
++      initializeDefaultModel: unexpected, list: list ?? unexpected, modelCatalog: unexpected,
++      openWorkspacePath: unexpected, page: unexpected, projections: unexpected,
++      prompt: unexpected, rename: unexpected, search: unexpected, selectModel: unexpected,
++      updateQueue: unexpected, workspacePathApplications: unexpected },
++  }
++  return { ctx, client: new ClientSessions(ctx, remote), unexpected }
++}
++
++it.each([true, false])('retirement wire data retains a stored catalog row when persisted=%s', async (persisted) => {
++  const b = bench()
++  try {
++    const a = summary('native-catalog-A'), other = summary('native-catalog-B')
++    b.client.handleSessionAdded(a)
++    b.client.handleSessionAdded(other)
++    await vi.waitFor(() => expect(b.client.list.getSnapshot().ids).toHaveLength(2))
++    if (persisted) b.client.handleSessionAdded(summary(a.sessionId, 1, false))
++    else b.client.handleSessionRemoved(a.sessionId)
++    await vi.waitFor(() => expect(b.client.list.getSnapshot().ids).toHaveLength(persisted ? 2 : 1))
++    expect(b.client.list.getSnapshot().byId[other.sessionId]).toBeDefined()
++    if (persisted) expect(b.client.list.getSnapshot().byId[a.sessionId]?.running).toBe(false)
++    else expect(b.client.list.getSnapshot().byId[a.sessionId]).toBeUndefined()
++    expect(b.unexpected).not.toHaveBeenCalled()
++  } finally { await b.ctx.fiber.dispose() }
++})
++
++it('a late old catalog reply cannot replace the newer same-SID generation', async () => {
++  const pending = Promise.withResolvers<Awaited<ReturnType<SessionRemotes['session']['list']>>>()
++  const list = vi.fn(() => pending.promise)
++  const b = bench(list)
++  try {
++    const old: SessionSummary = { ...summary('native-catalog-same'), formatStatus: 'migration-required' }
++    const other = summary('native-catalog-B')
++    b.client.handleSessionAdded(old)
++    b.client.handleSessionAdded(other)
++    const refreshing = b.client.refresh()
++    await vi.waitFor(() => expect(list).toHaveBeenCalledOnce())
++    b.client.handleSessionAdded({ ...summary(old.sessionId, 2), formatStatus: 'current' })
++    pending.resolve(ok({ items: [old, other] }))
++    await refreshing
++    await vi.waitFor(() => expect(b.client.list.getSnapshot().byId[old.sessionId]?.formatStatus).toBe('current'))
++    expect(b.client.list.getSnapshot().byId[other.sessionId]).toBeDefined()
++    expect(b.client.list.getSnapshot().ids).toHaveLength(2)
++    expect(b.unexpected).not.toHaveBeenCalled()
++  } finally { pending.resolve(ok({ items: [] })); await b.ctx.fiber.dispose() }
++})
++
++it('metadata failure wire data does not certify catalog deletion', async () => {
++  const b = bench()
++  try {
++    const a = summary('native-catalog-unknown')
++    b.client.handleSessionAdded(a)
++    b.client.handleSessionError(a.sessionId, 'Stored Session metadata is unavailable.')
++    await vi.waitFor(() => expect(b.client.list.getSnapshot().byId[a.sessionId]).toBeDefined())
++    expect(b.client.list.getSnapshot().ids).toEqual([a.sessionId])
++    expect(b.unexpected).not.toHaveBeenCalled()
++  } finally { await b.ctx.fiber.dispose() }
++})
 diff --git a/packages/api/session-controller/tests/native-catalog-retirement.host.spec.ts b/packages/api/session-controller/tests/native-catalog-retirement.host.spec.ts
 new file mode 100644
 --- /dev/null
 +++ b/packages/api/session-controller/tests/native-catalog-retirement.host.spec.ts
-@@ -0,0 +1,98 @@
+@@ -0,0 +1,87 @@
 +/** Original SessionStore disposal and SessionController catalog; synthetic metadata, no model or log writes. */
 +import { Context } from '@deepseek-ai/cordis'
 +import AgentRegistry from '@deepseek-ai/dsh-agent'
@@ -556,8 +638,7 @@ new file mode 100644
 +import { SessionPersistenceRevision } from '@deepseek-ai/dsh-session-persistence'
 +import type { SessionPersistenceSnapshot } from '@deepseek-ai/dsh-session-persistence'
 +import { expect, it, vi } from 'vitest'
-+import { ClientSessions } from '../src/client/sessions/service.ts'
-+import type { SessionRemotes } from '../src/client/sessions/remotes.ts'
++import type { SessionSummary } from '../src/types.ts'
 +import { createSessionTestController, testSessionPersistence } from './test-remote.ts'
 +
 +async function bench(stat: () => Promise<SessionPersistenceSnapshot | undefined>) {
@@ -567,21 +648,11 @@ new file mode 100644
 +  const inspect = vi.fn(() => { throw new Error('catalog must not read transcript') })
 +  ctx.provide('sessionPersistence', testSessionPersistence(ctx, { stat, inspect }) as never)
 +  createSessionTestController(ctx, { cwd: '/fixture', defaultModelSelection: () => ({ provider: 'fixture', model: 'fixture' }) })
-+  const clientCtx = new Context()
-+  const unexpected = (): never => { throw new Error('unexpected client mutation') }
-+  const remote: SessionRemotes = {
-+    $stream: unexpected, commands: { execute: unexpected }, subagents: { prompt: unexpected, interruptByParent: unexpected },
-+    session: { attachment: unexpected, cancel: unexpected, canOpenWorkspacePath: unexpected,
-+      control: unexpected, create: unexpected, follow: unexpected, fork: unexpected,
-+      initializeDefaultModel: unexpected, list: unexpected, modelCatalog: unexpected,
-+      openWorkspacePath: unexpected, page: unexpected, projections: unexpected,
-+      prompt: unexpected, rename: unexpected, search: unexpected, selectModel: unexpected,
-+      updateQueue: unexpected, workspacePathApplications: unexpected },
-+  }
-+  const client = new ClientSessions(clientCtx, remote)
-+  ctx.effect(() => () => clientCtx.fiber.dispose())
-+  ctx.on('api-session/added', summary => client.handleSessionAdded(summary))
-+  ctx.on('api-session/removed', id => client.handleSessionRemoved(id))
++  // Capture only the public wire data. The real Client projection has its own
++  // Client-side spec; importing it here merges incompatible Cordis programs.
++  const catalog = new Map<SessionId, SessionSummary>()
++  ctx.on('api-session/added', summary => catalog.set(summary.sessionId, structuredClone(summary)))
++  ctx.on('api-session/removed', id => catalog.delete(id))
 +  const added = vi.fn(), removed = vi.fn(), failed = vi.fn()
 +  ctx.on('api-session/added', added)
 +  ctx.on('api-session/removed', removed)
@@ -592,7 +663,7 @@ new file mode 100644
 +    ctx.sessions.announce(session)
 +    return { session, detach }
 +  }
-+  return { ctx, client, added, removed, failed, inspect, enter }
++  return { ctx, catalog, added, removed, failed, inspect, enter }
 +}
 +
 +it.each([true, false])('native owner disposal retains a stored catalog row when persisted=%s', async (persisted) => {
@@ -602,7 +673,7 @@ new file mode 100644
 +  try {
 +    const a = b.enter('native-catalog-A'), other = b.enter('native-catalog-B')
 +    stored = persisted ? { header: structuredClone(a.session.header), revision: SessionPersistenceRevision('metadata') } : undefined
-+    await vi.waitFor(() => expect(b.client.list.getSnapshot().ids).toHaveLength(2))
++    await vi.waitFor(() => expect(b.catalog.size).toBe(2))
 +    b.added.mockClear()
 +    a.detach()
 +    await vi.waitFor(() => expect(stat).toHaveBeenCalledOnce())
@@ -611,8 +682,8 @@ new file mode 100644
 +      expect(b.added).toHaveBeenCalledWith(expect.objectContaining({ sessionId: a.session.id, running: false, agentAvailable: false }))
 +      expect(b.removed).not.toHaveBeenCalled()
 +    } else expect(b.removed).toHaveBeenCalledWith(a.session.id)
-+    await vi.waitFor(() => expect(b.client.list.getSnapshot().ids).toHaveLength(persisted ? 2 : 1))
-+    expect(b.client.list.getSnapshot().byId[other.session.id]).toBeDefined()
++    await vi.waitFor(() => expect(b.catalog.size).toBe(persisted ? 2 : 1))
++    expect(b.catalog.get(other.session.id)).toBeDefined()
 +    expect(b.ctx.sessions.get(other.session.id)).toBe(other.session)
 +    expect(b.inspect).not.toHaveBeenCalled()
 +  } finally { await b.ctx.fiber.dispose() }
@@ -631,7 +702,7 @@ new file mode 100644
 +    expect(b.removed).not.toHaveBeenCalled()
 +    expect(b.ctx.sessions.get(current.session.id)).toBe(current.session)
 +    expect(b.added).not.toHaveBeenCalled()
-+    await vi.waitFor(() => expect(b.client.list.getSnapshot().byId[current.session.id]).toBeDefined())
++    await vi.waitFor(() => expect(b.catalog.get(current.session.id)?.updatedAt).toBe(2))
 +  } finally { pending.resolve(undefined); await b.ctx.fiber.dispose() }
 +})
 +
@@ -643,7 +714,7 @@ new file mode 100644
 +    a.detach()
 +    await vi.waitFor(() => expect(b.failed).toHaveBeenCalledOnce())
 +    expect(b.removed).not.toHaveBeenCalled()
-+    await vi.waitFor(() => expect(b.client.list.getSnapshot().byId[a.session.id]).toBeDefined())
++    await vi.waitFor(() => expect(b.catalog.get(a.session.id)).toBeDefined())
 +    expect(b.inspect).not.toHaveBeenCalled()
 +  } finally { await b.ctx.fiber.dispose() }
 +})
@@ -966,6 +1037,18 @@ diff --git a/packages/client/ui-conversation/src/client/skeleton/InputBar.tsx b/
              </div>
              {input === undefined || sessionId === undefined ? null : <div className={activity ? css.activityExpanded : css.activity}>
                {renderSlot('conversation.input.activity', { locked, onActiveChange: setActivity })}
+diff --git a/packages/client/ui-conversation/tests/conversation-registry.client.spec.ts b/packages/client/ui-conversation/tests/conversation-registry.client.spec.ts
+--- a/packages/client/ui-conversation/tests/conversation-registry.client.spec.ts
++++ b/packages/client/ui-conversation/tests/conversation-registry.client.spec.ts
+@@ -84,6 +84,8 @@
+     list,
+     searchResultLimit: 50,
+     create: () => Promise.reject(new Error('unused fake Sessions operation')),
++    registerSessionDelegate: () => { throw new Error('unused fake Sessions operation') },
++    restartHistory: () => { throw new Error('unused fake Sessions operation') },
+     retain: () => reference,
+     using: async (_target, _options, operation) => await operation(reference),
+     retainInfo: () => createSnapshotStore({ referenceCount: 1, retainedBy: {} }),
 diff --git a/packages/client/ui-workspace/README.md b/packages/client/ui-workspace/README.md
 --- a/packages/client/ui-workspace/README.md
 +++ b/packages/client/ui-workspace/README.md
