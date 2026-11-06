@@ -300,9 +300,19 @@ test('contract: stop physically settles and the next epoch retains the same orig
   await tick();
   const next = await h.send();
   assert.equal(next.grant.chatEpoch, 2);
+  const connects = h.connects;
   await h.conversation.send(next.grant, request);
   assert.equal(h.sends.length, 1);
+  assert.equal(h.connects, connects, 'reconciliation does not resume the native Agent');
+  const read = await h.read();
+  assert.equal(h.conversation.open(read.grant).chatEpoch, 2);
+  assert.deepEqual(
+    (await h.conversation.conversationHistory(read.grant)).events.map((event) => event.seq),
+    [0, 1],
+  );
+  read.dispose();
   const slot = [...h.records.values()][0].conversation.sessions[0];
+  assert.equal(slot.phase, 'active');
   assert.deepEqual(slot.prefix, h.prefix);
   assert.equal(slot.receipts.length, 1);
 });
