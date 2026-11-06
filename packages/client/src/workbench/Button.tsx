@@ -1,4 +1,31 @@
-import type { ButtonHTMLAttributes, ReactNode } from 'react';
+import type { ButtonHTMLAttributes, ReactNode, SVGAttributes } from 'react';
+
+/** Circular arc. A square SVG viewport stays round if a flex parent stretches the slot. */
+export function Spinner(props: SVGAttributes<SVGSVGElement>) {
+  return (
+    <span className="zm-spinner" aria-hidden="true">
+      <svg
+        viewBox="0 0 16 16"
+        width="14"
+        height="14"
+        focusable="false"
+        aria-hidden="true"
+        {...props}
+      >
+        <circle
+          cx="8"
+          cy="8"
+          r="5.5"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.75"
+          strokeLinecap="round"
+          strokeDasharray="22 13"
+        />
+      </svg>
+    </span>
+  );
+}
 
 /** Client-only action primitive; the workbench plugin installs its shared theme styles. */
 export function Button({
@@ -28,7 +55,7 @@ export function Button({
         {children}
       </span>
       <span className="zm-button-busy" aria-hidden={!busy}>
-        <span className="zm-spinner" aria-hidden />
+        <Spinner />
         {busyLabel}
       </span>
     </button>

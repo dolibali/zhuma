@@ -22,7 +22,7 @@ import { WorkflowCanvas } from './WorkflowCanvas.js';
 import { NodeInspector } from './NodeInspector.js';
 import { TreeNavigator } from './TreeNavigator.js';
 import { indexWorkTree, resolveWorkLocation, workflowPath } from './navigation.js';
-import { Button } from './Button.js';
+import { Button, Spinner } from './Button.js';
 import { Appearance, type AppearanceStore } from './Appearance.js';
 import { TemplateSaveDialog } from './TemplateSaveDialog.js';
 import { TemplateBindings, type TemplateBindingValues } from './TemplateBindings.js';
@@ -1287,7 +1287,7 @@ export function TaskEditor({
                 )}
                 {planning && (
                   <div role="status" className="zm-planning-progress">
-                    <span className="zm-spinner" aria-hidden="true" />
+                    <Spinner />
                     正在分析目标与团队能力…
                   </div>
                 )}

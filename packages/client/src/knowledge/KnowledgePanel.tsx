@@ -10,7 +10,7 @@ import {
   type KnowledgeVersionRef,
 } from '@zhuma/agent-core';
 import type { MemberSpaceLifetime } from '../identity/MemberSpaceBoundary.js';
-import { Button } from '../workbench/Button.js';
+import { Button, Spinner } from '../workbench/Button.js';
 import { Modal } from '../workbench/controls.js';
 import { SingleSelect } from '../workbench/SingleSelect.js';
 import { useUnsavedChanges } from '../workbench/UnsavedChanges.js';
@@ -57,7 +57,8 @@ type Editor = {
   hasDraft: boolean;
   error: string;
 };
-type View = { kind: 'empty' } | Reader | Editor;
+type Pending = { kind: 'pending'; pageId: string; title: string; message: string };
+type View = { kind: 'empty' } | Reader | Editor | Pending;
 type Ticket = { controller: AbortController; lifetime: MemberSpaceLifetime };
 const emptyBrowse = (): Browse => ({
   phase: 'loading',
@@ -494,8 +495,21 @@ function OwnedKnowledgePanel({
   async function edit(pageId: string) {
     if (busyRef.current) return;
     const ticket = start('detail');
+    const row = browseRef.current.rows.find(
+      (item) => (item.kind === 'draft' ? item.page.pageId : item.page.reference.pageId) === pageId,
+    );
+    const currentView = viewRef.current;
+    const title =
+      row?.page.title ||
+      (currentView.kind === 'reader' || currentView.kind === 'pending'
+        ? currentView.title
+        : currentView.kind === 'editor'
+          ? currentView.content.title
+          : '') ||
+      '草稿';
+    putView({ kind: 'pending', pageId, title, message: '正在读取草稿…' });
     putBusy(true);
-    setNotice('正在读取草稿…');
+    setNotice('');
     try {
       const target = libraryRef.current;
       if (!target) reject();
@@ -539,8 +553,13 @@ function OwnedKnowledgePanel({
       setNotice('');
     } catch (error) {
       if (!current(ticket, 'detail')) return;
-      fence(error);
-      setNotice(message(error));
+      if (fence(error)) {
+        setNotice(message(error));
+        return;
+      }
+      const text = message(error);
+      setNotice(text);
+      putView({ kind: 'pending', pageId, title, message: text });
     } finally {
       if (current(ticket, 'detail')) putBusy(false);
     }
@@ -740,7 +759,7 @@ function OwnedKnowledgePanel({
   const selected =
     view.kind === 'reader'
       ? view.reference.pageId
-      : view.kind === 'editor'
+      : view.kind === 'editor' || view.kind === 'pending'
         ? view.pageId
         : undefined;
   return (
@@ -838,9 +857,17 @@ function OwnedKnowledgePanel({
             </form>
           )}
           {browse.phase === 'loading' && (
-            <p role="status" className="zm-muted">
-              正在读取资料目录…
-            </p>
+            <>
+              <div className="zm-boot-skeleton" aria-hidden="true">
+                <span />
+                <span />
+                <span />
+              </div>
+              <p role="status" className="zm-pending">
+                <Spinner />
+                正在读取资料目录…
+              </p>
+            </>
           )}
           {browse.error && (
             <div role="alert">
@@ -872,6 +899,7 @@ function OwnedKnowledgePanel({
                 <li key={rowKey(row)} style={{ marginBottom: 4 }}>
                   <Button
                     variant="quiet"
+                    className="zm-align-start"
                     disabled={busy}
                     aria-current={selected === id ? 'page' : undefined}
                     style={{
@@ -937,6 +965,15 @@ function OwnedKnowledgePanel({
           )}
         </aside>
         <article aria-label="资料正文" style={{ minWidth: 0 }}>
+          {view.kind === 'pending' && (
+            <div role="status" className="zm-pending">
+              <Spinner />
+              <span>
+                <strong>{view.title}</strong>
+                <span className="zm-muted"> · {view.message}</span>
+              </span>
+            </div>
+          )}
           {view.kind === 'empty' && (
             <div className="zm-empty">
               <h3>选择一份资料</h3>
@@ -967,7 +1004,8 @@ function OwnedKnowledgePanel({
                 )}
               </header>
               {view.phase === 'loading' && (
-                <p role="status" className="zm-muted">
+                <p role="status" className="zm-pending">
+                  <Spinner />
                   正在读取固定版本…
                 </p>
               )}

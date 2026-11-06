@@ -273,6 +273,7 @@
   border-top: 1px solid var(--zm-line);
 }
 .zhuma .zm-account-exit .zm-button {
+  --zm-button-align: flex-start;
   width: 100%;
   justify-content: flex-start;
 }
@@ -1273,17 +1274,30 @@ html[data-platform='darwin'] .zhuma .zm-space-bar {
   cursor: progress;
 }
 .zm-button {
+  --zm-button-align: center;
   display: inline-grid;
   align-items: center;
-  justify-items: center;
+  justify-items: stretch;
+}
+.zm-button.zm-align-start,
+.zm-import-items .zm-button,
+.zhuma .zm-directory-title {
+  --zm-button-align: flex-start;
+  text-align: start;
 }
 .zm-button-label,
 .zm-button-busy {
   grid-area: 1 / 1;
-  display: inline-flex;
+  display: flex;
   align-items: center;
-  justify-content: center;
+  justify-content: var(--zm-button-align, center);
   gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+}
+.zm-button-busy {
+  flex-wrap: nowrap;
+  white-space: nowrap;
 }
 .zm-button-busy,
 .zm-button[aria-busy='true'] .zm-button-label {
@@ -1292,12 +1306,37 @@ html[data-platform='darwin'] .zhuma .zm-space-bar {
 .zm-button[aria-busy='true'] .zm-button-busy {
   visibility: visible;
 }
+/* Equal axes plus a square SVG. Flex growth or a non-uniform scale must not turn this into an oval. */
+.zm-button .zm-spinner,
+.zhuma .zm-spinner,
+.zm-dialog .zm-spinner,
 .zm-spinner {
-  width: 13px;
-  height: 13px;
-  border: 1.5px solid currentColor;
-  border-right-color: transparent;
-  border-radius: 50%;
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 14px;
+  width: 14px;
+  height: 14px;
+  min-width: 14px;
+  min-height: 14px;
+  max-width: 14px;
+  max-height: 14px;
+  aspect-ratio: 1;
+  align-self: center;
+  justify-self: center;
+  line-height: 0;
+  overflow: visible;
+}
+.zm-spinner svg {
+  display: block;
+  flex: none;
+  width: 14px;
+  height: 14px;
+  min-width: 14px;
+  min-height: 14px;
+  max-width: 14px;
+  max-height: 14px;
+  aspect-ratio: 1;
+  transform-origin: center;
   animation: zm-spin 0.8s linear infinite;
 }
 @keyframes zm-spin {
@@ -1580,9 +1619,10 @@ html[data-platform='darwin'] .zhuma .zm-space-bar {
   color: var(--zm-muted);
 }
 .zhuma .zm-directory-title {
+  --zm-button-align: flex-start;
   padding: 3px 0;
   min-height: 0;
-  text-align: left;
+  text-align: start;
   font-size: 14px;
   font-weight: 550;
   white-space: normal;
@@ -1954,8 +1994,33 @@ html[data-platform='darwin'] .zhuma .zm-space-bar {
   padding: 0 5px;
   background: transparent;
 }
+.zm-loading,
+.zm-pending {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+}
 .zm-loading {
-  padding: 60px;
+  padding: 8px 0 24px;
+}
+.zm-boot-skeleton {
+  display: grid;
+  gap: 10px;
+  margin: 4px 0 18px;
+}
+.zm-boot-skeleton > span {
+  display: block;
+  height: 14px;
+  width: min(100%, 440px);
+  border-radius: 7px;
+  background: var(--zm-soft);
+}
+.zm-boot-skeleton > span:nth-child(2) {
+  width: min(100%, 280px);
+}
+.zm-boot-skeleton > span:nth-child(3) {
+  width: min(100%, 340px);
 }
 @media (prefers-reduced-motion: reduce) {
   .zhuma *,

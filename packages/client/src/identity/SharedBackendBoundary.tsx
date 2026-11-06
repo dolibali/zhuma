@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
-import { Button } from '../workbench/Button.js';
+import { Button, Spinner } from '../workbench/Button.js';
 import { Field, Modal } from '../workbench/controls.js';
 import type { SharedBackendClient } from './shared-backend.js';
 
@@ -70,7 +70,17 @@ export function SharedBackendBoundary({
       ) : (
         <main className="zm-page">
           {state.phase === 'loading' ? (
-            <p role="status">正在读取服务连接…</p>
+            <>
+              <div className="zm-boot-skeleton" aria-hidden="true">
+                <span />
+                <span />
+                <span />
+              </div>
+              <p role="status" className="zm-pending">
+                <Spinner />
+                正在读取服务连接…
+              </p>
+            </>
           ) : (
             <>
               <p role="alert">暂时无法读取共享服务连接。</p>

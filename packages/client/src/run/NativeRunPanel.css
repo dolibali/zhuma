@@ -481,7 +481,8 @@
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .zm-native-run .zm-spinner {
+  .zm-native-run .zm-spinner,
+  .zm-native-run .zm-spinner svg {
     animation: none;
   }
 }

@@ -14,7 +14,7 @@ import { useUnsavedChanges } from './UnsavedChanges.js';
 import { Field, Modal, ParticipantSelect, MultiSelect } from './controls.js';
 import { TaskEditor, type InitialPlanning } from './TaskEditor.js';
 import { Appearance, type AppearanceStore } from './Appearance.js';
-import { Button } from './Button.js';
+import { Button, Spinner } from './Button.js';
 import { SingleSelect } from './SingleSelect.js';
 import { TemplateBrowser } from './TemplateBrowser.js';
 import { TemplateBindings, type TemplateBindingValues } from './TemplateBindings.js';
@@ -111,6 +111,9 @@ export function WorkbenchPage({
   }
   const [loading, setLoading] = useState(true);
   const [loaded, setLoaded] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const loadedRef = useRef(false);
+  const refreshFlight = useRef<AbortController | null>(null);
   const [error, setError] = useState('');
   const [dialogError, setDialogError] = useState('');
   const pending = useRef<{
@@ -326,17 +329,33 @@ export function WorkbenchPage({
     );
   }
   async function refresh(signal?: AbortSignal) {
-    setLoading(true);
+    refreshFlight.current?.abort();
+    const flight = new AbortController();
+    const stop = () => flight.abort();
+    signal?.addEventListener('abort', stop, { once: true });
+    refreshFlight.current = flight;
+    const first = !loadedRef.current;
+    if (first) setLoading(true);
+    else setRefreshing(true);
     setError('');
     try {
-      const result = await api.snapshot(signal);
+      const result = await api.snapshot(flight.signal);
+      if (flight.signal.aborted) return;
+      loadedRef.current = true;
       setState(result.state);
       setModel(result.model);
       setLoaded(true);
     } catch (e) {
-      if (!signal?.aborted) setError(e instanceof Error ? e.message : '读取工作台失败。');
+      if (!flight.signal.aborted) setError(e instanceof Error ? e.message : '读取工作台失败。');
     } finally {
-      if (!signal?.aborted) setLoading(false);
+      signal?.removeEventListener('abort', stop);
+      if (refreshFlight.current === flight) {
+        refreshFlight.current = null;
+        if (!flight.signal.aborted) {
+          setLoading(false);
+          setRefreshing(false);
+        }
+      }
     }
   }
   useEffect(() => {
@@ -642,17 +661,32 @@ export function WorkbenchPage({
     (task) => !taskFilters.stage || stageFor(task) === taskFilters.stage,
   );
   const stageLoading = taskCandidates.some((task) => progressFor(task.id)?.state === 'loading');
-  if (loading)
-    return (
-      <div className="zhuma zm-loading" role="status">
-        正在连接工作台…
-      </div>
-    );
   if (!loaded)
     return (
-      <div className="zhuma zm-loading">
-        <p role="alert">{error || '尚未连接工作台。'}</p>
-        <button onClick={() => void refresh()}>重新连接</button>
+      <div className="zhuma zm-page zm-boot">
+        <header className="zm-page-heading">
+          <div className="zm-page-title">
+            <h1>{expertLibrary ? '专家' : labels[section]}</h1>
+          </div>
+        </header>
+        {loading ? (
+          <>
+            <div className="zm-boot-skeleton" aria-hidden="true">
+              <span />
+              <span />
+              <span />
+            </div>
+            <div className="zm-loading" role="status">
+              <Spinner />
+              正在连接工作台…
+            </div>
+          </>
+        ) : (
+          <div className="zm-loading">
+            <p role="alert">{error || '尚未连接工作台。'}</p>
+            <button onClick={() => void refresh()}>重新连接</button>
+          </div>
+        )}
       </div>
     );
   if (activeTask)
@@ -705,7 +739,12 @@ export function WorkbenchPage({
             </div>
             <div className="zm-actions">
               <Appearance store={appearance} />
-              <Button variant="quiet" onClick={() => void refresh()}>
+              <Button
+                variant="quiet"
+                busy={refreshing}
+                busyLabel="正在刷新…"
+                onClick={() => void refresh()}
+              >
                 刷新
               </Button>
               {activeProject && (!member || capabilities?.createProject) && (
