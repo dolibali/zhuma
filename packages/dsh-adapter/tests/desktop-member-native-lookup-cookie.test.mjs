@@ -34,7 +34,36 @@ test('desktop lookup HTTP: original member credentials reach local task reads wh
     segmentId: 'segment',
   };
   let reads = 0;
+  const sdkFrame = {
+    type: 'snapshot',
+    header: { id: sessionId },
+    cursor: -1,
+    records: [],
+    hasMore: false,
+    assistantStream: { revision: 0 },
+  };
+  const authorizeConversation = async (request, data) => {
+    const member = await resolveMember(host.ctx, request);
+    if (!member.ok || member.memberId !== scope.actorId || !member.spaceIds.includes(scope.spaceId))
+      throw Error('member required');
+    assert.equal(data.actorId, scope.actorId);
+    assert.equal(data.spaceId, scope.spaceId);
+  };
   const source = {
+    conversation: {
+      async available(request, data) {
+        await authorizeConversation(request, data);
+        return true;
+      },
+      async page(request, data) {
+        await authorizeConversation(request, data);
+        return { records: sdkFrame.records, hasMore: false };
+      },
+      async follow(request, data, sink, signal) {
+        await authorizeConversation(request, data);
+        await sink(sdkFrame, signal);
+      },
+    },
     lookupNativeSession(id) {
       return id === sessionId ? { role: 'work', binding: { scope } } : null;
     },
@@ -83,7 +112,7 @@ test('desktop lookup HTTP: original member credentials reach local task reads wh
     const owner = owned.headers.get('set-cookie').split(';', 1)[0];
     await owned.body?.cancel();
     const bridge = createDesktopMemberCookieBridge();
-    async function call(path, body, headers = {}) {
+    async function call(path, body, headers = {}, streaming = false) {
       const input = new Request(`dsh-app://app${path}`, {
         method: 'POST',
         headers: { origin: 'dsh-app://app', ...headers },
@@ -99,7 +128,10 @@ test('desktop lookup HTTP: original member credentials reach local task reads wh
         }),
       );
       assert.equal(response.headers.get('set-cookie'), null);
-      return { status: response.status, body: await response.json() };
+      return {
+        status: response.status,
+        body: streaming ? await response.text() : await response.json(),
+      };
     }
     const lookup = (id = sessionId, actorId = 'chen') =>
       call(
@@ -112,17 +144,47 @@ test('desktop lookup HTTP: original member credentials reach local task reads wh
         },
         { cookie: 'zhuma-member=renderer-forgery' },
       );
+    const originalHistory = (endpoint) =>
+      call(
+        `/api/zhuma-member-native/${endpoint}`,
+        {
+          type: 'client-request',
+          rpcId: randomUUID(),
+          method: `zhuma-member-native/${endpoint}`,
+          payload: {
+            connectionId: null,
+            actorId: 'chen',
+            spaceId: 'space',
+            query: {
+              sessionId,
+              target: scope,
+              request: { address: { kind: 'session', sessionId } },
+            },
+          },
+        },
+        { cookie: 'zhuma-member=renderer-forgery' },
+        endpoint === 'session-follow',
+      );
+    assert.equal((await originalHistory('session-page')).body.result.ok, false);
     assert.equal((await lookup()).status, 403, 'An SDK owner alone is not a product member');
     const ordinary = await lookup('ordinary');
     assert.equal(ordinary.status, 200);
     assert.deepEqual(ordinary.body.result, { ok: true, value: { kind: 'ordinary' } });
     assert.equal((await call('/zhuma-id/login', { accountId: 'chen', password })).status, 200);
+    assert.deepEqual((await originalHistory('session-page')).body.result, {
+      ok: true,
+      value: { records: [], hasMore: false },
+    });
+    const followed = await originalHistory('session-follow');
+    assert.equal(followed.status, 200);
+    assert.deepEqual(JSON.parse(followed.body.trim()).frame, sdkFrame);
     const opened = await lookup();
     assert.equal(opened.status, 200);
     assert.deepEqual(opened.body.result, {
       ok: true,
       value: {
         kind: 'task',
+        presentation: 'sdk-native',
         target: {
           spaceId: 'space',
           taskId: 'task',
@@ -138,6 +200,7 @@ test('desktop lookup HTTP: original member credentials reach local task reads wh
     });
     assert.equal((await lookup(sessionId, 'foreign')).status, 403);
     assert.equal((await call('/zhuma-id/logout', {})).status, 200);
+    assert.equal((await originalHistory('session-page')).body.result.ok, false);
     assert.equal((await lookup()).status, 403);
     assert.equal(reads, 3);
   } finally {

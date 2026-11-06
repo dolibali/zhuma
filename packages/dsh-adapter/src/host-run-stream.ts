@@ -1,13 +1,16 @@
-import type { HostRunFrameSink } from './host-run-reader.js';
+import type { HostRunConversationFrame } from './host-run-reader.js';
 import { NativeWorkError } from './native-work-session-contract.js';
 
 export const HOST_RUN_FRAME_BYTES = 512 * 1024;
 
 /** One demand-driven frame at a time. Cancelling the body cancels only this read. */
-export function hostRunStream(options: {
+export function hostRunStream<Frame = HostRunConversationFrame>(options: {
   readonly rpcId: string;
   readonly signal: AbortSignal;
-  observe(sink: HostRunFrameSink, signal: AbortSignal): Promise<void>;
+  observe(
+    sink: (frame: Frame, signal: AbortSignal) => Promise<void>,
+    signal: AbortSignal,
+  ): Promise<void>;
   failure(error: unknown): unknown;
 }) {
   const reading = new AbortController();

@@ -1,4 +1,15 @@
 /* A mounts this text beside the shared workbench controls and theme tokens. */
+.zm-task-conversation-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+  font-size: 12px;
+}
+.zm-task-conversation-hint {
+  color: var(--zm-muted);
+}
 .zm-native-run {
   display: flex;
   flex-direction: column;

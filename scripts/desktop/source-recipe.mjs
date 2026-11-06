@@ -7,6 +7,7 @@ import { join } from 'node:path';
 export const SDK_SOURCE_RECIPE_FILES = Object.freeze([
   'patches/deepseek-harness/zhuma-desktop.patch',
   'patches/deepseek-harness/zhuma-ui-branding.patch',
+  'patches/deepseek-harness/zhuma-native-conversation.patch',
   'packages/dsh-adapter/src/desktop-member-cookie.ts',
   'scripts/desktop/verify-build-source-paths.ts',
   'scripts/desktop/verify-runtime-privacy.ts',

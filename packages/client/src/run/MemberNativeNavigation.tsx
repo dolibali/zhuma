@@ -1,5 +1,6 @@
 import { useEffect, useId, useState, useSyncExternalStore } from 'react';
 import type { Context } from '@deepseek-ai/cordis';
+import type {} from '@deepseek-ai/dsh-client-ui-conversation/client';
 import type { MainPanelId } from '@deepseek-ai/dsh-client-ui-layout/client';
 import {
   remoteNodeTargetSchema,
@@ -19,6 +20,12 @@ import type { LocalWorkspaceDirectory } from './workspace-directory.js';
 import type { NativeRunTarget } from './native-run-contract.js';
 import { createNativeReviewApi, type NativeReviewApi } from './review-api.js';
 import { NativeReviewHistory } from './NativeReviewWorkspace.js';
+import {
+  createNativeConversationDelegate,
+  type NativeConversationDelegate,
+  type NativeConversationTarget,
+} from './native-conversation.js';
+import type { NativeRunRead } from './api.js';
 
 const record = (value: unknown): Record<string, unknown> => {
   if (!value || typeof value !== 'object' || Array.isArray(value))
@@ -57,6 +64,8 @@ function classify(raw: unknown) {
     throw Error('Invalid session generation');
   return {
     kind: 'task' as const,
+    presentation:
+      row.presentation === 'sdk-native' ? ('sdk-native' as const) : ('task-controls' as const),
     target: {
       ...node,
       runId: id(scope.runId),
@@ -68,7 +77,14 @@ function classify(raw: unknown) {
 }
 export const nativeSessionPanel = 'zhuma-native-session' as MainPanelId;
 type Entry = { key: number } & (
-  | { kind: 'work'; api: NativeRunApi; target: NativeRunTarget }
+  | {
+      kind: 'work';
+      api: NativeRunApi;
+      target: NativeRunTarget;
+      sessionId: string;
+      location: NativeConversationTarget;
+      conversation?: { run: NativeRunRead; refresh(): Promise<NativeRunRead> };
+    }
   | {
       kind: 'review';
       api: NativeReviewApi;
@@ -83,8 +99,7 @@ type Guard = (
   intent?: 'restore' | 'explicit',
 ) => Promise<boolean>;
 
-/** Existing Workspace navigation is classified before retain/resume. Task
- * hits open the same controlled task view, never the ordinary Conversation. */
+/** Classify before original mainView retention. Task Conversations install a scoped transport first. */
 export function installMemberNativeNavigation(
   ctx: Context,
   options: {
@@ -106,10 +121,14 @@ export function installMemberNativeNavigation(
     { member: number; connection: string | null; space: string; spaceEpoch: number } | undefined;
   let leave: ((proceed: () => void, signal: AbortSignal) => void) | undefined;
   let retireLeave: (() => void) | undefined;
+  let retireConversation: (() => void) | undefined;
   const listeners = new Set<() => void>();
   const publish = () => listeners.forEach((listener) => listener());
   const close = () => {
     ++epoch;
+    const retire = retireConversation;
+    retireConversation = undefined;
+    retire?.();
     retireLeave?.();
     entry = undefined;
     acceptedPanel = undefined;
@@ -229,14 +248,24 @@ export function installMemberNativeNavigation(
           }
         }
       };
-      if (entry) leave?.(accepted, signal);
+      if (entry && leave) leave(accepted, signal);
       else options.shell.requestLeave(accepted, signal);
     });
   }
   const source = ctx.get('uiWorkspace') as unknown as {
     registerSessionNavigationGuard?: (guard: Guard) => () => void;
+    clearSessionSelection?: (sessionId: string) => void;
   };
-  if (!source?.registerSessionNavigationGuard) throw Error('工作区导航需要配套的 Zhuma 界面版本。');
+  const sessions = ctx.get('sessions') as unknown as {
+    registerSessionDelegate?: (id: string, delegate: NativeConversationDelegate) => () => void;
+  };
+  if (
+    !source?.registerSessionNavigationGuard ||
+    !source.clearSessionSelection ||
+    !sessions?.registerSessionDelegate
+  )
+    throw Error('工作区导航需要配套的 Zhuma 界面版本。');
+  const blocks = ctx.conversation.blocks;
   const navigate = async (value: unknown, signal: AbortSignal, attempt: number) => {
     signal.throwIfAborted();
     const member = options.shell.session.getSnapshot();
@@ -289,7 +318,13 @@ export function installMemberNativeNavigation(
     const nativeScope = {
       spaceId: location.spaceId,
       isCurrent: () => {
-        return active && acceptedEpoch === epoch && bindingCurrent(binding);
+        return (
+          active &&
+          bindingCurrent(binding) &&
+          (acceptedEpoch < 0
+            ? !signal.aborted && attempt === navigation && initialEpoch === epoch
+            : acceptedEpoch === epoch)
+        );
       },
       onUnavailable: close,
     };
@@ -326,8 +361,14 @@ export function installMemberNativeNavigation(
       if (!accepted) active = false;
       return false;
     }
+    const taskLocation = found.target;
+    const taskClient = options.native.scoped(
+      member.session.accountId,
+      location.spaceId,
+      location.runId,
+    );
     const api = createNativeRunApi(
-      options.native.scoped(member.session.accountId, location.spaceId, location.runId).fetcher,
+      taskClient.fetcher,
       member.session.accountId,
       nativeScope,
       () => options.shell.session.invalidate(member.epoch),
@@ -338,6 +379,70 @@ export function installMemberNativeNavigation(
       createCodeArtsSetupApi(globalThis.fetch, () => nativeScope.isCurrent?.() !== false),
     );
     const { workflow: _workflow, workspaceApprovals: _approvals, ...remoteApi } = api;
+    if (!selected.origin && found.presentation === 'sdk-native') {
+      const lifetime = new AbortController();
+      const update = (run: NativeRunRead) => {
+        if (entry?.kind !== 'work' || entry.key !== acceptedEpoch || !entry.conversation) return;
+        const terminal = ['completed', 'failed', 'cancelled'].includes(run.status);
+        blocks.set(
+          sessionId as Parameters<typeof blocks.set>[0],
+          terminal
+            ? { reason: '本轮任务已结束，当前仅可查看。原任务结果保持不变。' }
+            : Object.values(run.sendCapabilities).some((value) => value.kind === 'available')
+              ? undefined
+              : { reason: '当前任务不可发送，请先处理任务状态。' },
+        );
+        entry = { ...entry, conversation: { ...entry.conversation, run } };
+        publish();
+      };
+      const conversation = createNativeConversationDelegate({
+        api,
+        client: taskClient,
+        target: taskLocation,
+        sessionId,
+        signal: lifetime.signal,
+        assertCurrent: () => {
+          if (acceptedEpoch < 0) current();
+          else if (!nativeScope.isCurrent())
+            throw new DOMException('Task authority changed', 'AbortError');
+        },
+        invalidate: close,
+        update,
+      });
+      const run = await conversation.refresh(lifetime.signal);
+      current();
+      const accepted = await ask(() => {
+        current();
+        const retire = retireConversation;
+        retireConversation = undefined;
+        retire?.();
+        acceptedEpoch = ++epoch;
+        entryBinding = binding;
+        const unregister = sessions.registerSessionDelegate!(sessionId, conversation.delegate);
+        retireConversation = () => {
+          lifetime.abort();
+          unregister();
+          source.clearSessionSelection!(sessionId);
+          blocks.forget(sessionId as Parameters<typeof blocks.forget>[0]);
+        };
+        entry = {
+          key: acceptedEpoch,
+          kind: 'work',
+          api: { ...api, review },
+          sessionId,
+          location: taskLocation,
+          target: { ...location, title: 'Agent 工作会话' },
+          conversation: { run, refresh: () => conversation.refresh(lifetime.signal) },
+        };
+        update(run);
+      }, signal);
+      if (!accepted) {
+        active = false;
+        lifetime.abort();
+      }
+      // Original uiWorkspace now retains the sole mainView reference and renders main.conversation.
+      return accepted;
+    }
     const accepted = await ask(() => {
       current();
       acceptedEpoch = ++epoch;
@@ -345,6 +450,8 @@ export function installMemberNativeNavigation(
       entry = {
         key: acceptedEpoch,
         kind: 'work',
+        sessionId,
+        location: taskLocation,
         api: { ...(selected.origin ? remoteApi : api), review },
         target: {
           spaceId: location.spaceId,
@@ -427,6 +534,16 @@ export function installMemberNativeNavigation(
       MemberNativeNavigationNotice,
     ),
   );
+  ctx.slots.inject('conversation.session.header.utilities', () =>
+    ctx.slots.register(
+      {
+        name: 'conversation.session.header.utilities',
+        id: 'zhuma-task-controls',
+        inject: (sessionId) => ({ state, sessionId }),
+      },
+      NativeTaskConversationControls,
+    ),
+  );
   ctx.effect(() => () => {
     installed = false;
     ++navigation;
@@ -438,6 +555,60 @@ export function installMemberNativeNavigation(
   return state;
 }
 type NavigationState = ReturnType<typeof installMemberNativeNavigation>;
+function NativeTaskConversationControls({
+  state,
+  sessionId,
+}: {
+  state: NavigationState;
+  sessionId: string;
+}) {
+  const entry = useSyncExternalStore(state.subscribe, state.getSnapshot, state.getSnapshot);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  if (entry?.kind !== 'work' || entry.sessionId !== sessionId || !entry.conversation) return null;
+  const { run, refresh } = entry.conversation;
+  return (
+    <div className="zhuma zm-task-conversation-controls" aria-label="任务执行控制">
+      <span title={`${entry.target.taskId} · ${entry.target.nodeId}`}>
+        任务 ·{' '}
+        {run.status === 'running'
+          ? '执行中'
+          : run.status === 'waiting-for-input'
+            ? '等待输入'
+            : run.status === 'completed'
+              ? '已完成'
+              : run.status === 'cancelled'
+                ? '已停止'
+                : run.status === 'failed'
+                  ? '执行失败'
+                  : '准备中'}
+      </span>
+      <span
+        className="zm-task-conversation-hint"
+        title="附件、模型和权限请在任务配置中管理；当前输入框发送文字。"
+      >
+        文字会话
+      </span>
+      <Button
+        disabled={busy}
+        onClick={async () => {
+          setBusy(true);
+          setError('');
+          try {
+            await refresh();
+          } catch {
+            setError('刷新未完成，请重新打开会话。');
+          } finally {
+            setBusy(false);
+          }
+        }}
+      >
+        刷新状态
+      </Button>
+      {error ? <span role="status">{error}</span> : null}
+    </div>
+  );
+}
 function MemberNativeNavigation({ state }: { state: NavigationState }) {
   const entry = useSyncExternalStore(state.subscribe, state.getSnapshot, state.getSnapshot);
   return (
