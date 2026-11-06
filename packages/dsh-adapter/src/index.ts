@@ -86,6 +86,21 @@ export {
   resolveDshDataDir,
   sweepDshSessionOrphans,
 } from './dsh-sdk-executor.js';
+export {
+  invokeUserMcpTools,
+  openUserMcp,
+  readUserMcpCalls,
+  userMcpExplicitGrant,
+} from './user-mcp.js';
+export type {
+  UserMcpCall,
+  UserMcpCallResult,
+  UserMcpFailureCode,
+  UserMcpInvokeResult,
+  UserMcpOpenResult,
+  UserMcpSession,
+  UserMcpToolInfo,
+} from './user-mcp.js';
 
 export type { FileProbeResult } from './file-probe.js';
 export { probeRelativeFile, readRelativeFile } from './file-probe.js';

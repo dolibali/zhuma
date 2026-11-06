@@ -53,6 +53,7 @@ import { MEMBER_COOKIE_NAME } from './member-session.js';
 import { taskProgressQuerySchema } from './execution-task-progress-contract.js';
 import { projectArtifactsQuerySchema } from './execution-project-artifacts-contract.js';
 import { executionMemberRequestSchemas, fileReadSchema } from './execution-service.js';
+import { efficiencyExportSchema } from './efficiency-log.js';
 import { EXECUTION_BODY_BYTE_LIMIT } from './execution-plugin.js';
 import { hostRunOptionsQuerySchema } from './host-run-options.js';
 import { ARTIFACT_FILE_LIMITS, artifactUploadOptionsSchema } from './artifact-files.js';
@@ -119,6 +120,7 @@ export const SHARED_BACKEND_OPERATIONS = [
   'execution.local-run-options',
   'execution.local-review-options',
   'execution.review-outcome',
+  'efficiency.export',
 ] as const;
 export type SharedBackendOperation = (typeof SHARED_BACKEND_OPERATIONS)[number];
 export const sharedBackendRequestSchema = z.strictObject({
@@ -502,6 +504,12 @@ const descriptors = {
   'execution.review-outcome': {
     schema: reviewOutcomeQuerySchema,
     path: '/api/zhuma-exec/review-outcome',
+    verb: 'POST',
+    auth: false,
+  },
+  'efficiency.export': {
+    schema: efficiencyExportSchema,
+    path: '/api/zhuma-efficiency/export',
     verb: 'POST',
     auth: false,
   },

@@ -24,6 +24,7 @@ import { open } from './execution-service-run-fixture.mjs';
 import { createHostWorkspaceApprovalSource } from '../dist/host-workspace-approval-source.js';
 import { openHostWorkspaceApprovals } from '../dist/host-workspace-approvals.js';
 import { createHostRunWorkspaces } from '../dist/host-run-workspaces.js';
+import { nativeExecutionStateSchema } from '../dist/execution-run-state.js';
 
 async function setup(t, { mode = 'workspace-write', direct = false } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'zhuma-host-workspace-source-'));
@@ -220,6 +221,85 @@ test('Host workspace source: listing an actual registered directory is passive; 
   assert.equal(JSON.stringify(publicView).includes('pathFingerprint'), false);
   assert.equal(JSON.stringify(publicView).includes('actorId'), false);
   assert.equal(JSON.stringify(publicView).includes('runs'), false);
+});
+
+test('Host workspace source: each real SDK workspace check uses one fresh Service graph and rejects a later durable revocation', async (t) => {
+  const h = await setup(t);
+  for (const [plugin, config] of [
+    [SystemPrompt],
+    [Tools],
+    [FsLocal, { cwd: h.dir }],
+    [WorkingDirectory, { defaultDirectory: h.dir }],
+  ])
+    await h.sdk.plugin(plugin, config);
+  const source = createHostRunWorkspaces(h.sdk, {
+    approvals: h.owner,
+    execution: h.d.service,
+    signal: h.lifetime.signal,
+    readWorkbench: h.d.readWorkbench,
+  });
+  t.after(() => source.close());
+  await source.ready;
+  const approved = checked(await h.api.operations.approve(h.request, h.command())).current;
+  const selected = source.select('chen', 'north', 'project', approved.id);
+  const plan = h.d.readWorkbench().appliedPlans.at(-1);
+  checked(
+    await h.d.service.startPlan(
+      { member: { ok: true, memberId: 'chen', spaceIds: ['north'] } },
+      {
+        taskId: plan.taskId,
+        planId: plan.id,
+        revision: plan.revision,
+        idempotencyKey: 'workspace-snapshot-start',
+      },
+    ),
+  );
+  const body = h.d.begin({ workspace: selected.workspace }, 'produce', {
+    kind: 'local-tools',
+    definitions: selected.tools.describe(['read', 'write', 'edit']),
+  });
+  checked(await h.d.service.startRun(h.d.request, body));
+  source.remember(body.composition, selected.workspace);
+  let lists = 0,
+    parses = 0;
+  const list = h.d.service.storage.listNodes;
+  t.mock.method(h.d.service.storage, 'listNodes', () => {
+    lists++;
+    return list();
+  });
+  const parse = nativeExecutionStateSchema.safeParse;
+  t.mock.method(nativeExecutionStateSchema, 'safeParse', (...args) => {
+    parses++;
+    return parse(...args);
+  });
+  const check = () =>
+    source.assertWorkspace(
+      'chen',
+      'north',
+      selected.workspace,
+      'read',
+      body.composition.configurationId,
+    );
+  assert.equal(check(), undefined);
+  // One full store graph; the target is still separately read and checked at
+  // the original current-node gate. No continuous check has been removed.
+  assert.deepEqual({ lists, parses }, { lists: 1, parses: 3 });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(check(), undefined);
+  assert.deepEqual({ lists, parses }, { lists: 2, parses: 6 });
+  checked(
+    await h.api.operations.revoke(h.request, {
+      requestId: randomUUID(),
+      spaceId: 'north',
+      projectId: 'project',
+      approvalId: approved.id,
+      expectedGeneration: 1,
+    }),
+  );
+  lists = 0;
+  assert.throws(check, { code: 'run-authority-denied' });
+  assert.equal(lists, 1);
+  assert.equal(selected.signal.aborted, true);
 });
 
 test('Host workspace source: a registration, copied original request or client confirmed/path/actor flags never substitute for the explicit owner action', async (t) => {

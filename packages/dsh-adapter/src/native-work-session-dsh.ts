@@ -20,6 +20,7 @@ import {
 } from '@deepseek-ai/dsh-session-persistence';
 import type {} from '@deepseek-ai/dsh-tools';
 import { PERSONA_PREFIX_SECTION, joinContextSections } from '@deepseek-ai/dsh-system-prompt';
+import { noteNativeToolCall } from './efficiency-log.js';
 import {
   assertNativeInputReadOwner,
   traceNativeRetirementStage,
@@ -1274,6 +1275,20 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
     let overflow = false;
     let failure: unknown;
     const live = this.live.get(sessionId);
+    const efficiencyScope = expectedScope ?? live?.binding.scope;
+    const noteTool = (event: NativeHistoryEvent) => {
+      if (!efficiencyScope) return;
+      noteNativeToolCall(
+        {
+          taskId: efficiencyScope.taskId,
+          planId: efficiencyScope.planId,
+          revision: efficiencyScope.revision,
+          nodeId: efficiencyScope.nodeId,
+        },
+        sessionId,
+        event,
+      );
+    };
     const source = live?.handle.agent;
     const persistence = this.ctx.sessionPersistence.identity;
     const registry = registryIdentity(this.ctx);
@@ -1389,6 +1404,7 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
         for (const event of events) {
           if (signal.aborted) return;
           cursor = event.seq;
+          noteTool(event);
           yield { type: 'event', event };
         }
         if (events.length < 100) break;
@@ -1428,6 +1444,7 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
         if (item.value.type === 'event') {
           if (item.value.event.seq <= cursor) continue;
           cursor = item.value.event.seq;
+          noteTool(item.value.event);
         } else if (item.value.type === 'assistant-stream') {
           const frame = item.value.frame;
           if (
