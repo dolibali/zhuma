@@ -1322,6 +1322,13 @@ export class ExecutionService {
           this.assertRunStoreCompatibility();
           if (hasState) requireWorkspaceApprovalWriter(this.readRunGlobal());
         },
+        readSnapshot: () => {
+          const state = table.read();
+          const runs: WorkspaceApprovalRun[] = [];
+          this.assertRunStoreCompatibility(runs);
+          if (state !== undefined) requireWorkspaceApprovalWriter(this.readRunGlobal());
+          return { state, runs };
+        },
         enableWriter: () => {
           if (!this.storage.writeGlobal)
             throw new WorkspaceApprovalError('workspace-approval-unavailable');
@@ -1378,19 +1385,9 @@ export class ExecutionService {
           };
         },
         runs: () => {
-          const found: WorkspaceApprovalRun[] = [];
-          for (const node of this.storage.listNodes())
-            for (const run of readExecutionRunState(node)?.runs ?? []) {
-              if (run.workspace.kind !== 'local') continue;
-              found.push({
-                scope: executionRunScope(node, run),
-                workspace: run.workspace,
-                resources: run.resources,
-                ...(run.attempt.sessionId ? { nativeSessionId: run.attempt.sessionId } : {}),
-                ...(run.attempt.executorRunId ? { nativeAgentId: run.attempt.executorRunId } : {}),
-              });
-            }
-          return found;
+          const runs: WorkspaceApprovalRun[] = [];
+          this.readRunStates(this.storage.listNodes(), runs);
+          return runs;
         },
         assertDrained: (run) => {
           const host = currentHost();
@@ -5206,13 +5203,35 @@ export class ExecutionService {
     return { ok: true, value: structuredClone(decision) };
   }
 
-  private assertRunStoreCompatibility(): void {
+  private readRunStates(
+    nodes: readonly ExecutionNodeRecord[],
+    workspaceRuns?: WorkspaceApprovalRun[],
+  ): void {
+    for (const node of nodes) {
+      const state = readExecutionRunState(node);
+      // Ordinary compatibility callers retain no parsed state. A call-local
+      // collector only keeps the minimal original workspace metadata.
+      if (!workspaceRuns) continue;
+      for (const run of state?.runs ?? []) {
+        if (run.workspace.kind !== 'local') continue;
+        workspaceRuns.push({
+          scope: executionRunScope(node, run),
+          workspace: run.workspace,
+          resources: run.resources,
+          ...(run.attempt.sessionId ? { nativeSessionId: run.attempt.sessionId } : {}),
+          ...(run.attempt.executorRunId ? { nativeAgentId: run.attempt.executorRunId } : {}),
+        });
+      }
+    }
+  }
+
+  private assertRunStoreCompatibility(workspaceRuns?: WorkspaceApprovalRun[]): void {
     const nodes = this.storage.listNodes();
     assertExecutionRunStoreCompatibility(
       this.storage.readGlobal ? this.storage.readGlobal() : { schemaVersion: 1 },
       nodes,
     );
-    for (const node of nodes) readExecutionRunState(node);
+    this.readRunStates(nodes, workspaceRuns);
   }
 
   /** Every old writer passes here in the original queue. Never drop native metadata. */
