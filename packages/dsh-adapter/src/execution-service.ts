@@ -22,6 +22,15 @@ import { describeTeamAssetFileTool } from './team-asset-file-tool.js';
 import type { RemoteTeamAssetFileReadGrant } from './remote-team-asset-file-authority.js';
 import { z } from 'zod';
 import {
+  efficiencyDocument,
+  efficiencyExportSchema,
+  efficiencyTaskIds,
+  noteExecutionFact,
+  notePlanIfTerminal,
+  noteTaskStarted,
+  type EfficiencyPlanNode,
+} from './efficiency-log.js';
+import {
   canonicalPayload,
   remoteWorkflowRefSchema,
   remoteWorkflowIntentSchema,
@@ -1050,13 +1059,14 @@ function withExecutionEvent(
 ): ExecutionNodeRecord | undefined {
   const log: readonly NodeEvent[] = Array.isArray(record.events) ? record.events : [];
   const sequence = log.reduce((max, item) => Math.max(max, item.sequence), 0) + 1;
+  const occurredAt = new Date().toISOString();
   const appended = recordCommandEvent({
     decisionStatus: 'applied',
     log,
     event: {
       eventId: `evt:${record.nodeId}:${sequence}`,
       sequence,
-      occurredAt: new Date().toISOString(),
+      occurredAt,
       actorId,
       object: { type: 'node', id: record.nodeId },
       type,
@@ -1180,6 +1190,10 @@ function intactNode(record: ExecutionNodeRecord): boolean {
 
 function samePlan(record: ExecutionNodeRecord, taskId: string, planId: string, revision: number) {
   return record.taskId === taskId && record.planId === planId && record.revision === revision;
+}
+
+function eventCount(record: ExecutionNodeRecord | undefined): number {
+  return record && Array.isArray(record.events) ? record.events.length : 0;
 }
 
 function rejectionDetails(
@@ -5356,6 +5370,59 @@ export class ExecutionService {
   }
 
   /**
+   * 已落盘的效率事实。未知历时保持空值。
+   * 可见性和收件箱相同：当前成员目录、任务参与关系，以及任务所属空间。
+   * 指定了无权任务时与不存在同一份 not-found。目录故障是 unavailable，不返回部分指标。
+   */
+  exportEfficiency(caller: ExecutionCaller, body: unknown) {
+    return this.enqueue(async () => {
+      const actor = this.listActor(caller, body);
+      if (!actor.ok) return actor;
+      const parsed = parseBody(efficiencyExportSchema, body);
+      if (!parsed.ok) return parsed;
+      if (!this.projectSpaceDirectory()) return fail('not-found');
+      const opened = this.checkListActor(caller, body, actor.value);
+      if (!opened.ok) return opened;
+      for (const task of this.workbench.readWorkbench().tasks) {
+        const space = await this.gateSpaceScoped(task.id, actor.value.spaceIds, undefined);
+        if (space !== 'missing' && !space.ok && space.error.code === 'unavailable') return space;
+      }
+      const requested = parsed.value.taskId;
+      const candidates =
+        requested !== undefined
+          ? [requested]
+          : [
+              ...new Set([
+                ...efficiencyTaskIds(),
+                ...this.storage
+                  .listNodes()
+                  .flatMap((record) => (intactNode(record) ? [record.taskId] : [])),
+              ]),
+            ];
+      const taskIds = new Set<string>();
+      for (const taskId of candidates) {
+        const visible = await this.efficiencyTaskVisible(
+          taskId,
+          actor.value.actorId,
+          actor.value.spaceIds,
+        );
+        if (typeof visible !== 'string') return visible;
+        const current = this.checkListActor(caller, body, actor.value);
+        if (!current.ok) return current;
+        if (visible === 'allow') taskIds.add(taskId);
+        else if (requested !== undefined) return fail('not-found');
+      }
+      const finished = this.checkListActor(caller, body, actor.value);
+      if (!finished.ok) return finished;
+      this.projectEfficiencyFacts(taskIds);
+      return {
+        ok: true as const,
+        value: efficiencyDocument({ format: parsed.value.format, taskIds: [...taskIds] }),
+      };
+    });
+  }
+
+  /**
    * Confirmed plans this member may explicitly start. A task qualifies when it
    * is `ready`, the member owns or participates in it, the trusted directory
    * places its project in a space the member belongs to, and its latest
@@ -8032,6 +8099,140 @@ export class ExecutionService {
     return { ok: true, value: false };
   }
 
+  /**
+   * 参与关系不够。空间门禁把无权、跨空间和找不到的任务收成同一份 omit。
+   * 目录故障原样返回，调用方不得把它当成空指标。
+   */
+  private async efficiencyTaskVisible(
+    taskId: string,
+    actorId: string,
+    spaceIds: readonly string[],
+  ): Promise<'allow' | 'omit' | { readonly ok: false; readonly error: ExecutionFailure }> {
+    if (planMembership(this.workbench.readWorkbench(), taskId, actorId) !== 'allowed') {
+      return 'omit';
+    }
+    const space = await this.gateSpaceScoped(taskId, spaceIds, undefined);
+    if (space === 'missing') return 'omit';
+    if (!space.ok) return space.error.code === 'unavailable' ? space : 'omit';
+    return 'allow';
+  }
+
+  /**
+   * 只记这次已经写进存储的新事件。写盘失败的那次不会留下开始时间。
+   * 不回读任务里的旧节点。同 key 再记一次会被效率日志丢掉。
+   * 返回本次新增终态事件的时间，供任务结束沿用落盘戳而不是另扫历史。
+   */
+  private rememberCommittedEfficiency(
+    committed: ExecutionNodeRecord,
+    priorEventCount: number,
+  ): string | undefined {
+    if (!intactNode(committed)) return undefined;
+    const events = Array.isArray(committed.events) ? committed.events : [];
+    const from = Math.min(Math.max(priorEventCount, 0), events.length);
+    let endedAt: string | undefined;
+    for (const event of events.slice(from)) {
+      const status = event.payload?.status;
+      const version = event.payload?.version;
+      if (typeof status !== 'string' || typeof version !== 'number') continue;
+      noteExecutionFact({
+        taskId: committed.taskId,
+        planId: committed.planId,
+        revision: committed.revision,
+        nodeId: committed.nodeId,
+        assigneeKind: committed.handoff.assignee.kind,
+        eventType: event.type,
+        occurredAt: event.occurredAt,
+        status,
+        version,
+      });
+      if (event.type === 'node-started') {
+        noteTaskStarted({
+          taskId: committed.taskId,
+          planId: committed.planId,
+          revision: committed.revision,
+          occurredAt: event.occurredAt,
+        });
+      }
+      if (
+        (status === 'completed' || status === 'failed' || status === 'cancelled') &&
+        (endedAt === undefined || event.occurredAt > endedAt)
+      ) {
+        endedAt = event.occurredAt;
+      }
+    }
+    return endedAt;
+  }
+
+  private noteEfficiencyPlan(
+    taskId: string,
+    planId: string,
+    revision: number,
+    occurredAt?: string,
+  ): void {
+    notePlanIfTerminal(
+      this.storage
+        .listNodes()
+        .filter((record) => intactNode(record) && samePlan(record, taskId, planId, revision)),
+      occurredAt,
+    );
+  }
+
+  /** 导出时用已经落盘的节点戳补齐效率日志。写入路径不走这里。重复 sourceId 会被忽略。 */
+  private projectEfficiencyFacts(taskIds: ReadonlySet<string>): void {
+    const groups = new Map<
+      string,
+      { nodes: EfficiencyPlanNode[]; started?: string; ended?: string }
+    >();
+    for (const record of this.storage.listNodes()) {
+      if (!intactNode(record) || !taskIds.has(record.taskId)) continue;
+      const key = `${record.taskId}\0${record.planId}\0${record.revision}`;
+      const group = groups.get(key) ?? { nodes: [] };
+      group.nodes.push(record);
+      for (const event of Array.isArray(record.events) ? record.events : []) {
+        const status = event.payload?.status;
+        const version = event.payload?.version;
+        if (typeof status !== 'string' || typeof version !== 'number') continue;
+        noteExecutionFact({
+          taskId: record.taskId,
+          planId: record.planId,
+          revision: record.revision,
+          nodeId: record.nodeId,
+          assigneeKind: record.handoff.assignee.kind,
+          eventType: event.type,
+          occurredAt: event.occurredAt,
+          status,
+          version,
+        });
+        if (
+          event.type === 'node-started' &&
+          (group.started === undefined || event.occurredAt < group.started)
+        ) {
+          group.started = event.occurredAt;
+        }
+        if (
+          (status === 'completed' || status === 'failed' || status === 'cancelled') &&
+          (group.ended === undefined || event.occurredAt > group.ended)
+        ) {
+          group.ended = event.occurredAt;
+        }
+      }
+      groups.set(key, group);
+    }
+    for (const group of groups.values()) {
+      const head = group.nodes[0];
+      if (!head) continue;
+      if (group.started) {
+        noteTaskStarted({
+          taskId: head.taskId,
+          planId: head.planId,
+          revision: head.revision,
+          occurredAt: group.started,
+        });
+      }
+      if (group.ended) notePlanIfTerminal(group.nodes, group.ended);
+    }
+  }
+
   private async startPlanNow(caller: ExecutionCaller, body: unknown, beforeWrite?: () => void) {
     const actor = this.actor(caller, body);
     if (!actor.ok) return actor;
@@ -8100,12 +8301,14 @@ export class ExecutionService {
     if (!started.ok) return fail(started.code);
     for (const record of started.records) {
       const key = nodeRecordKey(record);
-      if (this.storage.readNode(key) === record) continue;
+      const existing = this.storage.readNode(key);
+      if (existing === record) continue;
       const stamped = withExecutionEvent(record, 'node-started', actor.value.actorId);
       if (!stamped) return fail('unavailable');
       beforeWrite?.();
       const stored = await this.persist(() => this.writeNode(stamped));
       if (!stored.ok) return stored;
+      this.rememberCommittedEfficiency(stamped, eventCount(existing));
     }
     const compensated = await this.unlockCompleted(taskId, planId, revision);
     if (!compensated.ok) return compensated;
@@ -8117,6 +8320,7 @@ export class ExecutionService {
     beforeWrite?.();
     const stored = await this.persist(() => this.storage.writePlan(key, receipt));
     if (!stored.ok) return stored;
+    this.noteEfficiencyPlan(taskId, planId, revision);
     return {
       ok: true as const,
       value: {
@@ -8213,6 +8417,8 @@ export class ExecutionService {
       }
       const stored = await this.persist(() => this.writeNode(record));
       if (!stored.ok) return stored;
+      const endedAt = this.rememberCommittedEfficiency(record, eventCount(current));
+      this.noteEfficiencyPlan(current.taskId, current.planId, current.revision, endedAt);
     }
     if (record.command.status === 'completed') {
       const unlocked = await this.unlockFrom(record);
@@ -8278,6 +8484,10 @@ export class ExecutionService {
       if (!stamped) return fail('unavailable');
       const stored = await this.persist(() => this.writeNode(stamped));
       if (!stored.ok) return stored;
+      const endedAt = this.rememberCommittedEfficiency(stamped, eventCount(latest));
+      if (endedAt !== undefined) {
+        this.noteEfficiencyPlan(completed.taskId, completed.planId, completed.revision, endedAt);
+      }
       unlocked += 1;
     }
     return { ok: true, value: unlocked };

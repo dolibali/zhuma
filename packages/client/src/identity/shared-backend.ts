@@ -99,6 +99,7 @@ const targets = {
   '/api/zhuma-exec/review-outcome': ['POST', 'execution.review-outcome'],
   '/api/zhuma-exec/upstream-content': ['POST', 'execution.upstream-content'],
   '/api/zhuma-exec/draft': ['POST', 'execution.draft'],
+  '/api/zhuma-efficiency/export': ['POST', 'efficiency.export'],
 } as const;
 function target(path: string, method: string): readonly [string, string] {
   if (path === '/zhuma-id/teams')
