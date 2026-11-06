@@ -1,5 +1,12 @@
 import { Service, type Context } from '@deepseek-ai/cordis';
+import type { SessionRequestId } from '@deepseek-ai/dsh-api-session-controller/types';
 import { isAbsolute } from 'node:path';
+import { createHash } from 'node:crypto';
+import { canonicalPayload } from '@zhuma/agent-core';
+import {
+  nativeConversationRuntimeContext,
+  type NativeConversationPrefix,
+} from './native-work-session-conversation-contract.js';
 import type { Agent, AgentHandle, AgentSetup } from '@deepseek-ai/dsh-agent';
 import {
   MessageId,
@@ -315,7 +322,10 @@ function identified(message: NativeSessionMessage): UserMessage {
     id: MessageId(message.id),
     role: 'user',
     content: Object.freeze([{ type: 'text' as const, text: message.text }]),
-    source: Object.freeze({ kind: 'user' as const }),
+    source: Object.freeze({
+      kind: 'user' as const,
+      ...(message.rpcId === undefined ? {} : { rpcId: message.rpcId as SessionRequestId }),
+    }),
   });
 }
 
@@ -406,6 +416,13 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
   }
 
   private current(grant: NativeWorkGrant): void {
+    const chat = nativeConversationRuntimeContext(grant);
+    if (chat) {
+      if (grant.signal.aborted || this.lifetime.signal.aborted)
+        throw new NativeWorkError('cancelled');
+      chat.assertCurrent();
+      return;
+    }
     assertNativePurposeOwner(grant, this.purpose);
     current(grant);
   }
@@ -533,6 +550,40 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
     grant: NativeWorkGrant,
     allowCreate: boolean,
   ): Promise<void> {
+    if (nativeConversationRuntimeContext(grant)) throw new NativeWorkError('scope-mismatch');
+    return this.connectOwned(binding, grant, allowCreate);
+  }
+
+  async connectConversation(binding: NativeSessionBinding, grant: NativeWorkGrant): Promise<void> {
+    const chat = nativeConversationRuntimeContext(grant);
+    if (!chat || chat.binding.nativeSessionId !== binding.nativeSessionId)
+      throw new NativeWorkError('scope-mismatch');
+    this.current(grant);
+    const live = this.live.get(binding.nativeSessionId);
+    if (live) {
+      if (live.grant !== grant) throw new NativeWorkError('unavailable');
+      this.agent(binding.nativeSessionId);
+      return;
+    }
+    if (
+      this.connecting.has(binding.nativeSessionId) ||
+      this.disconnecting.has(binding.nativeSessionId)
+    )
+      throw new NativeWorkError('migration-not-ready');
+    const drained = this.migrationDrain(binding.nativeSessionId);
+    drained.assertCurrent();
+    if (drained.basis !== 'flushed-and-closed') throw new NativeWorkError('unavailable');
+    // Only this genuine private chat lease may reuse the retired physical SID.
+    // Work routing still rejects this lease and the old Work scope stays retired.
+    this.retired.delete(binding.nativeSessionId);
+    return this.connectOwned(binding, grant, false);
+  }
+
+  private async connectOwned(
+    binding: NativeSessionBinding,
+    grant: NativeWorkGrant,
+    allowCreate: boolean,
+  ): Promise<void> {
     this.current(grant);
     // Even a parked resume constructs an executable Agent scope/writer. A
     // separate historical read grant must never authorize that factory call.
@@ -583,7 +634,26 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
     const id = SessionId(binding.nativeSessionId);
     // Never adopt another consumer's same-id handle or global owner session.
     if (this.ctx.agents.get(id)) throw new NativeWorkError('unavailable');
-    const directory = await this.directory(binding, grant, parentSignal);
+    const chat = nativeConversationRuntimeContext(grant);
+    const directory: NativeDirectoryContext = chat
+      ? {
+          signal: parentSignal,
+          meta: undefined,
+          assert: (agent) => {
+            this.current(grant);
+            if (parentSignal.aborted) throw new NativeWorkError('cancelled');
+            if (
+              agent &&
+              createHash('sha256').update(canonicalPayload(agent.session.header)).digest('hex') !==
+                chat.prefix.headerDigest
+            )
+              throw new NativeWorkError('configuration-mismatch');
+          },
+          prepare: async () => {
+            this.current(grant);
+          },
+        }
+      : await this.directory(binding, grant, parentSignal);
     const signal = directory.signal;
     const stored = await this.ctx.sessionPersistence.stat(id, { signal });
     signal.throwIfAborted();
@@ -613,8 +683,20 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
       assertNativeInputReadOwner(binding.nativeSessionId, this);
       // Native end tools only: PTC's reserved run_code cannot be masked by restrict().
       agentCtx.tools.presentAs('native');
-      configureNativeWorkPrompt(agentCtx, directory.meta === undefined);
-      const composition = await this.options.compose(agentCtx, structuredClone(binding), grant);
+      if (!chat) configureNativeWorkPrompt(agentCtx, directory.meta === undefined);
+      else
+        agentCtx.systemPrompt.section({
+          name: PERSONA_PREFIX_SECTION,
+          order: agentCtx.systemPrompt.getSectionOrder('DEPLOYMENT_PERSONA_PREFIX'),
+          text: '继续与用户讨论当前会话。原任务和已提交产物保持不变。此次会话没有工具权限；不得执行、提交或发布任务结果。',
+          interpolate: false,
+        });
+      const composition = chat
+        ? {
+            context: '继续原会话聊天；原任务结果不变。所有工具均不可用。',
+            toolAllowlist: [] as readonly string[],
+          }
+        : await this.options.compose(agentCtx, structuredClone(binding), grant);
       signal.throwIfAborted();
       this.current(grant);
       directory.assert(unpublishedAgent);
@@ -653,7 +735,7 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
           throw new NativeWorkError('invalid-request');
       };
       agentCtx.systemPrompt.context({
-        name: 'zhuma-work',
+        name: chat ? 'zhuma-conversation' : 'zhuma-work',
         order: 10,
         text: composition.context,
         interpolate: false,
@@ -680,9 +762,11 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
         this.current(grant);
         directory.assert(unpublishedAgent);
         grant.assertCurrent('send');
+        if (chat) checkToolSurface();
         const config = await next();
         this.current(grant);
         directory.assert(unpublishedAgent);
+        if (chat) checkToolSurface();
         if (
           config.provider !== binding.selection.provider ||
           config.model !== binding.selection.model
@@ -695,7 +779,7 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
           this.current(grant);
           directory.assert(unpublishedAgent);
           checkToolSurface();
-          if (directory.meta === undefined) {
+          if (!chat && directory.meta === undefined) {
             // Preparation is explicit create/resume, never a history/view read.
             // Original append-origin events remain the human transcript.
             const changes = textOnlyContextReplacements(unpublishedAgent);
@@ -933,6 +1017,19 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
     signal: AbortSignal,
     allowAbsent = false,
   ): Promise<readonly NativeHistoryEvent[]> {
+    return this.readHistoryPage(sessionId, after, limit, signal, allowAbsent, false);
+  }
+
+  private readHistoryPage(
+    sessionId: string,
+    after: number,
+    limit: number,
+    signal: AbortSignal,
+    allowAbsent: boolean,
+    presentation: boolean,
+    flushLive = true,
+    assertCurrent: () => void = () => {},
+  ): Promise<readonly NativeHistoryEvent[]> {
     return this.readSession<readonly NativeHistoryEvent[]>(
       sessionId,
       signal,
@@ -940,11 +1037,15 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
       () => [],
       async (handle, bounded) => {
         const result = await handle.read(after + 1, limit, { signal: bounded });
-        const events = result.events.map(publicNativeResultEvent);
+        const events = presentation
+          ? publicNativeHistoryPage(result.events)
+          : result.events.map(publicNativeResultEvent);
         if (Buffer.byteLength(JSON.stringify(events)) > MAX_FRAME_BYTES)
           throw new NativeWorkError('capacity');
         return events;
       },
+      assertCurrent,
+      flushLive,
     );
   }
 
@@ -957,15 +1058,58 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
     signal: AbortSignal,
     allowAbsent = false,
   ): Promise<readonly NativeHistoryEvent[]> {
+    return this.readHistoryPage(sessionId, after, limit, signal, allowAbsent, true);
+  }
+
+  conversationSourceIdentity() {
+    const projection: unknown = Reflect.get(this.ctx.sessionProjections, Service.tracker);
+    if (!projection || typeof projection !== 'object' || this.lifetime.signal.aborted)
+      throw new NativeWorkError('unavailable');
+    return {
+      persistence: this.ctx.sessionPersistence.identity,
+      registry: registryIdentity(this.ctx),
+      projection,
+    };
+  }
+
+  qualifyConversationRead(
+    binding: NativeSessionBinding,
+    signal: AbortSignal,
+    assertCurrent: () => void,
+  ): Promise<void> {
     return this.readSession(
-      sessionId,
+      binding.nativeSessionId,
       signal,
-      allowAbsent,
-      () => [],
-      async (handle, bounded) => {
-        const result = await handle.read(after + 1, limit, { signal: bounded });
-        return publicNativeHistoryPage(result.events);
+      false,
+      () => {
+        throw new NativeWorkError('not-started');
       },
+      async () => {
+        const live = this.live.get(binding.nativeSessionId)?.handle.agent;
+        if (this.ctx.agents.get(SessionId(binding.nativeSessionId)) !== live)
+          throw new NativeWorkError('unavailable');
+      },
+      assertCurrent,
+      false,
+    );
+  }
+
+  readConversationPage(
+    binding: NativeSessionBinding,
+    after: number,
+    limit: number,
+    signal: AbortSignal,
+    assertCurrent: () => void,
+  ): Promise<readonly NativeHistoryEvent[]> {
+    return this.readHistoryPage(
+      binding.nativeSessionId,
+      after,
+      limit,
+      signal,
+      false,
+      true,
+      false,
+      assertCurrent,
     );
   }
 
@@ -977,6 +1121,7 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
     absent: () => T,
     read: (handle: SessionHandle, bounded: AbortSignal, verify: () => void) => Promise<T>,
     assertCurrent: () => void = () => {},
+    flushLive = true,
   ): Promise<T> {
     if (this.readers.size >= MAX_READERS) return Promise.reject(new NativeWorkError('capacity'));
     const bounded = AbortSignal.any([
@@ -998,7 +1143,7 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
     };
     const physical = (async () => {
       guard();
-      await this.flush(sessionId);
+      if (flushLive) await this.flush(sessionId);
       guard();
       let handle: SessionHandle;
       try {
@@ -1122,6 +1267,40 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
     signal: AbortSignal,
     assertCurrent: () => void,
   ): Promise<NativeResultSnapshot> {
+    return this.readSnapshot(binding, signal, assertCurrent);
+  }
+
+  async readConversationPrefix(
+    binding: NativeSessionBinding,
+    signal: AbortSignal,
+    assertCurrent: () => void,
+  ): Promise<NativeConversationPrefix> {
+    let prefix: NativeConversationPrefix | undefined;
+    const snapshot = await this.readSnapshot(binding, signal, assertCurrent, undefined, (value) => {
+      prefix = value;
+    });
+    snapshot.check();
+    if (snapshot.hasPending) throw new NativeWorkError('input-pending');
+    if (!prefix) throw new NativeWorkError('unavailable');
+    return prefix;
+  }
+
+  readPrefixSnapshot(
+    binding: NativeSessionBinding,
+    prefix: NativeConversationPrefix,
+    signal: AbortSignal,
+    assertCurrent: () => void,
+  ): Promise<NativeResultSnapshot> {
+    return this.readSnapshot(binding, signal, assertCurrent, prefix);
+  }
+
+  private readSnapshot(
+    binding: NativeSessionBinding,
+    signal: AbortSignal,
+    assertCurrent: () => void,
+    prefix?: NativeConversationPrefix,
+    capture?: (prefix: NativeConversationPrefix) => void,
+  ): Promise<NativeResultSnapshot> {
     const sessionId = binding.nativeSessionId;
     return this.readSession(
       sessionId,
@@ -1144,9 +1323,10 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
             !projection ||
             this.ctx.sessionPersistence.identity !== persistence ||
             Reflect.get(this.ctx.sessionProjections, Service.tracker) !== projection ||
-            this.live.get(sessionId)?.handle.agent !== source ||
-            this.ctx.agents.get(SessionId(sessionId)) !== source ||
-            (source && source.session.seq !== sequence)
+            (!prefix &&
+              (this.live.get(sessionId)?.handle.agent !== source ||
+                this.ctx.agents.get(SessionId(sessionId)) !== source ||
+                (source && source.session.seq !== sequence)))
           )
             throw new NativeWorkError('unavailable');
         };
@@ -1154,10 +1334,24 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
         let bytes = 0;
         let checkpoint: ProjectionCheckpoint = {};
         const events: NativeHistoryEvent[] = [];
+        const digest = (value: unknown) =>
+          createHash('sha256').update(canonicalPayload(value)).digest('hex');
+        const headerDigest = digest(handle.header);
+        if (
+          prefix &&
+          (prefix.headerDigest !== headerDigest ||
+            prefix.inheritedEventCount !== handle.inheritedEventCount ||
+            !Number.isSafeInteger(prefix.eventCount) ||
+            prefix.eventCount < 0 ||
+            prefix.eventCount > 10_000)
+        )
+          throw new NativeWorkError('unavailable');
         for (let page = 0; page < 100; page++) {
           verifyRead();
           check();
-          const result = await handle.read(offset, 100, { signal: bounded });
+          const count = prefix ? Math.min(100, prefix.eventCount - offset) : 100;
+          const result =
+            count === 0 ? { events: [] } : await handle.read(offset, count, { signal: bounded });
           verifyRead();
           check();
           bytes += Buffer.byteLength(JSON.stringify(result.events));
@@ -1171,15 +1365,52 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
             handle.inheritedEventCount,
           );
           checkpoint = restored.checkpoint;
-          if (result.events.length === 100) {
-            offset += 100;
+          if (prefix && result.events.length !== count) throw new NativeWorkError('unavailable');
+          if (
+            (!prefix && result.events.length === 100) ||
+            (prefix && offset + count < prefix.eventCount)
+          ) {
+            offset += count;
             continue;
           }
           const inbox = restored.snapshot.values.inbox;
           if (!inbox || !Array.isArray(inbox['next-step']) || !Array.isArray(inbox['next-turn']))
             throw new NativeWorkError('unavailable');
-          if (sequence !== undefined && sequence !== restored.snapshot.asOfSeq + 1)
+          if (!prefix && sequence !== undefined && sequence !== restored.snapshot.asOfSeq + 1)
             throw new NativeWorkError('unavailable');
+          if (
+            prefix &&
+            (restored.snapshot.asOfSeq !== prefix.asOfSeq || digest(events) !== prefix.eventsDigest)
+          )
+            throw new NativeWorkError('unavailable');
+          if (capture) {
+            const asOfSeq = binding.resultIntent?.cut?.asOfSeq ?? restored.snapshot.asOfSeq;
+            const fixedEvents = events.filter((event) => event.seq <= asOfSeq);
+            if (asOfSeq >= 0 && fixedEvents.at(-1)?.seq !== asOfSeq)
+              throw new NativeWorkError('unavailable');
+            // Unaccounted work after a sealed cut is never adopted as chat.
+            if (
+              events.some(
+                (event) =>
+                  event.seq > asOfSeq &&
+                  [
+                    'user/message',
+                    'turn/start',
+                    'assistant/message',
+                    'tool/call',
+                    'tool/result',
+                  ].includes(event.type),
+              )
+            )
+              throw new NativeWorkError('input-pending');
+            capture({
+              asOfSeq,
+              eventCount: fixedEvents.length,
+              inheritedEventCount: handle.inheritedEventCount,
+              headerDigest,
+              eventsDigest: digest(fixedEvents),
+            });
+          }
           check();
           return {
             asOfSeq: restored.snapshot.asOfSeq,
@@ -1201,6 +1432,7 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
         throw new NativeWorkError('capacity');
       },
       assertCurrent,
+      prefix === undefined,
     );
   }
 
@@ -1218,7 +1450,9 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
     messageId: string,
     signal: AbortSignal,
   ): Promise<'received' | 'claimed' | 'discarded' | 'absent'> {
-    const pending = this.pending(sessionId);
+    // Official history also reconciles a receipt after its physical Agent and
+    // writer have closed; absence of a live Agent is not message absence.
+    const pending = this.isConnected(sessionId) ? this.pending(sessionId) : [];
     if (pending.some((message) => message.id === messageId)) return 'received';
     let after = -1;
     const queues: Record<string, string[]> = { 'next-turn': [], 'next-step': [] };
@@ -1265,6 +1499,7 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
     allowAbsent = false,
     assertCurrent: () => void = () => {},
     expectedScope?: NativeWorkScope,
+    passive = false,
   ): AsyncIterable<NativeWorkFrame> {
     const signal = AbortSignal.any([callerSignal, this.lifetime.signal]);
     signal.throwIfAborted();
@@ -1399,7 +1634,18 @@ export class DshNativeWorkRuntime implements NativeWorkRuntime {
     try {
       // Subscribe first, then native durable history. The seq cursor drops overlap.
       for (;;) {
-        const events = await this.history(sessionId, cursor, 100, signal, allowAbsent);
+        const events = passive
+          ? await this.readHistoryPage(
+              sessionId,
+              cursor,
+              100,
+              signal,
+              allowAbsent,
+              false,
+              false,
+              checkSource,
+            )
+          : await this.history(sessionId, cursor, 100, signal, allowAbsent);
         checkSource();
         for (const event of events) {
           if (signal.aborted) return;

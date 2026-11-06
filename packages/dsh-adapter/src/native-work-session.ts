@@ -38,7 +38,12 @@ import {
   type NativeMigrationOrigin,
   type NativeScopeCleanupAuthority,
   type NativeScopeCleanupResult,
+  type NativeWorkSessionRecord,
 } from './native-work-session-contract.js';
+import { NativeReleasedConversationController } from './native-work-session-conversation.js';
+import type { NativeConversationPrefix } from './native-work-session-conversation-contract.js';
+import { publicNativeHistoryPage } from './native-work-session-history-view.js';
+import { publicNativeResultEvent } from './native-work-session-public-result.js';
 
 export const NATIVE_WORK_LIMITS = Object.freeze({
   messageChars: 16_384,
@@ -241,6 +246,8 @@ import {
   migrationFingerprint,
   validMigrationPair,
   NATIVE_LINEAGE_LIMITS,
+  nativeConversationSession,
+  preserveNativeConversation,
 } from './native-work-session-record.js';
 export { nativeWorkSessionKey } from './native-work-session-record.js';
 import {
@@ -311,6 +318,8 @@ function textInput(value: string): void {
  * the AgentLoop, or transcript bodies. A supplies transport; B supplies grants.
  */
 export class NativeWorkSessionService {
+  readonly conversation: NativeReleasedConversationController;
+  private readonly workReadFences = new Map<string, AbortController>();
   private readonly locks = new Map<string, Promise<unknown>>();
   private readonly stopEpochs = new Map<string, number>();
   private readonly retiredScopes = new Set<string>();
@@ -370,7 +379,95 @@ export class NativeWorkSessionService {
       readonly write: (key: string, record: NativeReviewRecord) => Promise<void>;
       readonly enable: () => Promise<void>;
     },
-  ) {}
+  ) {
+    this.conversation = new NativeReleasedConversationController(
+      {
+        signal: this.cleanupLifetime.signal,
+        read: (scope) => this.conversationRecord(scope),
+        serial: (scope, verify, work) =>
+          this.enqueueKey(nativeWorkSessionKey(scope), async () => {
+            verify();
+            return work();
+          }),
+        write: async (scope, record, verify) => {
+          verify();
+          const parsed = readNativeRecord(record);
+          if (Buffer.byteLength(JSON.stringify(parsed)) > NATIVE_LINEAGE_LIMITS.bytes)
+            throw new NativeWorkError('capacity');
+          verify();
+          await this.storage.write(nativeWorkSessionKey(scope), parsed);
+          verify();
+        },
+        admit: (scope) => {
+          const binding = bindingForScope(this.conversationRecord(scope), scope);
+          if (!binding) throw new NativeWorkError('scope-mismatch');
+          this.workReadFences.get(binding.nativeSessionId)?.abort();
+          this.touchScope(scope);
+          this.retiredScopes.add(this.scopeKey(scope));
+        },
+      },
+      runtime,
+    );
+  }
+
+  private conversationRecord(scope: NativeWorkScope): NativeWorkSessionRecord {
+    assertNativeScopePurposeOwner(scope, this.review?.purpose);
+    const key = nativeWorkSessionKey(scope);
+    if (this.unknownMigrations.has(key)) throw new NativeWorkError('migration-unknown');
+    const stored = this.storage.read(key);
+    if (!stored) throw new NativeWorkError('not-started');
+    const record = readNativeRecord(stored);
+    if (!bindingForScope(record, scope)) throw new NativeWorkError('scope-mismatch');
+    return record;
+  }
+  private workReadSignal(binding: NativeSessionBinding): AbortSignal {
+    let controller = this.workReadFences.get(binding.nativeSessionId);
+    if (!controller) {
+      if (this.workReadFences.size >= MAX_OWNER_SCOPES) throw new NativeWorkError('capacity');
+      this.workReadFences.set(binding.nativeSessionId, (controller = new AbortController()));
+    }
+    return controller.signal;
+  }
+  private assertConversationMigration(record: NativeWorkSessionRecord): void {
+    if (
+      record.conversation?.sessions.some(
+        (entry) =>
+          entry.phase !== 'settled' ||
+          entry.receipts.some((r) => r.status === 'reserved' || r.status === 'unknown'),
+      )
+    )
+      throw new NativeWorkError('migration-not-ready');
+  }
+
+  /** The sealed original Work prefix only, authorized through original history. */
+  conversationPrefix(grant: NativeWorkGrant): NativeConversationPrefix | undefined {
+    const binding = this.required(grant, 'history');
+    if (this.isReviewPurpose(grant)) return undefined;
+    return nativeConversationSession(this.conversationRecord(grant.scope), binding.nativeSessionId)
+      ?.prefix;
+  }
+  async readOriginalPrefix(
+    grant: NativeWorkGrant,
+    signal: AbortSignal,
+  ): Promise<NativeResultSnapshot> {
+    const binding = this.required(grant, 'history'),
+      prefix = this.conversationPrefix(grant);
+    if (!prefix || !this.runtime.readPrefixSnapshot) throw new NativeWorkError('unavailable');
+    const identity = JSON.stringify(prefix);
+    const verify = () => {
+      this.check(grant, 'history');
+      if (JSON.stringify(this.conversationPrefix(grant)) !== identity)
+        throw new NativeWorkError('scope-mismatch');
+    };
+    const snapshot = await this.runtime.readPrefixSnapshot(
+      binding,
+      prefix,
+      AbortSignal.any([signal, grant.signal]),
+      verify,
+    );
+    verify();
+    return snapshot;
+  }
 
   private check(grant: NativeWorkGrant, action: NativeWorkAction): void {
     assertNativePurposeOwner(grant, this.review?.purpose);
@@ -865,6 +962,22 @@ export class NativeWorkSessionService {
       diagnostic.record('cleanup-authority', 'done');
     };
     verify();
+    if (!this.review?.purpose.context(scope)) {
+      diagnostic.record('cleanup-binding', 'wait');
+      try {
+        const stored = this.storage.read(this.sessionKey(scope));
+        if (stored) {
+          const record = readNativeRecord(stored),
+            binding = bindingForScope(record, scope);
+          const chat = binding && nativeConversationSession(record, binding.nativeSessionId);
+          if (chat && chat.phase !== 'settled') return { status: 'pending' };
+        }
+        diagnostic.record('cleanup-binding', 'done');
+      } catch (error) {
+        diagnostic.record('cleanup-binding', 'error', error);
+        throw error;
+      }
+    }
     if (!this.retiredScopes.has(address) && this.retiredScopes.size >= MAX_OWNER_SCOPES) {
       diagnostic.record('cleanup-capacity', 'error', 'capacity');
       throw new NativeWorkError('capacity');
@@ -1199,6 +1312,7 @@ export class NativeWorkSessionService {
     const stored = this.storage.read(key);
     if (!stored) throw new NativeWorkError('not-started');
     const record = readNativeRecord(stored);
+    this.assertConversationMigration(record);
     inspectNativeMigration(record, data);
     const previous = bindingForScope(record, data.previousScope);
     if (!previous) throw new NativeWorkError('scope-mismatch');
@@ -1314,14 +1428,19 @@ export class NativeWorkSessionService {
       const stored = this.storage.read(key);
       if (!stored) throw new NativeWorkError('not-started');
       const record = readNativeRecord(stored);
+      this.assertConversationMigration(record);
       const replay = inspectNativeMigration(record, data);
       if (replay) return replay;
       const next = appendNativeMigration(record, data);
+      const preserved = preserveNativeConversation(record, next.record);
+      if (Buffer.byteLength(JSON.stringify(preserved)) > NATIVE_LINEAGE_LIMITS.bytes)
+        throw new NativeWorkError('capacity');
+      readNativeRecord(preserved);
       verify('migrate');
       // Once admitted, await durability. Never call a possible committed put
       // "pending/no change" or roll back to the old binding on an unknown error.
       try {
-        await this.storage.write(key, next.record);
+        await this.storage.write(key, preserved);
       } catch {
         this.unknownMigrations.add(key);
         throw new NativeWorkError('migration-unknown');
@@ -1349,6 +1468,13 @@ export class NativeWorkSessionService {
       : currentBinding(record);
     if (value && context) this.review?.purpose.bindScope(value.scope, context);
     if (value === undefined || !this.sameScope(value.scope, grant.scope))
+      throw new NativeWorkError('scope-mismatch');
+    // Persisted ownership survives a Host restart; the old Work purpose never
+    // regains drive merely because this process has no warm retiredScopes set.
+    if (
+      ['send', 'queue'].includes(action) &&
+      nativeConversationSession(record, value.nativeSessionId)
+    )
       throw new NativeWorkError('scope-mismatch');
     const clone = structuredClone(value);
     if (context) this.review?.purpose.bindScope(clone.scope, context);
@@ -1390,7 +1516,10 @@ export class NativeWorkSessionService {
       current.nativeAgentId !== binding.nativeAgentId
     )
       throw new NativeWorkError('scope-mismatch');
-    const next = record.schemaVersion === 1 ? binding : { ...record, current: binding };
+    const next = preserveNativeConversation(
+      record,
+      record.schemaVersion === 1 ? binding : { ...record, current: binding },
+    );
     if (Buffer.byteLength(JSON.stringify(next)) > NATIVE_LINEAGE_LIMITS.bytes)
       throw new NativeWorkError('capacity');
     await this.storage.write(key, next);
@@ -1414,9 +1543,15 @@ export class NativeWorkSessionService {
       ? undefined
       : {
           binding,
-          status: this.runtime.isConnected(binding.nativeSessionId)
-            ? this.runtime.status(binding.nativeSessionId)
-            : ('detached' as const),
+          status:
+            (this.isReviewPurpose(grant) ||
+              !nativeConversationSession(
+                this.conversationRecord(grant.scope),
+                binding.nativeSessionId,
+              )) &&
+            this.runtime.isConnected(binding.nativeSessionId)
+              ? this.runtime.status(binding.nativeSessionId)
+              : ('detached' as const),
         };
   }
 
@@ -1427,6 +1562,7 @@ export class NativeWorkSessionService {
 
   readResultSnapshot(grant: NativeWorkGrant, signal: AbortSignal): Promise<NativeResultSnapshot> {
     const binding = this.required(grant, 'history');
+    if (this.conversationPrefix(grant)) return this.readOriginalPrefix(grant, signal);
     if (!this.runtime.readResultSnapshot) throw new NativeWorkError('unavailable');
     const verify = () => {
       const fresh = this.required(grant, 'history');
@@ -1643,7 +1779,7 @@ export class NativeWorkSessionService {
       verify();
       this.runtime.send(
         binding.nativeSessionId,
-        { id: receipt.messageId, text: input.text },
+        { id: receipt.messageId, text: input.text, rpcId: input.requestId },
         input.mode,
       );
       await this.runtime.flush(binding.nativeSessionId);
@@ -1775,7 +1911,18 @@ export class NativeWorkSessionService {
       limit > NATIVE_WORK_LIMITS.historyEvents
     )
       throw new NativeWorkError('invalid-request');
-    const combined = AbortSignal.any([grant.signal, signal]);
+    const prefix = this.conversationPrefix(grant);
+    if (prefix) {
+      const snapshot = await this.readOriginalPrefix(grant, signal);
+      snapshot.check();
+      const raw = snapshot.events.filter((event) => event.seq > after).slice(0, limit);
+      const events = presentation ? publicNativeHistoryPage(raw) : raw.map(publicNativeResultEvent);
+      if (Buffer.byteLength(JSON.stringify(events)) > 262_144)
+        throw new NativeWorkError('capacity');
+      this.check(grant, 'history');
+      return { binding, events: structuredClone(events) };
+    }
+    const combined = AbortSignal.any([grant.signal, signal, this.workReadSignal(binding)]);
     const read = presentation ? this.runtime.conversationHistory : this.runtime.history;
     if (!read) throw new NativeWorkError('unavailable');
     const events = await read.call(
@@ -1794,7 +1941,42 @@ export class NativeWorkSessionService {
   /** Reads the official durable inbox without creating, resuming or waking an Agent. */
   async readInbox(grant: NativeWorkGrant, signal: AbortSignal = grant.signal) {
     const binding = this.required(grant, 'history');
-    const combined = AbortSignal.any([grant.signal, signal]);
+    if (this.conversationPrefix(grant)) {
+      const snapshot = await this.readOriginalPrefix(grant, signal);
+      const claimed = new Set(
+        snapshot.events.flatMap((event) => {
+          const data = event.data;
+          if (
+            event.type !== 'user/message' ||
+            !data ||
+            typeof data !== 'object' ||
+            !('id' in data) ||
+            typeof data.id !== 'string' ||
+            !('source' in data) ||
+            !data.source ||
+            typeof data.source !== 'object' ||
+            !('kind' in data.source) ||
+            data.source.kind !== 'user'
+          )
+            return [];
+          return [data.id];
+        }),
+      );
+      snapshot.check();
+      if (snapshot.hasPending) throw new NativeWorkError('input-pending');
+      return {
+        binding,
+        asOfSeq: snapshot.asOfSeq,
+        items: [],
+        receipts: binding.receipts.map((receipt) => ({
+          requestId: receipt.requestId,
+          messageId: receipt.messageId,
+          mode: receipt.mode,
+          status: claimed.has(receipt.messageId) ? ('claimed' as const) : ('unknown' as const),
+        })),
+      };
+    }
+    const combined = AbortSignal.any([grant.signal, signal, this.workReadSignal(binding)]);
     const verify = () => {
       combined.throwIfAborted();
       const fresh = this.required(grant, 'history');
@@ -1866,7 +2048,23 @@ export class NativeWorkSessionService {
   async *follow(grant: NativeWorkGrant, after = -1, signal: AbortSignal = grant.signal) {
     const binding = this.required(grant, 'follow');
     if (!Number.isSafeInteger(after) || after < -1) throw new NativeWorkError('invalid-request');
-    const combined = AbortSignal.any([grant.signal, signal]);
+    const prefix = this.conversationPrefix(grant);
+    if (prefix) {
+      const snapshot = await this.readOriginalPrefix(grant, signal);
+      for (const event of snapshot.events.filter((event) => event.seq > after)) {
+        this.check(grant, 'follow');
+        snapshot.check();
+        signal.throwIfAborted();
+        yield {
+          scope: structuredClone(binding.scope),
+          nativeSessionId: binding.nativeSessionId,
+          type: 'event' as const,
+          event: structuredClone(publicNativeResultEvent(event)),
+        };
+      }
+      return;
+    }
+    const combined = AbortSignal.any([grant.signal, signal, this.workReadSignal(binding)]);
     const verify = () => {
       combined.throwIfAborted();
       const fresh = this.required(grant, 'follow');
