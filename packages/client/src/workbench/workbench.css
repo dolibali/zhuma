@@ -2600,6 +2600,9 @@ html[data-platform='darwin'] .zhuma .zm-space-bar {
   padding: 10px 24px 4px;
 }
 .zm-toolbar > button:first-child {
+  position: relative;
+  /* Compact drawer scrim is positioned against the editor and would otherwise take this click. */
+  z-index: 13;
   display: inline-flex;
   align-items: center;
   gap: 4px;

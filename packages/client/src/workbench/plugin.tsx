@@ -29,6 +29,7 @@ import {
   installMemberNativeNavigation,
   nativeSessionPanel,
 } from '../run/MemberNativeNavigation.js';
+import { selectRepeatedWorkbenchPanel } from './catalog-return.js';
 
 export const inject = [
   'slots',
@@ -153,6 +154,16 @@ export function apply(ctx: Context): void {
     ctx.effect(() =>
       layout.registerPanelGuard!((target, proceed, signal) => {
         if (nativeNavigation?.guardPanel(target, proceed, signal)) return;
+        if (
+          selectRepeatedWorkbenchPanel({
+            target,
+            active: layout.panelInfo.getSnapshot().activePanelId,
+            workbenchId: workbenchPanel,
+            signal,
+            proceed,
+          })
+        )
+          return;
         if (target === layout.panelInfo.getSnapshot().activePanelId) proceed();
         else memberShell.requestLeave(proceed, signal);
       }),

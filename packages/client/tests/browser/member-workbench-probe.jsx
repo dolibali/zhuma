@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { MemberExecutionPage } from '../../src/execution/MemberExecutionPage.js';
 import { createIdentityApi } from '../../src/identity/api.js';
 import { createMemberShell } from '../../src/identity/shell.js';
+import { requestCatalogReturn } from '../../src/workbench/catalog-return.js';
 
 /** Navigation contract fixture. The official patched LayoutController is tested separately. */
 export function MemberWorkbenchProbe({ appearance }) {
@@ -17,15 +18,20 @@ export function MemberWorkbenchProbe({ appearance }) {
     };
   }, [shell]);
   function select(next) {
-    if (next === view) return;
     navigation.current.abort();
     const nextNavigation = new AbortController();
     navigation.current = nextNavigation;
-    shell.requestLeave(() => {
-      if (nextNavigation.signal.aborted) return;
+    const finish = () => {
+      if (nextNavigation.signal.aborted || next === view) return;
       shell.setPageActive(true, next);
       setView(next);
-    }, nextNavigation.signal);
+    };
+    // The real sidebar still selects the already-open team workbench. That
+    // reselect must leave task detail instead of returning before any guard.
+    if (next === view && next === 'catalog' && requestCatalogReturn(nextNavigation.signal, finish))
+      return;
+    if (next === view) return;
+    shell.requestLeave(finish, nextNavigation.signal);
   }
   return (
     <div className="zhuma" style={{ display: 'flex' }}>

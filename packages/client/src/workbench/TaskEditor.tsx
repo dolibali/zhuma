@@ -31,6 +31,7 @@ import { PlanningChanges } from './PlanningChanges.js';
 import { ControlIcon } from './ControlIcon.js';
 import { useUnsavedChanges } from './UnsavedChanges.js';
 import { PlanningReadiness, usePlanningReadiness } from './PlanningReadiness.js';
+import { registerCatalogReturn } from './catalog-return.js';
 import { useLeaveConfirmation } from './useLeaveConfirmation.js';
 import { NativeRunLauncher } from '../run/NativeRunWorkspace.js';
 import type { NativeRunApi } from '../run/api.js';
@@ -75,6 +76,7 @@ export function TaskEditor({
   model,
   saved,
   close,
+  returnToCatalog,
   initialPlanning,
   backLabel = '任务清单',
   openWork,
@@ -89,6 +91,8 @@ export function TaskEditor({
   model: string;
   saved(state: Workbench): void;
   close(): void;
+  /** Sidebar reselect of the team workbench. Defaults to the breadcrumb close. */
+  returnToCatalog?: () => void;
   /** Accepted for existing embedders; theme preferences are managed in Settings. */
   appearance?: AppearanceStore;
   initialPlanning?: InitialPlanning;
@@ -210,6 +214,29 @@ export function TaskEditor({
   const canPlan = !api.member || memberCapability?.plan === true;
   useUnsavedChanges(dirty || busy || planning || !!proposal);
   const leaveConfirmation = useLeaveConfirmation(() => alive.current);
+  const catalogLeave = useRef({
+    blocked: false,
+    close,
+    returnToCatalog: returnToCatalog ?? close,
+  });
+  catalogLeave.current = {
+    blocked: dirty || busy || planning || !!proposal,
+    close,
+    returnToCatalog: returnToCatalog ?? close,
+  };
+  useEffect(
+    () =>
+      registerCatalogReturn((signal, proceed) => {
+        const now = catalogLeave.current;
+        const leave = () => {
+          now.returnToCatalog();
+          if (!signal.aborted) proceed();
+        };
+        const accepted = leaveConfirmation.request(leave, now.blocked, signal);
+        if (!accepted && !signal.aborted && !now.blocked) leave();
+      }),
+    [leaveConfirmation.request],
+  );
   const previewTask = useMemo(
     () =>
       proposal?.result.workflows.length ? { ...task, workflows: proposal.result.workflows } : null,
@@ -666,11 +693,14 @@ export function TaskEditor({
       {leaveConfirmation.dialog}
       <div className="zm-toolbar">
         <button
+          type="button"
           className="zm-quiet"
           onClick={() => {
-            if (api.member)
-              leaveConfirmation.request(close, dirty || busy || planning || !!proposal);
-            else if (!dirty || confirm('有未保存的修改，确定离开吗？')) close();
+            const blocked = dirty || busy || planning || !!proposal;
+            if (api.member) {
+              const accepted = leaveConfirmation.request(close, blocked);
+              if (!accepted && !blocked) close();
+            } else if (!dirty || confirm('有未保存的修改，确定离开吗？')) close();
           }}
         >
           <ControlIcon direction="left" /> {backLabel}
