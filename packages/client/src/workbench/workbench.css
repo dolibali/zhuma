@@ -1583,6 +1583,8 @@ html[data-platform='darwin'] .zm-shared-backend .zm-backend-bar {
   overflow: auto;
 }
 .zm-member-work > .zm-page {
+  display: flex;
+  flex-direction: column;
   flex: 1;
   width: 100%;
   margin: 0 auto;
@@ -1592,6 +1594,11 @@ html[data-platform='darwin'] .zm-shared-backend .zm-backend-bar {
 }
 .zm-member-work > .zm-page > h1 {
   margin: 0 0 20px;
+}
+.zm-member-work > .zm-page > .zm-efficiency-export {
+  flex: none;
+  margin-top: auto;
+  padding-top: 20px;
 }
 .zhuma .zm-catalog-heading {
   position: absolute;

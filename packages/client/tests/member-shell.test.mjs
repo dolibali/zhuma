@@ -332,6 +332,27 @@ test('root shell static contract: account stays in footer and the shared main ex
   shell.stop();
 });
 
+test('my work places efficiency export after the execution workspace', async () => {
+  const { shell } = fixture();
+  shell.start();
+  await tick();
+  shell.setPageActive(true);
+  const html = renderToStaticMarkup(createElement(MemberExecutionPage, { shell }));
+  const mainStart = html.indexOf('<main');
+  const mainEnd = html.indexOf('</main>');
+  const page = html.slice(mainStart, mainEnd);
+  const heading = page.indexOf('我的工作');
+  const workspace = page.indexOf('zm-execution-workspace');
+  const footer = page.indexOf('zm-efficiency-export');
+  assert.ok(heading >= 0);
+  assert.ok(workspace > heading);
+  assert.ok(footer > workspace);
+  assert.equal(page.slice(0, workspace).includes('导出效率'), false);
+  assert.match(page.slice(footer), /导出效率 JSON/);
+  assert.match(page.slice(footer), /导出效率 CSV/);
+  shell.stop();
+});
+
 test('member entries share their controllers while page changes fence an old deferred leave', async () => {
   const { shell } = fixture();
   shell.start();

@@ -44,6 +44,7 @@ test('shows two export actions and no dashboard', () => {
       },
     }),
   );
+  assert.match(html, /zm-efficiency-export/);
   assert.match(html, /导出效率 JSON/);
   assert.match(html, /导出效率 CSV/);
   assert.equal(html.includes('看板'), false);

@@ -236,7 +236,6 @@ function MemberWork({
       ) : (
         <main className="zm-page">
           <h1>我的工作</h1>
-          <EfficiencyExportControls fetcher={fetcher} />
           <div className="zm-execution-workspace">
             <StartablePlansPanel api={api} onStarted={started} />
             <ExecutionWorkspace
@@ -245,6 +244,7 @@ function MemberWork({
               {...(nativeExecution ? { nativeRun } : {})}
             />
           </div>
+          <EfficiencyExportControls fetcher={fetcher} />
         </main>
       )}
     </div>
