@@ -117,6 +117,7 @@ const unknown = (
   acceptedNodes: null,
   byStatus: null,
   assigneeCounts: null,
+  humanReady: null,
   resources: null,
 });
 
@@ -220,6 +221,7 @@ export function taskProgressProjection(
     const byStatus = zero();
     const assigneeCounts = { human: 0, expert: 0 };
     for (const handoff of expected) assigneeCounts[handoff.assignee.kind]++;
+    let humanReady = 0;
     const resources = { authorHeld: 0, reviewHeld: 0, stopRequested: 0 };
     if (receipt === undefined && raw.every((node) => node === undefined))
       return {
@@ -230,6 +232,7 @@ export function taskProgressProjection(
         acceptedNodes: 0,
         byStatus,
         assigneeCounts,
+        humanReady,
         resources,
       };
     if (
@@ -294,6 +297,8 @@ export function taskProgressProjection(
         return unknown(target, 'invalid-state', count);
       }
       byStatus[node.command.status]++;
+      if (node.command.status === 'ready' && expected[index]!.assignee.kind === 'human')
+        humanReady++;
       affected ||= node.command.upstreamAffected;
     }
     return {
@@ -312,6 +317,7 @@ export function taskProgressProjection(
       acceptedNodes,
       byStatus,
       assigneeCounts,
+      humanReady,
       resources,
     };
   });

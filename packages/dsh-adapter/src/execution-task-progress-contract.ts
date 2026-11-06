@@ -36,6 +36,8 @@ interface KnownCounts {
   readonly acceptedNodes: number;
   readonly byStatus: Readonly<Record<NodeStatus, number>>;
   readonly assigneeCounts: { readonly human: number; readonly expert: number };
+  /** Human assignees whose node status is `ready`: delivery is waiting on that person. */
+  readonly humanReady: number;
   readonly resources: TaskProgressResources;
 }
 export type TaskProgressUnknownReason =
@@ -67,6 +69,7 @@ export type TaskProgressRow =
       readonly acceptedNodes: null;
       readonly byStatus: null;
       readonly assigneeCounts: null;
+      readonly humanReady: null;
       readonly resources: null;
     };
 export interface TaskProgressValue {

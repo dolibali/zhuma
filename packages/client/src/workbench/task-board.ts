@@ -25,5 +25,6 @@ export function taskBoardColumn(
   if (row.byStatus['in-review']) return 'review';
   if (row.byStatus['needs-revision'] || row.byStatus['waiting-for-input'] || row.byStatus.failed)
     return 'attention';
-  return row.byStatus.running ? 'running' : 'attention';
+  // A human assignee in `ready` is waiting to deliver, so the task is already in progress.
+  return row.byStatus.running || row.humanReady ? 'running' : 'attention';
 }

@@ -22,6 +22,8 @@ interface KnownCounts {
   readonly acceptedNodes: number;
   readonly byStatus: Readonly<Record<NodeStatus, number>>;
   readonly assigneeCounts: { readonly human: number; readonly expert: number };
+  /** Human assignees whose node status is `ready`: delivery is waiting on that person. */
+  readonly humanReady: number;
   readonly resources: TaskProgressResources;
 }
 export type TaskProgressUnknownReason =
@@ -49,6 +51,7 @@ export type TaskProgressRow =
       readonly acceptedNodes: null;
       readonly byStatus: null;
       readonly assigneeCounts: null;
+      readonly humanReady: null;
       readonly resources: null;
     };
 export interface TaskProgressValue {
@@ -99,6 +102,7 @@ function row(raw: unknown, expected: TaskProgressTarget): TaskProgressRow {
     'acceptedNodes',
     'byStatus',
     'assigneeCounts',
+    'humanReady',
     'resources',
   ]);
   const received = target(value.target);
@@ -109,7 +113,8 @@ function row(raw: unknown, expected: TaskProgressTarget): TaskProgressRow {
       value.acceptedNodes !== null ||
       value.byStatus !== null ||
       value.assigneeCounts !== null ||
-      value.resources !== null
+      value.resources !== null ||
+      value.humanReady !== null
     )
       invalid();
     return {
@@ -130,6 +135,7 @@ function row(raw: unknown, expected: TaskProgressTarget): TaskProgressRow {
       acceptedNodes: null,
       byStatus: null,
       assigneeCounts: null,
+      humanReady: null,
       resources: null,
     };
   }
@@ -152,6 +158,7 @@ function row(raw: unknown, expected: TaskProgressTarget): TaskProgressRow {
     reviewHeld: count(held.reviewHeld),
     stopRequested: count(held.stopRequested),
   };
+  const humanReady = count(value.humanReady, Math.min(byStatus.ready, assigneeCounts.human));
   if (
     assigneeCounts.human + assigneeCounts.expert !== expectedNodes ||
     acceptedNodes > byStatus.completed
@@ -163,6 +170,7 @@ function row(raw: unknown, expected: TaskProgressTarget): TaskProgressRow {
     acceptedNodes,
     byStatus,
     assigneeCounts,
+    humanReady,
     resources,
   };
   const total = Object.values(byStatus).reduce((a, b) => a + b, 0);
