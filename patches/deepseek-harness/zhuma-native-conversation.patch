@@ -1,0 +1,813 @@
+diff --git a/packages/api/gateway/README.md b/packages/api/gateway/README.md
+--- a/packages/api/gateway/README.md
++++ b/packages/api/gateway/README.md
+@@ -106,3 +106,7 @@
+ </details>
+ 
+ The ./stream-protocol export supplies the shared Remote stream framing and parser to native Desktop callers. These callers use the same authenticated WebSocket endpoint as the browser client.
++
++## Controlled Session commands
++
++The registered Session admission hook also checks `commands/execute`, receiving the namespaced method and its validated `agentId` argument before resolving the receiver. A native Session cannot use slash-command execution to bypass its externally authorized transport. Unloading a required admission registration leaves the gate closed.
+diff --git a/packages/api/gateway/src/index.ts b/packages/api/gateway/src/index.ts
+--- a/packages/api/gateway/src/index.ts
++++ b/packages/api/gateway/src/index.ts
+@@ -844,6 +844,7 @@
+     // Covers unary and mux streams, including already-live prompt/queue/cancel
+     // and cold history/create. A refusing guard must activate no Agent lookup.
+     if (request.namespace === 'session' || request.namespace === 'dshAcp'
++      || (request.namespace === 'commands' && request.method === 'execute')
+       || (request.namespace === 'workspace' && request.method === 'archiveSession')) {
+       const admission = this.sessionAdmission
+       if (admission === undefined) {
+@@ -852,7 +853,8 @@
+       } else {
+         const signal = request.signal ?? NEVER_ABORTED_SIGNAL
+         signal.throwIfAborted()
+-        const method = request.namespace === 'dshAcp' ? `dshAcp/${request.method}` : request.method
++        const method = request.namespace === 'dshAcp' || request.namespace === 'commands'
++          ? `${request.namespace}/${request.method}` : request.method
+         const allowed = await admission.admit(method, validated, signal)
+         signal.throwIfAborted()
+         if (this.sessionAdmission !== admission || allowed !== true) throw new TypertGatewayError(
+diff --git a/packages/api/gateway/tests/native-conversation-admission.host.spec.ts b/packages/api/gateway/tests/native-conversation-admission.host.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/api/gateway/tests/native-conversation-admission.host.spec.ts
+@@ -0,0 +1,43 @@
++/** Real Gateway dispatch with a finite command receiver; no Agent or model. */
++import { expect, it } from 'vitest'
++import { Context, Service } from '@deepseek-ai/cordis'
++import { bindTypertRemote, Remote, type InvocationDescriptor } from '@deepseek-ai/dsh-typert-protocol'
++import TypertRegistry from '@deepseek-ai/dsh-typert-registry'
++import RemoteAccessService from '@deepseek-ai/dsh-api-remote-access'
++import TypertGatewayService from '../src/index.ts'
++import { z } from 'zod'
++import { ownerPeer } from './peer.ts'
++
++class NativeCommandFixture extends Service {
++  readonly typertRemote = bindTypertRemote(this, 'nativeCommandFixture', { namespace: 'commands' })
++  calls = 0
++  constructor(ctx: Context) { super(ctx, 'nativeCommandFixture') }
++  @Remote
++  execute(agentId: string): string { this.calls++; return agentId }
++}
++const text = { mode: 'strict', typeSymbol: '@fixture/native#text', create: () => z.string() } as const
++const descriptor: InvocationDescriptor = {
++  id: '@fixture/native#commands/execute', service: 'nativeCommandFixture', namespace: 'commands', method: 'execute',
++  invocation: { kind: 'direct' }, parameters: [{ name: 'agentId', wire: 'agentId', source: 'json', codec: text }], result: text,
++}
++it('native slash execution shares the required Session gate before receiver invocation', async () => {
++  const ctx = new Context()
++  await ctx.plugin(TypertRegistry)
++  await ctx.plugin(RemoteAccessService)
++  await ctx.plugin(TypertGatewayService)
++  await ctx.plugin(NativeCommandFixture)
++  const unregister = ctx.typert.register({ package: '@fixture/native', face: 'host', schemas: [],
++    model: { services: [], events: [], objects: [] }, invocations: [descriptor] })
++  const seen: unknown[] = []
++  const dispose = ctx.typertGateway.registerSessionAdmission(async (method, args) => {
++    seen.push({ method, args }); return args.agentId === 'ordinary'
++  })
++  const call = (agentId: string) => ctx.typertGateway.invoke({ peer: ownerPeer(ctx), namespace: 'commands', method: 'execute', args: { agentId } })
++  try {
++    await expect(call('task')).rejects.toMatchObject({ code: 'gateway/invocation-unavailable' })
++    expect(seen).toEqual([{ method: 'commands/execute', args: { agentId: 'task' } }])
++    await expect(call('ordinary')).resolves.toBe('ordinary')
++    dispose()
++    await expect(call('ordinary')).rejects.toMatchObject({ code: 'gateway/service-unavailable' })
++  } finally { dispose(); await unregister(); await ctx.fiber.dispose() }
++})
+diff --git a/packages/api/session-controller/README.md b/packages/api/session-controller/README.md
+--- a/packages/api/session-controller/README.md
++++ b/packages/api/session-controller/README.md
+@@ -135,3 +135,9 @@
+ None.
+ 
+ </details>
++
++## Externally owned Sessions
++
++Host integrations can call `followReadOnly` after their own authorization. It retains the original journal and assistant frames without promoting a prepared Session to an Agent; the ordinary `follow` behavior stays unchanged. This method is not exposed as a Remote endpoint.
++
++Client integrations install `sessions.registerSessionDelegate(id, delegate)` before retaining a Session. The original Session, submission identities, event stream and reference counts remain the owners of Client state. Releasing or aborting the delegate invalidates that generation; later acquisitions require a new delegate, and stale references never fall back to ordinary RPC. Only page, follow, prompt and cancel have delegate adapters. Other mutations are unavailable for a delegated Session. Host authorization remains mandatory.
+diff --git a/packages/api/session-controller/src/client/contract/sessions.ts b/packages/api/session-controller/src/client/contract/sessions.ts
+--- a/packages/api/session-controller/src/client/contract/sessions.ts
++++ b/packages/api/session-controller/src/client/contract/sessions.ts
+@@ -15,6 +15,7 @@
+ import type { SessionFace } from './session.ts'
+ import type { ObservableSnapshot } from '@deepseek-ai/dsh-client-store'
+ import type { SessionReferenceSource } from '../index.ts'
++import type { SessionRemote } from '../transport.ts'
+ 
+ export type { AgentContext } from '../scope.ts'
+ 
+@@ -45,8 +46,23 @@
+   readonly retainedBy: Readonly<Partial<Record<SessionReferenceSource, number>>>
+ }
+ 
++/** Explicit transport for an externally authorized Session, installed before retaining it.
++ * Reuses the original Client Session and journal; provides no Host Agent ownership.
++ * Other Session mutations remain unavailable until they have an explicit adapter.
++ */
++export interface SessionDelegate extends Pick<SessionRemote, 'page' | 'follow' | 'prompt' | 'cancel'> {
++  readonly signal: AbortSignal
++}
++
+ /** The sessions-service face injected as `ctx.sessions`. */
+ export interface ISessions {
++  /**
++   * Install before retaining; revocation retires the exact Client generation without raw RPC fallback.
++   * @param id - externally owned Session identity.
++   * @param delegate - authorized operations and their cancellation lifetime.
++   * @returns idempotent revocation for this exact installation.
++   */
++  registerSessionDelegate(id: SessionId, delegate: SessionDelegate): () => void
+   /** Host catalog and local reference-source counts; navigation belongs to view owners. */
+   readonly list: ObservableSnapshot<SessionListState>
+   /**
+diff --git a/packages/api/session-controller/src/client/contract/snapshot.ts b/packages/api/session-controller/src/client/contract/snapshot.ts
+--- a/packages/api/session-controller/src/client/contract/snapshot.ts
++++ b/packages/api/session-controller/src/client/contract/snapshot.ts
+@@ -67,6 +67,8 @@
+ 
+ /** Immutable Session lifecycle and control snapshot. */
+ export interface SessionSnapshot {
++  /** Externally authorized transport; only explicitly adapted operations are available. */
++  readonly controlled?: true
+   readonly sessionId: SessionId
+   /** Local prompt-submission echoes not yet observed as durable events or queue occurrences. */
+   readonly pendingSubmissions: readonly PendingSubmission[]
+diff --git a/packages/api/session-controller/src/client/index.ts b/packages/api/session-controller/src/client/index.ts
+--- a/packages/api/session-controller/src/client/index.ts
++++ b/packages/api/session-controller/src/client/index.ts
+@@ -50,7 +50,7 @@
+   SubmissionHandle,
+ } from './contract/session.ts'
+ export type {
+-  ISessions, SessionReference, SessionRetainInfo, SessionRetainOptions, SessionTarget,
++  ISessions, SessionDelegate, SessionReference, SessionRetainInfo, SessionRetainOptions, SessionTarget,
+ } from './contract/sessions.ts'
+ export { MutableSessionEventSource } from './contract/events.ts'
+ export type {
+diff --git a/packages/api/session-controller/src/client/sessions/service.ts b/packages/api/session-controller/src/client/sessions/service.ts
+--- a/packages/api/session-controller/src/client/sessions/service.ts
++++ b/packages/api/session-controller/src/client/sessions/service.ts
+@@ -13,7 +13,7 @@
+ import type { SessionEventSource } from '../contract/events.ts'
+ import type { SessionFace } from '../contract/session.ts'
+ import type {
+-  AgentContext, ISessions, SessionReference, SessionRetainInfo, SessionRetainOptions, SessionTarget,
++  AgentContext, ISessions, SessionDelegate, SessionReference, SessionRetainInfo, SessionRetainOptions, SessionTarget,
+ } from '../contract/sessions.ts'
+ import type { SessionReferenceSource } from '../index.ts'
+ import { createScope, scopeIdentityOf, scopeOf as scopeTagOf } from '../scope.ts'
+@@ -244,6 +244,9 @@
+   /** The object-layer instance cluster and frame dispatch entry. */
+   private readonly manager: SessionManager
+   private readonly scopes = new Map<SessionId, ScopeRecord>()
++  // A protected identity never becomes an ordinary transport between grants or generations.
++  private readonly delegatedIds = new Set<SessionId>()
++  private readonly delegates = new Map<SessionId, Session>()
+   /** Stable per-id sources retained for the Client root lifetime, including across generation replacement. */
+   private readonly retainObservers = new Map<SessionId, RetentionObserver>()
+   private readonly scopeDrops = new Set<Promise<void>>()
+@@ -282,11 +285,38 @@
+     rootCtx.reflect.provide('sessions', this, undefined)
+   }
+ 
++  registerSessionDelegate(id: SessionId, delegate: SessionDelegate): () => void {
++    delegate.signal.throwIfAborted()
++    if (this.closed || this.scopes.has(id) || this.delegates.has(id)) throw new Error('Session delegation requires an unretained generation')
++    const session = this.manager.get(id)
++    session.configureDelegate(delegate)
++    this.delegatedIds.add(id)
++    this.delegates.set(id, session)
++    let active = true
++    const dispose = (): void => {
++      if (!active) return
++      active = false
++      delegate.signal.removeEventListener('abort', dispose)
++      session.revokeDelegate(delegate)
++      if (this.delegates.get(id) === session) this.delegates.delete(id)
++      const record = this.scopes.get(id)
++      if (record?.session === session) this.retireScope(id, record)
++      else void this.manager.drop(id, session)
++    }
++    delegate.signal.addEventListener('abort', dispose, { once: true })
++    return dispose
++  }
++
+   retain(target: SessionTarget, options: SessionRetainOptions): SessionReference {
+     const { source, signal } = options
+     signal?.throwIfAborted()
+     if (this.closed) throw new Error('Session Controller is disposed')
+     const id = this.manager.resolveTarget(target)
++    if (this.delegatedIds.has(id)) {
++      const delegate = this.delegates.get(id)
++      if (delegate === undefined || this.manager.get(id) !== delegate)
++        throw new Error('Session delegate authority is unavailable')
++    }
+     const reference = this.retainScope(id, source)
+     try {
+       reference.attachOpening(this.manager.get(id).open(), signal)
+diff --git a/packages/api/session-controller/src/client/sessions/session.ts b/packages/api/session-controller/src/client/sessions/session.ts
+--- a/packages/api/session-controller/src/client/sessions/session.ts
++++ b/packages/api/session-controller/src/client/sessions/session.ts
+@@ -33,6 +33,7 @@
+ import { RemoteError } from '@deepseek-ai/dsh-typert-protocol'
+ import type { RemoteFailure, RemoteResult } from '@deepseek-ai/dsh-typert-protocol'
+ import type { SessionRemotes } from './remotes.ts'
++import type { SessionDelegate } from '../contract/sessions.ts'
+ import { ProjectionValueStore } from './projection-store.ts'
+ import type { ProjectionsBaseline } from './projection-store.ts'
+ import { resolvedClientTimeZone } from '../time-zone.ts'
+@@ -94,6 +95,46 @@
+  * remaining public members are Session Controller internals.
+  */
+ export class Session implements SessionFace {
++  private delegate: SessionDelegate | undefined
++  private delegated = false
++
++  /** Controller-owned transport installation; never mutates a Session instance's methods. */
++  configureDelegate(delegate: SessionDelegate): void {
++    if (this.delegated || this.openState !== 'cold') throw new Error('Session delegate must precede history opening')
++    this.delegated = true
++    this.delegate = delegate
++    this.snapshotCache = this.buildSnapshot()
++    this.notifier.markDirty()
++  }
++
++  /** Keep the protected classification after revocation; retained stale faces cannot use raw RPC. */
++  revokeDelegate(expected: SessionDelegate): void {
++    if (this.delegate === expected) this.delegate = undefined
++  }
++
++  private delegationError(operation: string): RemoteError<'gateway/interactions-forbidden'> {
++    return new RemoteError('gateway/interactions-forbidden',
++      'This operation is unavailable in this controlled Session.', { endpoint: `session/${operation}` })
++  }
++
++  private currentDelegate(): SessionDelegate {
++    const delegate = this.delegate
++    if (delegate === undefined || delegate.signal.aborted) throw this.delegationError('delegate')
++    return delegate
++  }
++
++  private async callDelegate<T>(operation: string, invoke: (delegate: SessionDelegate) => Promise<RemoteResult<T>>): Promise<RemoteResult<T>> {
++    try {
++      const delegate = this.currentDelegate()
++      const result = await invoke(delegate)
++      if (this.delegate !== delegate || delegate.signal.aborted) throw this.delegationError(operation)
++      return result
++    } catch {
++      // Remote methods return failures; delegated cancellation must also retire the original input echo.
++      return { ok: false, error: this.delegationError(operation) }
++    }
++  }
++
+   // ---- Window and derived state (all private; the snapshot is the only read API) ----
+   private baseSeq = SessionLogOffset(0)
+   private hasMore = false
+@@ -266,15 +307,18 @@
+     if (this.blankBit) this.firstPromptPendingTurn = true
+     this.notifier.markDirty()
+     let result: RemoteResult<{ accepted: true }>
+-    if (this.address === undefined) {
++    if (this.delegated || this.address === undefined) {
+       const clientTimeZone = resolvedClientTimeZone()
+-      result = await this.remote.session.prompt({
++      const request = {
+         requestId: requestId ?? randomUUID() as SessionRequestId,
+         sessionId: this.sessionId,
+         mode,
+         content,
+         clientTimeZone,
+-      }, signal)
++      }
++      result = this.delegated
++        ? await this.callDelegate('prompt', delegate => delegate.prompt(request, signal))
++        : await this.remote.session.prompt(request, signal)
+     } else if (content.some(part => part.type === 'file')) {
+       result = {
+         ok: false,
+@@ -322,6 +366,7 @@
+   async readAttachment(
+     attachmentId: AttachmentIdType,
+   ): Promise<RemoteResult<{ attachment: ImageAttachmentRef; data: Uint8Array }>> {
++    if (this.delegated) return { ok: false, error: this.delegationError('attachment') }
+     const result = await this.remote.session.attachment({
+       sessionId: this.sessionId,
+       attachmentId,
+@@ -334,6 +379,7 @@
+ 
+   /** Apply one operation to a still-pending queue occurrence. */
+   async updateQueue(itemId: MessageId, action: QueueAction): Promise<RemoteResult<{ accepted: true }>> {
++    if (this.delegated) return { ok: false, error: this.delegationError('updateQueue') }
+     return this.remote.session.updateQueue({ sessionId: this.sessionId, itemId, action })
+   }
+ 
+@@ -346,13 +392,15 @@
+    */
+   async cancel(): Promise<RemoteResult<{ accepted: true }>> {
+     const address = this.address
+-    const result = address !== undefined
+-      ? await this.remote.subagents.interruptByParent(
+-        address.childSessionId,
+-        address.parentSessionId,
+-        'continuable',
+-      )
+-      : await this.remote.session.cancel({ sessionId: this.sessionId })
++    const result = this.delegated
++      ? await this.callDelegate('cancel', delegate => delegate.cancel({ sessionId: this.sessionId }))
++      : address !== undefined
++        ? await this.remote.subagents.interruptByParent(
++          address.childSessionId,
++          address.parentSessionId,
++          'continuable',
++        )
++        : await this.remote.session.cancel({ sessionId: this.sessionId })
+     if (!result.ok) {
+       this.promptError = { op: 'stop', error: result.error }
+       this.notifier.markDirty()
+@@ -370,6 +418,7 @@
+    * @returns the rename result (normalized accepted title + title event seq).
+    */
+   async rename(title: string): Promise<RemoteResult<{ title: string; seq: SessionSeq }>> {
++    if (this.delegated) return { ok: false, error: this.delegationError('rename') }
+     const result = await this.remote.session.rename({ sessionId: this.sessionId, title })
+     if (!result.ok) return result
+     const seq = SessionSeq(result.value.seq)
+@@ -385,6 +434,7 @@
+    * @returns the admission result.
+    */
+   async command(line: string): Promise<RemoteResult<{ matched: boolean }>> {
++    if (this.delegated) return { ok: false, error: this.delegationError('command') }
+     const result = await this.remote.commands.execute(this.sessionId, line, [])
+     if (!result.ok) return result
+     return { ok: true, value: { matched: result.value !== undefined } }
+@@ -597,6 +647,7 @@
+    * @returns when the Remote iterator has completed teardown.
+    */
+   async dispose(): Promise<void> {
++    this.delegate = undefined
+     this.stopObservingInbox()
+     // Unsettled echoes retire as failed so their owners can restore or
+     // release browser resources; admitted echoes keep their observed outcome.
+@@ -617,7 +668,14 @@
+     this.openState = 'loading'
+     this.openError = null
+     this.notifier.markDirty()
+-    const events = new SessionEventStream(this.remote, this.sessionAddress(), {
++    const transport = this.delegated ? {
++      $stream: this.remote.$stream,
++      session: {
++        page: ((...args) => this.currentDelegate().page(...args)) as SessionDelegate['page'],
++        follow: ((...args) => this.currentDelegate().follow(...args)) as SessionDelegate['follow'],
++      },
++    } : this.remote
++    const events = new SessionEventStream(transport, this.sessionAddress(), {
+       publish: (change) => {
+         if (generation !== this.openGeneration || this.events !== events) return
+         this.acceptEventChange(change)
+@@ -889,6 +947,7 @@
+     const identity = this.projections.values().subagent
+     return {
+       sessionId: this.sessionId,
++      ...(this.delegated ? { controlled: true as const } : {}),
+       pendingSubmissions: this.pendingSubmissions,
+       running: this.running,
+       subagent: this.address === undefined
+diff --git a/packages/api/session-controller/src/client/transport.ts b/packages/api/session-controller/src/client/transport.ts
+--- a/packages/api/session-controller/src/client/transport.ts
++++ b/packages/api/session-controller/src/client/transport.ts
+@@ -147,7 +147,7 @@
+    * @param options - Session event-window destinations.
+    */
+   constructor(
+-    private readonly remote: SessionRemotes,
++    private readonly remote: Pick<SessionRemotes, '$stream'> & { readonly session: Pick<SessionRemote, 'page' | 'follow'> },
+     private readonly address: SessionAddress,
+     options: SessionEventStreamOptions,
+   ) {
+diff --git a/packages/api/session-controller/src/history.ts b/packages/api/session-controller/src/history.ts
+--- a/packages/api/session-controller/src/history.ts
++++ b/packages/api/session-controller/src/history.ts
+@@ -115,9 +115,10 @@
+    * Follow events appended after an initial cursor on one durable address.
+    * @param request - durable address and last committed sequence already held by the caller.
+    * @param signal - stream cancellation owned by the Remote carrier.
++   * @param activate - false keeps externally owned Sessions passive; never a Remote request field.
+    * @returns a complete opening snapshot followed by gap-free durable events and opted-in assistant frames.
+    */
+-  async *follow(request: SessionFollowRequest, signal: AbortSignal): AsyncIterable<SessionFollowFrame> {
++  async *follow(request: SessionFollowRequest, signal: AbortSignal, activate = true): AsyncIterable<SessionFollowFrame> {
+     validateHistoryWindow(request)
+     const { address } = request
+     const target = addressId(address)
+@@ -201,7 +202,7 @@
+           : projectionBlock(source.projections),
+         ...assistantStream === undefined ? {} : { assistantStream },
+       }
+-      if (address.kind === 'session' && source.source === 'prepared') {
++      if (activate && address.kind === 'session' && source.source === 'prepared') {
+         const promotion = source.retain()
+         try {
+           this.promote(promotion)
+diff --git a/packages/api/session-controller/src/index.ts b/packages/api/session-controller/src/index.ts
+--- a/packages/api/session-controller/src/index.ts
++++ b/packages/api/session-controller/src/index.ts
+@@ -539,6 +539,16 @@
+   }
+ 
+   /**
++   * Observe an externally owned Session without resolving or resuming its Agent. Host-only.
++   * @param request - original durable address and history window.
++   * @param signal - authority and caller lifetime.
++   * @returns the original full journal and assistant frames.
++   */
++  followReadOnly(request: SessionFollowRequest, signal: AbortSignal): AsyncIterable<SessionFollowFrame> {
++    return this.history.follow(request, signal, false)
++  }
++
++  /**
+    * Read exact projections, returning cached hints only when migration is required.
+    * @param request - Session whose current values are required.
+    * @param signal - cancellation for the Session read.
+diff --git a/packages/api/session-controller/tests/native-delegate.client.spec.ts b/packages/api/session-controller/tests/native-delegate.client.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/api/session-controller/tests/native-delegate.client.spec.ts
+@@ -0,0 +1,148 @@
++/** Original Session submission contracts; no Agent or model. */
++import { describe, expect, it, vi } from 'vitest'
++import { Session } from '../src/client/sessions/session.ts'
++import type { SessionRemotes } from '../src/client/sessions/remotes.ts'
++import type { SessionDelegate } from '../src/client/contract/sessions.ts'
++import { SessionId } from '@deepseek-ai/dsh-session/types'
++import type { SessionFollowFrame, SessionFollowRequest } from '../src/types.ts'
++import { Context } from '@deepseek-ai/cordis'
++import { RemoteStream, type RemoteStreamOptions } from '@deepseek-ai/dsh-api-gateway/client'
++import { ClientSessions } from '../src/client/sessions/service.ts'
++const sid = SessionId('native-work-proof')
++const unsupported = (): never => { throw new Error('unexpected fixture operation') }
++function remotesFor(session: Partial<SessionRemotes['session']> = {}): SessionRemotes {
++  return {
++    session: {
++      attachment: unsupported, cancel: unsupported, canOpenWorkspacePath: unsupported,
++      control: unsupported, create: unsupported, follow: unsupported, fork: unsupported,
++      initializeDefaultModel: unsupported, list: unsupported, modelCatalog: unsupported,
++      openWorkspacePath: unsupported, page: unsupported, projections: unsupported,
++      prompt: unsupported, rename: unsupported, search: unsupported, selectModel: unsupported,
++      updateQueue: unsupported, workspacePathApplications: unsupported, ...session,
++    },
++    commands: { execute: unsupported },
++    subagents: { prompt: unsupported, interruptByParent: unsupported },
++    $stream<Item>(options: RemoteStreamOptions<Item>) {
++      return new RemoteStream({ generation: {
++        getSnapshot: () => ({ id: 1, host: { home: '/fixture' } }), subscribe: () => () => {},
++      } }, options)
++    },
++  }
++}
++function bench() {
++  const rawPrompt = vi.fn(async () => ({ ok: true as const, value: { accepted: true as const } }))
++  const rawCancel = vi.fn(async () => ({ ok: true as const, value: { accepted: true as const } }))
++  const command = vi.fn()
++  const raw = { ...remotesFor({ prompt: rawPrompt, cancel: rawCancel }), commands: { execute: command } }
++  const session = new Session(sid, raw)
++  const abort = new AbortController()
++  const prompt = vi.fn(async () => ({ ok: true as const, value: { accepted: true as const } }))
++  const cancel = vi.fn(async () => ({ ok: true as const, value: { accepted: true as const } }))
++  const delegate: SessionDelegate = { signal: abort.signal, prompt, cancel, page: unsupported, follow: unsupported }
++  return { session, rawPrompt, rawCancel, command, abort, delegate, prompt, cancel }
++}
++describe('controlled native Session delegate', () => {
++  it('retires the original submission when its delegated transport throws', async () => {
++    const b = bench()
++    b.session.configureDelegate(b.delegate)
++    const onRetire = vi.fn()
++    const submission = b.session.beginSubmission({ mode: 'queue', text: 'retryable draft', attachments: [], onRetire })
++    b.prompt.mockRejectedValueOnce(new Error('private transport detail'))
++    await expect(b.session.prompt([{ type: 'text', text: 'retryable draft' }], 'queue', undefined, submission.requestId))
++      .resolves.toMatchObject({ ok: false, error: { code: 'gateway/interactions-forbidden' } })
++    expect(b.session.getSnapshot().pendingSubmissions).toEqual([])
++    expect(onRetire).toHaveBeenCalledOnce()
++    expect(b.session.getSnapshot().promptError?.error.message).not.toContain('private transport')
++    expect(b.rawPrompt).not.toHaveBeenCalled()
++  })
++  it.each(['abort', 'release'])('uses original manager/mainView retention and retires its exact binding on %s', async (mode) => {
++    const b = bench()
++    const rawFollow = vi.fn()
++    const ctx = new Context()
++    const svc = new ClientSessions(ctx, remotesFor({
++      list: async () => ({ ok: true, value: { items: [{ sessionId: sid, agentAvailable: true,
++        running: false, blank: false, updatedAt: 1, cwd: '/fixture' }] } }),
++      follow: rawFollow,
++    }))
++    const follow = vi.fn((_request: SessionFollowRequest, provided?: AbortSignal) => {
++      const lifetime = new AbortController()
++      const signal = provided ? AbortSignal.any([provided, lifetime.signal]) : lifetime.signal
++      const iterator = (async function* (): AsyncGenerator<SessionFollowFrame> {
++        yield { type: 'snapshot', header: { id: sid, version: 1, createdAt: 1, isSeeded: false },
++          cursor: -1, records: [], hasMore: false,
++          projections: { asOfSeq: -1, values: {} }, assistantStream: { revision: 0 } }
++        await new Promise<void>(resolve => {
++          if (signal.aborted) resolve()
++          else signal.addEventListener('abort', () => resolve(), { once: true })
++        })
++      })()
++      return { [Symbol.asyncIterator]: () => iterator, send: unsupported, end() {}, dispose() { lifetime.abort() } }
++    })
++    try {
++      await svc.refresh()
++      svc.registerSessionDelegate(sid, { ...b.delegate, follow })
++      expect(follow).not.toHaveBeenCalled()
++      expect(svc.retainInfo(sid).getSnapshot().referenceCount).toBe(0)
++      const reference = svc.retain(sid, { source: 'mainView' })
++      await reference.ready
++      const face = reference.binding.session
++      expect(face.getSnapshot().controlled).toBe(true)
++      expect(svc.retainInfo(sid).getSnapshot().retainedBy).toEqual({ mainView: 1 })
++      expect(follow).toHaveBeenCalledOnce()
++      expect(rawFollow).not.toHaveBeenCalled()
++      if (mode === 'abort') b.abort.abort()
++      else reference.release()
++      expect(svc.retainInfo(sid).getSnapshot().referenceCount).toBe(0)
++      expect(() => reference.binding).toThrow()
++      expect(() => svc.retain(sid, { source: 'mainView' })).toThrow('delegate authority')
++      await expect(face.prompt([{ type: 'text', text: 'late' }], 'queue')).resolves.toMatchObject({ ok: false, error: { code: 'gateway/interactions-forbidden' } })
++      expect(rawFollow).not.toHaveBeenCalled()
++      reference.release()
++    } finally { b.abort.abort(); await ctx.fiber.dispose() }
++  })
++  it('preserves original requestId, text, mode and echo with one delegated send', async () => {
++    const b = bench()
++    b.session.configureDelegate(b.delegate)
++    const submission = b.session.beginSubmission({ mode: 'queue', text: '检查接口', attachments: [] })
++    const signal = new AbortController().signal
++    await expect(b.session.prompt([{ type: 'text', text: '检查接口' }], 'queue', signal, submission.requestId))
++      .resolves.toEqual({ ok: true, value: { accepted: true } })
++    expect(b.prompt).toHaveBeenCalledTimes(1)
++    expect(b.prompt).toHaveBeenCalledWith(expect.objectContaining({
++      requestId: submission.requestId, sessionId: sid, mode: 'queue', content: [{ type: 'text', text: '检查接口' }],
++    }), signal)
++    expect(b.session.getSnapshot().pendingSubmissions[0]?.requestId).toBe(submission.requestId)
++    expect(b.rawPrompt).not.toHaveBeenCalled()
++    await b.session.cancel()
++    expect(b.cancel).toHaveBeenCalledOnce()
++    expect(b.rawCancel).not.toHaveBeenCalled()
++  })
++  it('never falls back after revocation', async () => {
++    const b = bench()
++    b.session.configureDelegate(b.delegate)
++    b.abort.abort()
++    await expect(b.session.prompt([{ type: 'text', text: 'late' }], 'queue')).resolves.toMatchObject({ ok: false, error: { code: 'gateway/interactions-forbidden' } })
++    b.session.revokeDelegate(b.delegate)
++    await expect(b.session.cancel()).resolves.toMatchObject({ ok: false, error: { code: 'gateway/interactions-forbidden' } })
++    expect(b.prompt).not.toHaveBeenCalled()
++    expect(b.rawPrompt).not.toHaveBeenCalled()
++    expect(b.rawCancel).not.toHaveBeenCalled()
++  })
++  it('rejects slash commands, queue edits and rename without raw fallback', async () => {
++    const b = bench()
++    b.session.configureDelegate(b.delegate)
++    expect(await b.session.command('/anything')).toMatchObject({ ok: false })
++    expect(await b.session.rename('new')).toMatchObject({ ok: false })
++    expect(await b.session.updateQueue('item' as never, 'remove' as never)).toMatchObject({ ok: false })
++    expect(b.command).not.toHaveBeenCalled()
++    expect(b.prompt).not.toHaveBeenCalled()
++  })
++  it('preserves ordinary routing', async () => {
++    const b = bench()
++    await b.session.prompt([{ type: 'text', text: 'ordinary' }], 'queue')
++    await b.session.cancel()
++    expect(b.rawPrompt).toHaveBeenCalledOnce()
++    expect(b.rawCancel).toHaveBeenCalledOnce()
++    expect(b.prompt).not.toHaveBeenCalled()
++  })
++})
+diff --git a/packages/api/session-controller/tests/native-passive-follow.host.spec.ts b/packages/api/session-controller/tests/native-passive-follow.host.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/api/session-controller/tests/native-passive-follow.host.spec.ts
+@@ -0,0 +1,40 @@
++/** Original journal passive follow with controlled prepared observations. */
++import { expect, it, vi } from 'vitest'
++import { Context } from '@deepseek-ai/cordis'
++import SessionStore from '@deepseek-ai/dsh-session'
++import type { SessionId } from '@deepseek-ai/dsh-session'
++import { SessionHistoryController } from '../src/history.ts'
++import { installSessionReadTestServices } from './test-remote.ts'
++
++it.each([false, true])('prepared follow activate=%s keeps snapshot and controls promotion', async (activate) => {
++  const ctx = new Context()
++  await ctx.plugin(SessionStore)
++  installSessionReadTestServices(ctx)
++  const session = ctx.sessions.create('passive-native-proof' as SessionId, { meta: { cwd: '/fixture' } })
++  const observe = ctx.sessionQuery.observeSession.bind(ctx.sessionQuery)
++  const retain = vi.fn()
++  vi.spyOn(ctx.sessionQuery, 'observeSession').mockImplementation(async (...args) => {
++    const original = await observe(...args)
++    return { ...original, source: 'prepared' as const,
++      retain() { retain(); return original.retain() },
++      [Symbol.dispose]() { original[Symbol.dispose]() },
++    }
++  })
++  const promote = vi.fn((observation) => observation[Symbol.dispose]())
++  const history = new SessionHistoryController(ctx, promote)
++  const abort = new AbortController()
++  const stream = history.follow({ address: { kind: 'session', sessionId: session.id } }, abort.signal, activate)[Symbol.asyncIterator]()
++  try {
++    expect(await stream.next()).toMatchObject({ done: false, value: { type: 'snapshot', header: { id: session.id }, records: expect.any(Array) } })
++    const pending = stream.next()
++    await new Promise(resolve => setTimeout(resolve, 0))
++    expect(promote).toHaveBeenCalledTimes(activate ? 1 : 0)
++    expect(retain).toHaveBeenCalledTimes(activate ? 1 : 0)
++    abort.abort()
++    await pending
++  } finally {
++    abort.abort()
++    await stream.return?.()
++    await ctx.fiber.dispose()
++  }
++})
+diff --git a/packages/client/ui-conversation/README.md b/packages/client/ui-conversation/README.md
+--- a/packages/client/ui-conversation/README.md
++++ b/packages/client/ui-conversation/README.md
+@@ -194,3 +194,7 @@
+ None.
+ 
+ </details>
++
++## Controlled Session input
++
++The optional `SessionSnapshot.controlled` flag marks an externally authorized transport. The original text editor and send/stop actions remain available through that transport. Attachment intake, model and permission changes, command-menu entry, and queue editing are disabled until explicit adapters exist. Ordinary Sessions keep their existing controls. The transport, rather than this presentation flag, enforces every operation.
+diff --git a/packages/client/ui-conversation/src/client/queue/QueueDock.tsx b/packages/client/ui-conversation/src/client/queue/QueueDock.tsx
+--- a/packages/client/ui-conversation/src/client/queue/QueueDock.tsx
++++ b/packages/client/ui-conversation/src/client/queue/QueueDock.tsx
+@@ -122,7 +122,7 @@
+   }, [pendingSubmissions, queue])
+   const rowCount = queue.length + pendingQueue.length
+   const running = useSession(s => s.running)
+-  const queueMutable = useSession(s => s.subagent === null || s.subagent.address.mode === 'continuable')
++  const queueMutable = useSession(s => s.controlled !== true && (s.subagent === null || s.subagent.address.mode === 'continuable'))
+   const [editing, setEditing] = useState<{ id: MessageId; text: string } | null>(null)
+   const [busy, setBusy] = useState<MessageId | null>(null)
+   const [collapsed, setCollapsed] = useState(true)
+diff --git a/packages/client/ui-conversation/src/client/skeleton/InputBar.tsx b/packages/client/ui-conversation/src/client/skeleton/InputBar.tsx
+--- a/packages/client/ui-conversation/src/client/skeleton/InputBar.tsx
++++ b/packages/client/ui-conversation/src/client/skeleton/InputBar.tsx
+@@ -44,14 +44,17 @@
+ export type InputBarProps = ComposerBarProps
+ 
+ export const InputBar = memo(function InputBar({
+-  useSession, useInput, inputActions, keyboard, addFiles, removeAttachment, resolveDraftAttachments,
++  useSession, useInput, inputActions, keyboard, addFiles: availableAddFiles, removeAttachment, resolveDraftAttachments,
+   retryFileUpload,
+-  toggleCommandMenu, stop, t,
++  toggleCommandMenu: availableCommandMenu, stop, t,
+   renderSlot, useBusyEnter, useFileUploads, useNotices, useLexicon, useMenuLauncher, useStopShortcut,
+   useProjection, sessionId, variant, disabled: inert = false, blocked,
+   workspacePickerOpen = false, onRequestWorkspace,
+   placeholder, accessory,
+ }: InputBarProps) {
++  const controlled = useSession(s => s.controlled === true) ?? false
++  const addFiles = controlled ? undefined : availableAddFiles
++  const toggleCommandMenu = controlled ? undefined : availableCommandMenu
+   const input = useInput(s => s)
+   const notice = useNotices(s => s)
+   const busyEnter = useBusyEnter(s => s)
+@@ -456,24 +459,24 @@
+               ref={fileInputRef}
+               type="file"
+               multiple
+-              disabled={subagent !== null}
++              disabled={controlled || subagent !== null}
+               hidden
+               onChange={onPickFiles}
+             />
+             <div className={css.modes}>
+-              {sessionId === undefined ? null : renderSlot('conversation.input.permission', { locked })}
+-              {sessionId === undefined ? null : renderSlot('conversation.input.plan', { locked })}
++              {sessionId === undefined ? null : renderSlot('conversation.input.permission', { locked: locked || controlled })}
++              {sessionId === undefined || controlled ? null : renderSlot('conversation.input.plan', { locked })}
+             </div>
+-            {input === undefined || sessionId === undefined
++            {input === undefined || sessionId === undefined || controlled
+               ? null
+               : renderSlot('conversation.input.left', {})}
+           </div>
+           <div className={clsx(css.trailing, activity && css.trailingActive)}>
+             <div className={css.standardControls} hidden={activity}>
+-              {input === undefined || sessionId === undefined
++              {input === undefined || sessionId === undefined || controlled
+                 ? null
+                 : renderSlot('conversation.input.right', {})}
+-              {sessionId === undefined ? null : renderSlot('conversation.input.model', { locked: modelSeatLocked })}
++              {sessionId === undefined ? null : renderSlot('conversation.input.model', { locked: modelSeatLocked || controlled })}
+             </div>
+             {input === undefined || sessionId === undefined ? null : <div className={activity ? css.activityExpanded : css.activity}>
+               {renderSlot('conversation.input.activity', { locked, onActiveChange: setActivity })}
+diff --git a/packages/client/ui-workspace/README.md b/packages/client/ui-workspace/README.md
+--- a/packages/client/ui-workspace/README.md
++++ b/packages/client/ui-workspace/README.md
+@@ -232,3 +232,7 @@
+ None.
+ 
+ </details>
++
++## Externally revoked selections
++
++`uiWorkspace.clearSessionSelection(sessionId)` releases the original main-view reference and selection only when that exact Session is current. An external authority owner can use it with Session delegate revocation without starting a layout navigation or selecting another Session. Ordinary navigation and archive actions retain their existing panel behavior.
+diff --git a/packages/client/ui-workspace/src/client/navigation.ts b/packages/client/ui-workspace/src/client/navigation.ts
+--- a/packages/client/ui-workspace/src/client/navigation.ts
++++ b/packages/client/ui-workspace/src/client/navigation.ts
+@@ -43,6 +43,8 @@
+ export interface UiWorkspace {
+   /** One optional product guard, sharing sidebar/direct/restore navigation. */
+   registerSessionNavigationGuard(guard: SessionNavigationGuard): () => void
++  /** Release only the named current selection after external authority is revoked. */
++  clearSessionSelection(sessionId: SessionId): void
+ 
+   /**
+    * Select a Session and show its Conversation as one UI navigation action.
+@@ -170,6 +172,14 @@
+   private mainReference: SessionReference | undefined
+   private sessionNavigation: { readonly guard: SessionNavigationGuard } | undefined
+   private waitingNavigation: AbortController | undefined
++
++  clearSessionSelection(sessionId: SessionId): void {
++    if (this.mainReference?.sessionId !== sessionId) return
++    const previous = this.mainReference
++    this.mainReference = undefined
++    this.selection.set({})
++    previous.release()
++  }
+ 
+   registerSessionNavigationGuard(guard: SessionNavigationGuard): () => void {
+     if (this.sessionNavigation !== undefined) throw new Error('Session navigation guard is already registered')
+diff --git a/packages/client/ui-workspace/tests/workspaces-service.client.spec.ts b/packages/client/ui-workspace/tests/workspaces-service.client.spec.ts
+--- a/packages/client/ui-workspace/tests/workspaces-service.client.spec.ts
++++ b/packages/client/ui-workspace/tests/workspaces-service.client.spec.ts
+@@ -136,6 +136,7 @@
+ }
+ 
+ class FakeSessions implements ISessions {
++  declare readonly registerSessionDelegate: ISessions['registerSessionDelegate']
+   readonly list: MutableSource<SessionListState>
+   readonly create: ReturnType<typeof vi.fn<ISessions['create']>>
+   readonly fork = vi.fn<ISessions['fork']>(async () => sid('forked'))
+@@ -320,6 +321,38 @@
+ }
+ 
+ describe('UiWorkspaceService', () => {
++  it.each(['native-B', 'ordinary'])('native exact selection keeps one A to %s navigation alive', async (nextId) => {
++    const b = bench()
++    b.uiWorkspace.openSession(sid('native-A'))
++    const old = b.sessions.retained[0]!
++    const aborted: boolean[] = []
++    b.uiWorkspace.registerSessionNavigationGuard(async (_target, signal) => {
++      b.uiWorkspace.clearSessionSelection(sid('native-A'))
++      aborted.push(signal.aborted)
++      return true
++    })
++    b.uiWorkspace.openSession(sid(nextId))
++    await setImmediate()
++    expect(aborted).toEqual([false])
++    expect(b.sessions.retained.map(item => item.reference.sessionId)).toEqual([sid('native-A'), sid(nextId)])
++    expect(old.release).toHaveBeenCalledOnce()
++    expect(b.sessions.retained[1]!.release).not.toHaveBeenCalled()
++  })
++
++  it('native exact selection revokes only the matching reference without selecting a panel', () => {
++    const b = bench()
++    b.uiWorkspace.openSession(sid('native-A'))
++    const old = b.sessions.retained[0]!
++    b.selectPanel.mockClear()
++    const pending = b.layout.beginNavigation()
++    b.uiWorkspace.clearSessionSelection(sid('other'))
++    expect(old.release).not.toHaveBeenCalled()
++    b.uiWorkspace.clearSessionSelection(sid('native-A'))
++    expect(old.release).toHaveBeenCalledOnce()
++    expect(pending.aborted).toBe(false)
++    expect(b.selectPanel).not.toHaveBeenCalled()
++  })
++
+   it('prepares and selects the default Workspace after both startup baselines', async () => {
+     const b = bench({ configureWorkspaces: (workspaces) => {
+       workspaces.initializeDefault.mockImplementation(async () => {
+diff --git a/packages/test-support/client-runtime/src/sessions.ts b/packages/test-support/client-runtime/src/sessions.ts
+--- a/packages/test-support/client-runtime/src/sessions.ts
++++ b/packages/test-support/client-runtime/src/sessions.ts
+@@ -300,6 +300,10 @@
+  * behavior/calls/stubs) are bench-only surface.
+  */
+ export class TestSessions implements ISessions {
++  registerSessionDelegate(): never {
++    throw new Error('Delegation tests require the original ClientSessions transport')
++  }
++
+   /** The useSessions catalog feed, independent of view ownership. */
+   readonly list: SnapshotStore<SessionListState>
+   private readonly records = new Map<SessionId, SessionRecord>()

@@ -20,6 +20,8 @@ const endpoints = [
   'send',
   'stop',
   'lookup',
+  'session-page',
+  'session-follow',
   'review-options',
   'review-start',
   'review-read',
@@ -100,6 +102,50 @@ export function openHostMemberNativeHttp(
       rpcId = wire.rpcId;
       const input = payload.parse(wire.payload),
         source = current();
+      if (endpoint === 'session-page' || endpoint === 'session-follow') {
+        const original = local?.source(),
+          backend = local?.backend();
+        if (source || !original || !backend) return reply(failure(), 409);
+        const assertLocal = async () => {
+          signal.throwIfAborted();
+          const selected = await backend.status();
+          if (
+            selected.origin !== null ||
+            selected.connectionId !== input.connectionId ||
+            local?.source() !== original
+          )
+            throw Error('Native history owner changed');
+        };
+        await assertLocal();
+        const query = z.record(z.string(), z.unknown()).parse(input.query);
+        const data = { ...query, actorId: input.actorId, spaceId: input.spaceId };
+        const memberRequest = { headers: Object.fromEntries(request.headers) };
+        if (endpoint === 'session-page') {
+          const page = await original.conversation.page(memberRequest, data, signal);
+          await assertLocal();
+          return reply({ ok: true, value: page });
+        }
+        const stream = hostRunStream<
+          import('@deepseek-ai/dsh-api-session-controller/types').SessionFollowFrame
+        >({
+          rpcId,
+          signal,
+          failure,
+          observe: (sink, reading) =>
+            original.conversation.follow(
+              memberRequest,
+              data,
+              async (frame, authority) => {
+                await assertLocal();
+                await sink(frame, authority);
+              },
+              reading,
+            ),
+        });
+        jobs.add(stream.drained);
+        void stream.drained.finally(() => jobs.delete(stream.drained)).catch(() => undefined);
+        return stream.response;
+      }
       if (endpoint === 'lookup' && !source) {
         const original = local?.source(),
           backend = local?.backend();
@@ -133,9 +179,27 @@ export function openHostMemberNativeHttp(
           local?.source() !== original
         )
           return reply(failure(), 403);
+        const sdkNative = await original.conversation?.available?.(
+          { headers: Object.fromEntries(request.headers) },
+          {
+            actorId: input.actorId,
+            spaceId: scope.spaceId,
+            sessionId,
+            target: conversationTarget(scope),
+            request: {},
+          },
+          signal,
+        );
+        signal.throwIfAborted();
+        if (local?.source() !== original) return reply(failure(), 409);
         return reply({
           ok: true,
-          value: { kind: 'task', target: conversationTarget(scope), sessionId },
+          value: {
+            kind: 'task',
+            target: conversationTarget(scope),
+            sessionId,
+            presentation: sdkNative === true ? 'sdk-native' : 'task-controls',
+          },
         });
       }
       if (!source || input.connectionId !== source.connectionId || input.actorId !== source.actorId)

@@ -30,7 +30,15 @@ import {
   nativeSessionPanel,
 } from '../run/MemberNativeNavigation.js';
 
-export const inject = ['slots', 'layout', 'connection', 'theme', 'uiWorkspace'];
+export const inject = [
+  'slots',
+  'layout',
+  'connection',
+  'theme',
+  'uiWorkspace',
+  'sessions',
+  'conversation',
+];
 function deploymentMode(): 'legacy-single-user' | 'multi-member' {
   const boot = (globalThis as { __ZHUMA_WORKBENCH_BOOT__?: unknown }).__ZHUMA_WORKBENCH_BOOT__;
   if (
