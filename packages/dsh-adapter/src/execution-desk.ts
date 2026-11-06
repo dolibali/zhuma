@@ -61,6 +61,7 @@ import {
   type ContextSourceInput,
   type WorkspaceClaim,
 } from '@zhuma/context';
+import { noteHumanIntervention, noteRunBoundary } from './efficiency-log.js';
 import {
   selectAgentExecutor,
   SimulatedAgentExecutor,
@@ -686,11 +687,22 @@ export class ExecutionDesk {
     if (!this.interactionReady) return this.blockedRestore();
     const assignee = assigneeAfterAgentAssist(this.seed.handoff.assignee);
     const checkpoint = this.captureOperational();
+    const requestId = this.deps.newId(kind);
     this.recoveryRequests = [
       ...this.recoveryRequests,
-      recordRecoveryRequest({ id: this.deps.newId(kind), kind, assigneeId: assignee.id }),
+      recordRecoveryRequest({ id: requestId, kind, assigneeId: assignee.id }),
     ];
-    return this.undoIfUnsaved(checkpoint, this.succeed());
+    const result = this.undoIfUnsaved(checkpoint, this.succeed());
+    if (result.ok && kind === 'human-takeover') {
+      noteHumanIntervention({
+        taskId: this.seed.handoff.taskId,
+        planId: this.seed.handoff.workflowVersionId,
+        revision: this.seed.handoff.revision,
+        nodeId: this.seed.handoff.nodeId,
+        sourceId: `takeover:${requestId}`,
+      });
+    }
+    return result;
   }
 
   verifyAbandoned(): DeskResult {
@@ -1310,6 +1322,7 @@ export class ExecutionDesk {
         return;
       }
       this.putRun(acked.attempt);
+      this.recordRunBoundary('started', acked.attempt.id, acked.attempt.nodeId);
       this.noteQueueApplied(runId);
       this.ensureExecutorTurn(acked.attempt, '');
       this.persistEvent();
@@ -2161,8 +2174,23 @@ export class ExecutionDesk {
   }
 
   private putRun(next: ExecutionAttempt): void {
+    const previous = this.runs.find((run) => run.id === next.id);
     this.runs = this.runs.map((run) => (run.id === next.id ? next : run));
     if (isTerminalRunStatus(next.status)) this.pinnedPrompt.delete(next.id);
+    if (previous && !isTerminalRunStatus(previous.status) && isTerminalRunStatus(next.status)) {
+      this.recordRunBoundary('ended', next.id, next.nodeId);
+    }
+  }
+
+  private recordRunBoundary(phase: 'started' | 'ended', runId: string, nodeId: string): void {
+    noteRunBoundary({
+      phase,
+      runId,
+      nodeId,
+      taskId: this.seed.handoff.taskId,
+      planId: this.seed.handoff.workflowVersionId,
+      revision: this.seed.handoff.revision,
+    });
   }
 
   private releaseClaim(runId: string): void {

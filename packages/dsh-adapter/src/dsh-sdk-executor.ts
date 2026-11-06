@@ -28,6 +28,7 @@ import {
   type DshModelConfigResult,
   type ExecutorCapabilities,
 } from './agent-executor.js';
+import { noteAssistantToolCalls } from './efficiency-log.js';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const builtBinary = path.join(repoRoot, 'upstream/deepseek-harness/apps/cli/lib/bin.js');
@@ -464,7 +465,13 @@ export class DshChatExecutor implements AgentExecutor {
       state.accepted = true;
       yield* noiseActivities(request.runId, rpc);
       yield { type: 'accepted', executorRunId: messageId, sessionId, simulated: false };
-      const outcome = yield* readTurn(rpc, state, this.promptTimeoutMs);
+      const outcome = yield* readTurn(rpc, state, this.promptTimeoutMs, {
+        taskId: request.taskId,
+        planId: request.workflowVersionId,
+        revision: request.planRevision,
+        nodeId: request.nodeId,
+        runId: request.runId,
+      });
       yield* noiseActivities(request.runId, rpc);
       if (outcome.kind === 'cancelled') {
         cancelYielded = true;
@@ -690,6 +697,13 @@ async function* readTurn(
   rpc: StdioRpc,
   state: LiveRun,
   timeoutMs: number,
+  scope: {
+    readonly taskId: string;
+    readonly planId: string;
+    readonly revision: number;
+    readonly nodeId: string;
+    readonly runId: string;
+  },
 ): AsyncGenerator<AgentRunEvent, TurnOutcome> {
   let text = '';
   let tools = false;
@@ -714,6 +728,7 @@ async function* readTurn(
     }
     const event = note.params?.event;
     if (event?.type === 'assistant/message') {
+      noteAssistantToolCalls(scope, event.data);
       const read = readAssistantPayload(event.data);
       tools = tools || read.tools;
       const next = mergeAssistantText(text, read.text);

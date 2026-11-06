@@ -38,7 +38,7 @@ import {
 
 async function setup(
   t,
-  { publish = [], access = 'write', mode = 'workspace-write', sandboxed = false } = {},
+  { publish = [], access = 'write', mode = 'workspace-write', sandboxed = false, approvals } = {},
 ) {
   const home = await mkdtemp(join(tmpdir(), 'zhuma-workspace-contract-'));
   const root = join(home, 'project');
@@ -103,6 +103,7 @@ async function setup(
   };
   const options = {
     config,
+    ...(approvals ? { approvals } : {}),
     execution,
     signal: lifetime.signal,
     readWorkbench: () => facts.workbench,
@@ -179,6 +180,55 @@ test('workspace contract: metadata lists only exact subject/project IDs and no d
   }
   assert.equal(h.check(), undefined);
   assert.equal(h.source.assertComposition(h.snapshot), undefined);
+});
+
+test('workspace contract: one synchronous check reads its policy snapshot once, and every later check reads again', async (t) => {
+  let snapshots = 0,
+    failure;
+  const approvals = {
+    snapshot() {
+      snapshots++;
+      if (failure) throw failure;
+      return { state: undefined, runs: [] };
+    },
+    onChange: () => () => {},
+  };
+  const h = await setup(t, { approvals });
+  snapshots = 0;
+  h.check();
+  assert.equal(snapshots, 1);
+  await new Promise((resolve) => setImmediate(resolve));
+  h.check();
+  assert.equal(snapshots, 2);
+  failure = Error('contract current compatibility refusal');
+  assert.throws(
+    () => h.check(),
+    (error) => error === failure,
+  );
+  assert.equal(snapshots, 3);
+  failure = undefined;
+  approvals.snapshot = () => ({ state: undefined, runs: [] });
+  assert.throws(() => h.check(), { code: 'run-authority-denied' });
+});
+
+test('workspace contract: the exposed selection cannot consume caller-supplied snapshot material', async (t) => {
+  const h = await setup(t);
+  let reads = 0;
+  const forged = {
+    get find() {
+      reads++;
+      throw Error('caller cannot supply policy material');
+    },
+  };
+  assert.deepEqual(
+    h.source.select(...h.args, 'project-files', forged).workspace,
+    h.selected.workspace,
+  );
+  assert.equal(reads, 0);
+  assert.throws(() => h.source.select(...h.args, 'foreign-binding', forged), {
+    code: 'run-authority-denied',
+  });
+  assert.equal(reads, 0);
 });
 
 test('workspace contract: read-only authority rejects write and forged device/root/grant/generation', async (t) => {

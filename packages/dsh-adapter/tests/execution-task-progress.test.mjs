@@ -1,13 +1,17 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { randomUUID } from 'node:crypto';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   applyWorkbenchCommand,
   nodeRecordKey,
   startAppliedPlan,
   canonicalPayload,
 } from '@zhuma/agent-core';
-import { checked, caller, refused } from './execution-service-run-fixture.mjs';
+import { checked, caller, open, refused } from './execution-service-run-fixture.mjs';
+import { openWorkflowContract } from './execution-workflow-fixture.mjs';
 import { domainBytes, projectWorkbench } from './execution-project-artifacts-fixture.mjs';
 import { workbench as reviewWorkbench } from './execution-review-service-fixture.mjs';
 import { nativeReviewHost } from './execution-review-native-fixture.mjs';
@@ -100,7 +104,7 @@ test('task progress Service: absent start is distinct from missing receipt or pa
   assert.equal(unstarted.delivery, 'pending');
   assert.equal(unstarted.expectedNodes, 2);
   assert.equal(unstarted.acceptedNodes, 0);
-  assert.equal(unstarted.humanReady, 0);
+  assert.equal(Object.hasOwn(unstarted, 'humanReady'), false);
   assert.equal(
     Object.values(unstarted.byStatus).reduce((a, b) => a + b, 0),
     0,
@@ -117,7 +121,7 @@ test('task progress Service: absent start is distinct from missing receipt or pa
     assert.equal(item.reason, 'incomplete-plan');
     assert.equal(item.acceptedNodes, null);
     assert.equal(item.byStatus, null);
-    assert.equal(item.humanReady, null);
+    assert.equal(Object.hasOwn(item, 'humanReady'), false);
     assert.equal(item.resources, null);
   }
 });
@@ -507,26 +511,28 @@ test('task progress pure projection: a ready human is counted apart from a ready
   const started = startAppliedPlan({ requested: target, applied, actorId: 'chen', existing: [] });
   assert.equal(started.ok, true);
   const records = new Map(started.records.map((record) => [nodeRecordKey(record), record]));
-  const result = taskProgressProjection(
-    selectTaskProgress(
-      state,
-      'chen',
-      taskProgressQuerySchema.parse({ spaceId: 'north', plans: [target] }),
-    ),
-    {
-      global: { schemaVersion: 1 },
-      readPlan() {
-        return {
-          idempotencyKey: 'start',
-          fingerprint: canonicalPayload(target),
-          nodeIds: started.records.map((record) => record.nodeId),
-        };
-      },
-      readNode(node) {
-        return records.get(nodeRecordKey(node));
-      },
+  const source = {
+    global: { schemaVersion: 1 },
+    readPlan() {
+      return {
+        idempotencyKey: 'start',
+        fingerprint: canonicalPayload(target),
+        nodeIds: started.records.map((record) => record.nodeId),
+      };
     },
+    readNode(node) {
+      return records.get(nodeRecordKey(node));
+    },
+  };
+  const selection = selectTaskProgress(
+    state,
+    'chen',
+    taskProgressQuerySchema.parse({ spaceId: 'north', plans: [target] }),
   );
+  const result = taskProgressProjection(selection, source, { detail: true });
+  const summary = taskProgressProjection(selection, source);
+  assert.equal(Object.hasOwn(summary.items[0], 'humanReady'), false);
+  assert.equal(Object.hasOwn(summary.items[0], 'nodeStatuses'), false);
   const item = result.items[0];
   assert.equal(item.facts, 'present');
   assert.equal(item.delivery, 'pending');
@@ -570,7 +576,7 @@ test('task progress pure projection: five complete eighty-node plans take exactl
   for (const item of result.items) {
     assert.equal(item.expectedNodes, 80);
     assert.equal(item.byStatus.ready, 80);
-    assert.equal(item.humanReady, 80);
+    assert.equal(Object.hasOwn(item, 'humanReady'), false);
     assert.equal(item.delivery, 'pending');
   }
   assert.ok(Buffer.byteLength(JSON.stringify(result)) <= TASK_PROGRESS_LIMITS.responseBytes);
@@ -650,4 +656,120 @@ test('task progress Service: final project callback changing the original reques
   assert.equal(h.calls.release, 1);
   assert.deepEqual(h.counters, { global: 0, nodes: 0, plans: 0 });
   assert.deepEqual(await domainBytes(h.root), before);
+});
+
+const legacyRowKeys = [
+  'target',
+  'facts',
+  'reason',
+  'delivery',
+  'expectedNodes',
+  'acceptedNodes',
+  'byStatus',
+  'assigneeCounts',
+  'resources',
+];
+function authority(service, request) {
+  return async () => {
+    const lease = await service.runHost.memberLease(request);
+    return {
+      lease,
+      assertProjectSpace(projectId, spaceId) {
+        service.runHost.assertProjectSpace(projectId, spaceId);
+      },
+    };
+  };
+}
+
+test('task progress wire: summary omits node detail unless the caller opts in', async (t) => {
+  const h = await progressHost(t, {
+    workbench: projectWorkbench({ count: 1, privateTask: false }),
+  });
+  const summary = await row(h);
+  assert.equal(Object.hasOwn(summary, 'nodeStatuses'), false);
+  assert.equal(Object.hasOwn(summary, 'workflow'), false);
+  assert.equal(
+    Object.keys(summary).every((key) => legacyRowKeys.includes(key)),
+    true,
+  );
+  const detailed = checked(await h.progress({ ...h.query(), detail: 'nodes' })).items[0];
+  assert.equal(detailed.facts, 'present');
+  assert.equal(detailed.workflow, 'inactive');
+  assert.equal(detailed.nodeStatuses.length, 1);
+  assert.equal(detailed.nodeStatuses[0].assignee, 'human');
+  assert.equal(detailed.nodeStatuses[0].status, 'ready');
+  assert.equal(detailed.resources.authorHeld, 0);
+  assert.equal(Object.hasOwn(detailed, 'nodeStatuses'), true);
+  refused(await h.progress({ ...h.query(), detail: 'all' }), 'validation');
+  refused(await h.progress({ ...h.query(), phase: 'nodes' }), 'unknown-field');
+});
+
+test('task progress: unclaimed workflow start is queued while live and requires-resume after reopen', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'zhuma-progress-resume-'));
+  const started = await openWorkflowContract(root);
+  let current = started;
+  t.after(async () => {
+    await current.close().catch(() => undefined);
+    await rm(root, { recursive: true, force: true });
+  });
+  const view = await started.start();
+  assert.equal(view.state, 'running');
+  assert.equal(view.requiresResume, false);
+  const target = {
+    taskId: started.location.taskId,
+    planId: started.location.planId,
+    revision: started.location.revision,
+  };
+  const query = { spaceId: 'north', plans: [target], detail: 'nodes' };
+  const live = checked(
+    await started.service.taskProgress(
+      caller(),
+      query,
+      authority(started.service, started.request),
+    ),
+  ).items[0];
+  assert.equal(live.workflow, 'running');
+  assert.equal(live.resources.authorHeld, 0);
+  assert.equal(live.resources.reviewHeld, 0);
+  assert.equal(live.resources.stopRequested, 0);
+  const byId = new Map(live.nodeStatuses.map((node) => [node.nodeId, node]));
+  assert.equal(byId.get('human').assignee, 'human');
+  assert.equal(byId.get('human').status, 'ready');
+  assert.equal(byId.get('human').authorHeld, 0);
+  assert.equal(byId.get('first').assignee, 'expert');
+  assert.equal(byId.get('first').status, 'ready');
+  assert.equal(byId.get('second').status, 'ready');
+  const workbench = started.readWorkbench();
+  await started.close();
+  current = await open(root, { seed: false, workbench, mount: true });
+  const coldView = checked(
+    await current.service.readWorkflowExecution(current.request, { ...target, spaceId: 'north' }),
+  );
+  assert.equal(coldView.state, 'requires-resume');
+  assert.equal(coldView.requiresResume, true);
+  assert.deepEqual(coldView.activeRunIds, []);
+  const cold = checked(
+    await current.service.taskProgress(
+      caller(),
+      query,
+      authority(current.service, current.request),
+    ),
+  ).items[0];
+  assert.equal(cold.workflow, 'requires-resume');
+  assert.deepEqual(cold.resources, { authorHeld: 0, reviewHeld: 0, stopRequested: 0 });
+  assert.equal(
+    cold.nodeStatuses.every((node) => node.authorHeld === 0 && node.status !== 'running'),
+    true,
+  );
+  const summary = checked(
+    await current.service.taskProgress(
+      caller(),
+      { spaceId: 'north', plans: [target] },
+      authority(current.service, current.request),
+    ),
+  ).items[0];
+  assert.equal(Object.hasOwn(summary, 'workflow'), false);
+  assert.equal(Object.hasOwn(summary, 'nodeStatuses'), false);
+  assert.equal(summary.byStatus.running, 0);
+  assert.equal(summary.resources.authorHeld, 0);
 });

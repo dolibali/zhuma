@@ -1019,7 +1019,6 @@ test(
   async (t) => {
     const release = deferred(),
       entered = deferred();
-    t.onTestFinished(() => release.resolve());
     const h = await boot(t, {
       adapter: new ScriptedAdapter([
         'seed',
@@ -1045,6 +1044,9 @@ test(
         },
       ]),
     });
+    // Vitest runs onTestFinished hooks in reverse registration order.
+    // Release this test-owned stream before boot() disposes its native owner.
+    t.onTestFinished(() => release.resolve());
     checked(await h.rpc('run', 'begin', h.begin));
     await waitFor(h.ctx, () => h.run()?.attempt.acknowledged === true);
     const target = { ...h.locator, runId: 'run-1' };
@@ -1087,7 +1089,12 @@ test(
             const frame = envelope.frame;
             frames.push(frame);
             if (frame.type === 'ready') subscribed.resolve();
-            if (frame.type === 'assistant-stream' && frame.frame.text === 'early body')
+            if (
+              frame.type === 'assistant-stream' &&
+              (frame.frame.text === 'early body' ||
+                (frame.frame.type === 'snapshot' &&
+                  frame.frame.activeAttempt?.text === 'early body'))
+            )
               partial.resolve();
             if (frame.type === 'assistant-stream' && frame.frame.type === 'end') return;
           }

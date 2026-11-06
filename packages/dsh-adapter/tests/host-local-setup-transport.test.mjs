@@ -4,7 +4,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { mkdtemp, rm, writeFile, readFile } from 'node:fs/promises';
-import { spawnSync } from 'node:child_process';
+import { spawnSync, execFileSync } from 'node:child_process';
+import { copyFile, mkdir } from 'node:fs/promises';
+import { dirname } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { build } from 'esbuild';
+import { openHostCodeArtsSetup } from '../dist/host-codearts-setup.js';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomBytes } from 'node:crypto';
@@ -373,4 +378,68 @@ test('original SDK identity initialization: physical JSON survives close/reopen 
     await h?.close();
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test('CodeArts desktop POST reaches the original owner route with same-Host Origin and returns a bounded application response', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'zhuma-codearts-owner-transport-')),
+    source = fileURLToPath(new URL('../../../', import.meta.url)),
+    stage = join(root, 'patch'),
+    h = await open(join(root, 'owner'));
+  t.after(async () => {
+    await h.close();
+    await rm(root, { recursive: true, force: true });
+  });
+  const file = 'apps/desktop/src/web-document.ts',
+    target = join(stage, file);
+  await mkdir(dirname(target), { recursive: true });
+  await copyFile(join(source, 'upstream/deepseek-harness', file), target);
+  execFileSync(
+    'git',
+    ['apply', '--include=' + file, join(source, 'patches/deepseek-harness/zhuma-desktop.patch')],
+    { cwd: stage },
+  );
+  await copyFile(
+    join(source, 'packages/dsh-adapter/src/desktop-member-cookie.ts'),
+    join(stage, 'apps/desktop/src/zhuma-member-cookie.ts'),
+  );
+  const output = join(stage, 'web-document.mjs');
+  await build({
+    entryPoints: [target],
+    outfile: output,
+    bundle: true,
+    format: 'esm',
+    platform: 'node',
+    logLevel: 'error',
+  });
+  const desktop = await import(pathToFileURL(output).href),
+    setup = openHostCodeArtsSetup(h.ctx);
+  t.after(() => setup.close());
+  const request = (path, origin, body) =>
+    new Request('dsh-app://app' + path, {
+      method: body === undefined ? 'GET' : 'POST',
+      headers: { origin, 'content-type': 'application/json' },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+  const before = await desktop.forwardWebRequest(
+    request('/api/zhuma-codearts/status', 'dsh-app://app'),
+    h.base,
+    h.cookie,
+  );
+  assert.equal(before.status, 200);
+  assert.deepEqual(await before.json(), { ok: true, value: { configured: false } });
+  const result = await desktop.forwardWebRequest(
+    request('/api/zhuma-codearts/configure', 'dsh-app://app', {
+      command: 'codearts --invalid-argument',
+    }),
+    h.base,
+    h.cookie,
+  );
+  assert.equal(result.status, 400);
+  assert.deepEqual(await result.json(), { ok: false, code: 'invalid-input' });
+  const foreign = await desktop.forwardWebRequest(
+    request('/api/zhuma-codearts/configure', 'https://outside.example', { command: 'codearts' }),
+    h.base,
+    h.cookie,
+  );
+  assert.equal(foreign.status, 403);
 });

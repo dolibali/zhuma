@@ -8,8 +8,13 @@ import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { nodeRecordKey } from '@zhuma/agent-core';
 import { afterExecutionRunCommit } from '../dist/execution-run-effects.js';
-import { currentExecutionRun, beginExecutionRun } from '../dist/execution-run-state.js';
+import {
+  currentExecutionRun,
+  beginExecutionRun,
+  executionRunScope,
+} from '../dist/execution-run-state.js';
 import { ExecutionService } from '../dist/execution-service.js';
+import { NativeReleasedConversationAuthorities } from '../dist/native-released-conversation-authority.js';
 import { open, caller, checked, refused, stable } from './execution-service-run-fixture.mjs';
 import { available, command, localWorkspace, records } from './execution-run-fixture.mjs';
 
@@ -20,11 +25,195 @@ async function hostFor(t, options) {
   t.after(() => host.close());
   return { ...host, root };
 }
+
+test('composition snapshot: Host node copies share only immutable fixed leaves and cannot edit live attempts', async (t) => {
+  const h = await hostFor(t);
+  checked(await h.service.enableRunWriter());
+  checked(await h.service.beginRun(h.request, h.begin()));
+  const [, stored] = [...h.domain.table('nodes').entries()].find(
+    ([, node]) => node.nodeId === 'produce',
+  );
+  const clone = globalThis.structuredClone;
+  let copiedNodeBytes = 0;
+  globalThis.structuredClone = (value, ...args) => {
+    if (value?.nodeId === stored.nodeId && value?.nativeExecution?.runs)
+      copiedNodeBytes += Buffer.byteLength(JSON.stringify(value));
+    return clone(value, ...args);
+  };
+  let first;
+  try {
+    first = h.service.readRunNode(h.locate());
+  } finally {
+    globalThis.structuredClone = clone;
+  }
+  const next = h.service.readRunNode(h.locate());
+  assert.notEqual(first, next);
+  assert.notEqual(first.nativeExecution.runs, next.nativeExecution.runs);
+  assert.notEqual(first.nativeExecution.runs[0].attempt, next.nativeExecution.runs[0].attempt);
+  const leaf = first.nativeExecution.runs[0].composition;
+  assert(copiedNodeBytes > 0);
+  assert(
+    copiedNodeBytes <=
+      Buffer.byteLength(JSON.stringify(stored)) - Buffer.byteLength(JSON.stringify(leaf)),
+    'defensive copies must not duplicate the fixed composition body',
+  );
+  assert.equal(leaf, next.nativeExecution.runs[0].composition);
+  assert(Object.isFrozen(leaf.payload.resources ?? leaf.payload));
+  assert.throws(() => {
+    leaf.payload.scope.actorId = 'outside';
+  }, TypeError);
+  first.nativeExecution.runs[0].attempt.id = 'caller-edited';
+  assert.equal(h.service.readRunNode(h.locate()).nativeExecution.runs[0].attempt.id, 'run-1');
+});
+
+test('composition snapshot: a certified leaf never bypasses a fresh Run scope, configuration or current-attempt binding', async (t) => {
+  const h = await hostFor(t);
+  checked(await h.service.enableRunWriter());
+  checked(await h.service.beginRun(h.request, h.begin()));
+  const table = h.domain.table('nodes');
+  const [key, original] = [...table.entries()].find(([, node]) => node.nodeId === 'produce');
+  const leaf = h.service.readRunNode(h.locate()).nativeExecution.runs[0].composition;
+  for (const change of [
+    (node) => {
+      node.nativeExecution.runs[0].actorId = 'outside';
+    },
+    (node) => {
+      node.nativeExecution.runs[0].segmentId = 'other-segment';
+    },
+    (node) => {
+      node.nativeExecution.runs[0].selection.configurationId = 'other-configuration';
+      node.nativeExecution.runs[0].attempt.configSnapshotId = 'other-configuration';
+    },
+    (node) => {
+      node.nativeExecution.currentRunId = 'other-run';
+    },
+  ]) {
+    const changed = structuredClone(original);
+    changed.nativeExecution.runs[0].composition = leaf;
+    change(changed);
+    await table.put(key, changed);
+    assert.throws(() => h.service.readRunNode(h.locate()), { code: 'run-state-invalid' });
+  }
+  await table.put(key, original);
+  assert.equal(h.service.readRunNode(h.locate()).nativeExecution.runs[0].attempt.id, 'run-1');
+});
+
+test('composition snapshot: mutable and shallow-frozen generic nodes retain independent copies and changed leaves are revalidated', async (t) => {
+  const h = await hostFor(t);
+  checked(await h.service.enableRunWriter());
+  checked(await h.service.beginRun(h.request, h.begin()));
+  const mutable = structuredClone(h.service.readRunNode(h.locate()));
+  h.service.storage.readNode = () => mutable;
+  const first = h.service.readRunNode(h.locate());
+  const next = h.service.readRunNode(h.locate());
+  assert.notEqual(
+    first.nativeExecution.runs[0].composition,
+    next.nativeExecution.runs[0].composition,
+  );
+  first.nativeExecution.runs[0].composition.payload.context += 'caller-only';
+  assert.notEqual(
+    first.nativeExecution.runs[0].composition.payload.context,
+    next.nativeExecution.runs[0].composition.payload.context,
+  );
+  Object.freeze(mutable);
+  const shallow = h.service.readRunNode(h.locate());
+  assert.notEqual(
+    shallow.nativeExecution.runs[0].composition,
+    next.nativeExecution.runs[0].composition,
+  );
+  mutable.nativeExecution.runs[0].composition.payload.context += 'corrupt-input';
+  assert.throws(() => h.service.readRunNode(h.locate()), { code: 'run-state-invalid' });
+});
 function committed(promise) {
   return promise.then((result) => {
     if (!result.ok) throw Object.assign(Error(result.error.message), { code: result.error.code });
     return result.value;
   });
+}
+
+async function releasedFacadeFor(t) {
+  const h = await hostFor(t, { mount: false });
+  const listeners = new Set(),
+    calls = { members: 0, workspace: [], retired: 0, settled: 0 };
+  const host = {
+    signal: h.source.signal,
+    async memberLease(request) {
+      calls.members++;
+      const memberId = h.members.get(request);
+      if (!memberId) throw Error('PRIVATE original member source');
+      return {
+        memberId,
+        expiresAt: Date.now() + 60_000,
+        signal: h.member.signal,
+        assertCurrent(spaceId) {
+          if (h.member.signal.aborted || spaceId !== 'north') throw Error('PRIVATE member');
+        },
+        release() {},
+      };
+    },
+    assertProjectSpace(project, space) {
+      if (project !== 'project' || space !== 'north') throw Error('PRIVATE directory');
+    },
+    assertConfiguration() {},
+    assertWorkspace(...args) {
+      calls.workspace.push(args);
+      if (h.faults.workspace) throw Error('PRIVATE workspace');
+      return h.assertionResults.workspace?.();
+    },
+    onChange(fn) {
+      listeners.add(fn);
+      return () => listeners.delete(fn);
+    },
+  };
+  const original = h.service.installRunHost(host);
+  checked(await h.service.enableRunWriter());
+  checked(await h.service.beginRun(h.request, h.begin()));
+  const drive = await original.open(h.request, h.runLocator(), 'drive');
+  checked(
+    await h.native('accepted', drive, {
+      nativeSessionId: 'facade-session',
+      executorRunId: 'facade-session',
+    }),
+  );
+  const identity = {};
+  const runtime = {
+    backend: () => ({ id: 'facade-backend', identity }),
+    async openEpoch() {
+      throw Error('unused synthetic sender');
+    },
+    assertEpoch() {},
+    async retireEpoch() {
+      calls.retired++;
+      return 'stopped';
+    },
+    async whenEpochSettled() {
+      calls.settled++;
+    },
+    async openReadEpoch(input) {
+      input.assertCurrent();
+      const row = h.read(),
+        run = currentExecutionRun(row);
+      return {
+        kind: 'chat-history',
+        chatEpoch: 0,
+        actorId: input.actorId,
+        backendId: input.backend.id,
+        binding: {
+          schemaVersion: 1,
+          scope: input.origin,
+          nativeSessionId: run.attempt.sessionId,
+          nativeAgentId: run.attempt.executorRunId,
+          selection: run.selection,
+          receipts: [],
+        },
+        signal: new AbortController().signal,
+        release() {},
+      };
+    },
+    assertReadEpoch() {},
+  };
+  calls.workspace.length = 0;
+  return { ...h, host, runtime, listeners, calls, drive };
 }
 async function bytes(directory) {
   const result = [];
@@ -76,6 +265,119 @@ test('real JSON service: explicit durable marker and node commit precede effects
   await afterExecutionRunCommit(() => committed(h.service.beginRun(h.request, h.begin())), driver);
   assert.equal(dispatches, 1);
   assert.equal(h.counters.nodes, 1);
+});
+
+test('released facade contract: trusted identity/node/history/controller/workspace gates cannot be replaced by runtime parameters', async (t) => {
+  const h = await releasedFacadeFor(t);
+  const source = h.service.createNativeReleasedConversationAuthoritySource({
+    ...h.runtime,
+    memberLease: async () => assert.fail('runtime must not supply members'),
+    readNode: () => assert.fail('runtime must not supply task facts'),
+    assertNodeAccess: () => assert.fail('runtime must not supply ACL'),
+    assertWorkspace: () => assert.fail('runtime must not supply workspace policy'),
+  });
+  const lease = await source.memberLease(h.request);
+  assert.equal(lease.memberId, 'chen');
+  lease.release();
+  await assert.rejects(source.memberLease({ headers: {} }), /PRIVATE original member/);
+  const node = source.readNode(h.runLocator());
+  assert.deepEqual(node, h.read());
+  source.assertNodeAccess('outside', 'north', node, 'history');
+  assert.throws(() => source.assertController('outside', node), { code: 'run-not-controller' });
+  assert.throws(() => source.assertNodeAccess('outside', 'south', node, 'history'));
+  assert.throws(() => source.assertNodeAccess('missing', 'north', node, 'history'));
+  const manager = new NativeReleasedConversationAuthorities(source);
+  t.after(() => manager.close());
+  const viewer = Object.freeze({ headers: {} });
+  h.members.set(viewer, 'outside');
+  const read = await manager.openRead(viewer, h.runLocator());
+  manager.assertReadGrant(read.grant);
+  assert.ok(h.calls.workspace.length > 0);
+  assert.ok(h.calls.workspace.every((args) => args[0] === 'outside' && args[3] === 'read'));
+  h.faults.workspace = true;
+  assert.throws(() => manager.assertReadGrant(read.grant), {
+    code: 'conversation-authority-denied',
+  });
+  assert.equal(h.calls.retired, 0);
+});
+
+test('released facade contract: original Host method replacement and lifecycle close refuse gates but retain original cleanup callbacks', async (t) => {
+  const h = await releasedFacadeFor(t);
+  const source = h.service.createNativeReleasedConversationAuthoritySource(h.runtime);
+  let changes = 0;
+  const stop = source.onChange(() => changes++);
+  checked(await h.native('waiting', h.drive));
+  assert.equal(changes, 1);
+  const original = h.host.assertWorkspace;
+  h.host.assertWorkspace = () => {};
+  assert.throws(() => source.readNode(h.runLocator()), { code: 'run-authority-unavailable' });
+  h.host.assertWorkspace = original;
+  h.service.fenceRuns();
+  assert.equal(source.signal.aborted, true);
+  assert.throws(() => source.backend(), { code: 'run-authority-unavailable' });
+  assert.throws(() => source.writerState(), { code: 'run-authority-unavailable' });
+  await assert.rejects(async () => source.memberLease(h.request), {
+    code: 'run-authority-unavailable',
+  });
+  h.runtime.retireEpoch = () => assert.fail('new cleanup owner must not replace captured owner');
+  assert.equal(await source.retireEpoch({}), 'stopped');
+  await source.whenEpochSettled({});
+  assert.equal(h.calls.retired, 1);
+  assert.equal(h.calls.settled, 1);
+  stop();
+  stop();
+  assert.equal(h.listeners.size, 1); // Original Run authorities still own their listener.
+});
+
+test('released facade contract: workspace assertions must synchronously return undefined', async (t) => {
+  const h = await releasedFacadeFor(t);
+  const source = h.service.createNativeReleasedConversationAuthoritySource(h.runtime);
+  const run = currentExecutionRun(h.read());
+  h.assertionResults.workspace = () => Promise.reject(Error('PRIVATE async workspace'));
+  assert.throws(
+    () =>
+      source.assertWorkspace('chen', 'north', run.workspace, 'read', run.selection.configurationId),
+    { code: 'run-authority-unavailable' },
+  );
+});
+
+test('released facade contract: an unmounted Host and missing runtime ports never produce a usable source', async (t) => {
+  const h = await hostFor(t, { mount: false });
+  assert.throws(() => h.service.createNativeReleasedConversationAuthoritySource({}), {
+    code: 'run-authority-unavailable',
+  });
+  const mounted = await releasedFacadeFor(t);
+  assert.throws(
+    () =>
+      mounted.service.createNativeReleasedConversationAuthoritySource({
+        ...mounted.runtime,
+        openEpoch: undefined,
+      }),
+    {
+      code: 'run-authority-unavailable',
+    },
+  );
+});
+
+test('released facade contract: a mismatched original scope is rejected before native read admission', async (t) => {
+  const h = await releasedFacadeFor(t);
+  let nativeReads = 0;
+  h.runtime.openReadEpoch = async () => {
+    nativeReads++;
+    throw Error('must not execute');
+  };
+  const source = h.service.createNativeReleasedConversationAuthoritySource(h.runtime);
+  const node = h.read(),
+    run = currentExecutionRun(node);
+  const input = {
+    origin: { ...executionRunScope(node, run), actorId: 'foreign' },
+    actorId: 'chen',
+    backend: source.backend(),
+    signal: new AbortController().signal,
+    assertCurrent() {},
+  };
+  await assert.rejects(async () => source.openReadEpoch(input), { code: 'run-authority-denied' });
+  assert.equal(nativeReads, 0);
 });
 
 test('real JSON service: same-key concurrent begins write once; effect wait does not occupy the original queue', async (t) => {

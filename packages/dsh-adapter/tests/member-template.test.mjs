@@ -82,7 +82,7 @@ test('member template contract: ownership metadata is template-only and cannot b
   }
 });
 
-test('member template contract: default catalog accepts only four exact public source bodies and returns a copy', async () => {
+test('member template contract: default catalog accepts only five exact public source bodies and returns a copy', async () => {
   const base = new URL('../../../resources/workflows/engineering-starter/', import.meta.url);
   const manifest = JSON.parse(await readFile(new URL('catalog.json', base), 'utf8'));
   const assets = await Promise.all(
@@ -97,6 +97,8 @@ test('member template contract: default catalog accepts only four exact public s
   );
   const bundle = { sourceCommit: ENGINEERING_WORKFLOW_SOURCE, assets };
   const verified = defaultMemberTemplates(bundle);
+  assert.equal(verified.length, 5);
+  assert.equal(verified[0].id, 'zhuma-eng-requirements-to-code');
   assert.deepEqual(verified, assets);
   assert.notEqual(verified[0], assets[0]);
   for (const change of ['source', 'bytes', 'duplicate', 'owner']) {
@@ -422,10 +424,10 @@ test('member template contract: original atomic command freezes source and remap
   assert.equal(next.state.appliedPlans.length, 0);
 });
 
-test('member template contract: four actual starter files instantiate as missing-binding drafts without running a model', async () => {
+test('member template contract: five actual starter files instantiate as missing-binding drafts without running a model', async () => {
   const base = new URL('../../../resources/workflows/engineering-starter/', import.meta.url);
   const manifest = JSON.parse(await readFile(new URL('catalog.json', base), 'utf8'));
-  assert.equal(manifest.workflows.length, 4);
+  assert.equal(manifest.workflows.length, 5);
   for (const entry of manifest.workflows) {
     const content = await readFile(new URL(entry.file, base), 'utf8');
     const assets = [

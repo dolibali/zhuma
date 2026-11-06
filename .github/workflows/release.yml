@@ -1,10 +1,14 @@
-name: Desktop Release
+name: Product Release
 
 on:
   workflow_dispatch:
     inputs:
       source_sha:
         description: Full main SHA already accepted in the real Host debug window
+        required: true
+        type: string
+      server_run_id:
+        description: Successful Linux qualification workflow_dispatch run from this exact main SHA
         required: true
         type: string
       mode:
@@ -23,6 +27,7 @@ concurrency:
 
 env:
   RELEASE_SOURCE_SHA: ${{ inputs.source_sha }}
+  SERVER_RUN_ID: ${{ inputs.server_run_id }}
 
 jobs:
   build:
@@ -86,11 +91,107 @@ jobs:
           compression-level: 0
           retention-days: 14
 
+  windows:
+    runs-on: windows-2025
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      actions: read
+    env:
+      COREPACK_ENABLE_DOWNLOAD_PROMPT: '0'
+      DSH_DESKTOP_OPEN_DEVTOOLS: '0'
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.source_sha }}
+          submodules: true
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .node-version
+      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+        with:
+          run_install: false
+      - name: Recheck exact-main CI, version and release conflicts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/desktop/release.mjs preflight
+      - name: Install the shell-free SDK package manager entrypoint
+        run: npm install --global corepack@0.34.6 --force
+      - name: Install locked product dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Build and verify the native Windows x64 installer
+        run: |
+          pnpm desktop:prepare
+          if ($LASTEXITCODE -ne 0) { throw 'Desktop preparation failed.' }
+          pnpm desktop:package:win
+          if ($LASTEXITCODE -ne 0) { throw 'Windows packaging failed.' }
+          pnpm desktop:verify:win --source-sha $env:RELEASE_SOURCE_SHA
+          if ($LASTEXITCODE -ne 0) { throw 'Windows verification failed.' }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: desktop-windows-x64-${{ inputs.source_sha }}
+          path: |
+            dist/windows-x64/*-windows-x64-unsigned.exe
+            dist/windows-x64/SOURCE.json
+            dist/windows-x64/SHA256SUMS
+            dist/windows-x64/LICENSE
+            dist/windows-x64/THIRD_PARTY_NOTICES.md
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  assemble:
+    needs: [build, windows]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.source_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .node-version
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: desktop-macos-arm64-${{ inputs.source_sha }}
+          path: .build/release-input/macos
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: desktop-windows-x64-${{ inputs.source_sha }}
+          path: .build/release-input/windows
+      - name: Require the original exact-main Linux qualification and production artifact
+        id: server
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/desktop/release.mjs server-preflight
+      - name: Download only that immutable qualification artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          QUALIFIED_ARTIFACT_ID: ${{ steps.server.outputs.artifact_id }}
+        run: gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$QUALIFIED_ARTIFACT_ID/zip" > .build/release/server.zip
+      - name: Verify the original archive digest, exact six files, payload and Docker SAVE
+        run: node scripts/desktop/release.mjs server-unpack
+      - name: Assemble the same-source release assets and complete checksums
+        run: node scripts/desktop/release.mjs assemble
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: product-release-${{ inputs.source_sha }}
+          path: .build/release-combined/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
   publish:
     if: inputs.mode == 'publish'
-    needs: build
+    needs: assemble
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
     permissions:
       contents: write
       actions: read
@@ -104,7 +205,7 @@ jobs:
           node-version-file: .node-version
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: desktop-macos-arm64-${{ inputs.source_sha }}
+          name: product-release-${{ inputs.source_sha }}
           path: .build/release-input
       - name: Recheck identity/conflicts, upload new assets, then publish
         env:

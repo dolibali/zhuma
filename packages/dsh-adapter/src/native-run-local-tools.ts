@@ -1,4 +1,6 @@
 import { isAbsolute, relative, resolve, sep } from 'node:path';
+import { createHash } from 'node:crypto';
+import { writeSync } from 'node:fs';
 import { symbols, type Context } from '@deepseek-ai/cordis';
 import type { FileSystem, FsTarget } from '@deepseek-ai/dsh-fs';
 import * as ToolFs from '@deepseek-ai/dsh-tool-fs';
@@ -57,6 +59,82 @@ type LocalToolErrorCode =
   | 'local-tools-mismatch'
   | 'local-tools-budget'
   | 'local-tools-timeout';
+const diagnosticStages = [
+  'delegate',
+  'permission',
+  'resolve-root',
+  'resolve-target',
+  'stat',
+  'stream-open',
+  'stream-next',
+  'write',
+  'edit',
+] as const;
+type DiagnosticStage = (typeof diagnosticStages)[number];
+type DiagnosticPhase = 'begin' | 'done' | 'error';
+const diagnosticCodes: readonly LocalToolErrorCode[] = [
+  'local-tools-unavailable',
+  'local-tools-denied',
+  'local-tools-mismatch',
+  'local-tools-budget',
+  'local-tools-timeout',
+];
+interface LocalIoDiagnostic {
+  record(stage: DiagnosticStage, phase: DiagnosticPhase, error?: unknown): void;
+}
+// No per-scope collections or error identities exist until explicitly enabled.
+// Keep saturated scopes, rather than evicting and accidentally renewing their budget.
+let localIoDiagnostics: Map<string, LocalIoDiagnostic> | undefined;
+let localIoDiagnosticErrors: WeakMap<object, LocalToolErrorCode> | undefined;
+function createLocalIoDiagnostic(scope: NativeWorkScope): LocalIoDiagnostic | undefined {
+  try {
+    if (process.env.ZHUMA_NATIVE_STARTUP_DIAGNOSTICS_STDOUT !== '1') return undefined;
+    const correlation = createHash('sha256')
+      .update(canonicalPayload(scope))
+      .digest('hex')
+      .slice(0, 16);
+    localIoDiagnostics ??= new Map();
+    const prior = localIoDiagnostics.get(correlation);
+    if (prior) return prior;
+    if (localIoDiagnostics.size >= 256) return undefined;
+    localIoDiagnosticErrors ??= new WeakMap();
+    const seen = new Set<string>();
+    const diagnostic: LocalIoDiagnostic = {
+      record(stage, phase, error) {
+        try {
+          if (
+            process.env.ZHUMA_NATIVE_STARTUP_DIAGNOSTICS_STDOUT !== '1' ||
+            !diagnosticStages.includes(stage) ||
+            !['begin', 'done', 'error'].includes(phase) ||
+            seen.size >= 32
+          )
+            return;
+          const key = `${stage}-${phase}`;
+          if (seen.has(key)) return;
+          seen.add(key);
+          // Identity lookup never reads an arbitrary error's fields or accessors.
+          // Nine stages x three phases also leaves room for the final delegate error.
+          const code =
+            phase === 'error'
+              ? (((typeof error === 'object' || typeof error === 'function') && error !== null
+                  ? localIoDiagnosticErrors?.get(error)
+                  : undefined) ?? 'unexpected-error')
+              : 'none';
+          writeSync(
+            1,
+            `${JSON.stringify({ event: 'zhuma-native-local-io-stage', correlation, stage: key, code })}\n`,
+          );
+        } catch {
+          /* Observation cannot replace an original result or failure. */
+        }
+      },
+    };
+    localIoDiagnostics.set(correlation, diagnostic);
+    return diagnostic;
+  } catch {
+    return undefined;
+  }
+}
 export class NativeRunLocalToolError extends HarnessError {
   override readonly code: LocalToolErrorCode;
   constructor(code: LocalToolErrorCode) {
@@ -70,6 +148,16 @@ export class NativeRunLocalToolError extends HarnessError {
     super(messages[code], code);
     this.code = code;
     this.name = 'NativeRunLocalToolError';
+    try {
+      if (
+        process.env.ZHUMA_NATIVE_STARTUP_DIAGNOSTICS_STDOUT === '1' &&
+        localIoDiagnosticErrors &&
+        diagnosticCodes.includes(code)
+      )
+        localIoDiagnosticErrors.set(this, code);
+    } catch {
+      /* Error construction must not depend on diagnostics. */
+    }
   }
 }
 function fail(code: NativeRunLocalToolError['code']): never {
@@ -185,14 +273,20 @@ class RunIo {
   rootPath = '';
   mounted: (() => boolean) | undefined;
   private readonly scope: NativeWorkScope;
+  private readonly diagnostic: LocalIoDiagnostic | undefined;
   constructor(
     readonly producer: NativeRunLocalToolProducer,
     readonly workspace: NativeRunWorkspaceCapability,
     readonly grant: NativeWorkGrant,
   ) {
     this.scope = structuredClone(grant.scope);
+    this.diagnostic = createLocalIoDiagnostic(this.scope);
+  }
+  trace(stage: DiagnosticStage, phase: DiagnosticPhase, error?: unknown): void {
+    this.diagnostic?.record(stage, phase, error);
   }
   check(action: Action): void {
+    this.trace('permission', 'begin');
     try {
       if (
         this.lifetime.signal.aborted ||
@@ -208,7 +302,9 @@ class RunIo {
       this.producer.assertCurrent();
       sync(this.grant.assertCurrent('send'));
       sync(this.workspace.assertCurrent(action));
+      this.trace('permission', 'done');
     } catch (error) {
+      this.trace('permission', 'error', error);
       if (error instanceof NativeRunLocalToolError) throw error;
       fail('local-tools-denied');
     }
@@ -248,15 +344,23 @@ class RunIo {
     action: Action,
     caller: AbortSignal | undefined,
     work: (signal: AbortSignal) => Promise<T>,
+    delegated = false,
   ): Promise<T> {
-    const op = this.open(action, caller);
+    if (delegated) this.trace('delegate', 'begin');
     try {
-      op.check();
-      const value = await work(op.signal);
-      op.check();
-      return value;
-    } finally {
-      op.finish();
+      const op = this.open(action, caller);
+      try {
+        op.check();
+        const value = await work(op.signal);
+        op.check();
+        if (delegated) this.trace('delegate', 'done');
+        return value;
+      } finally {
+        op.finish();
+      }
+    } catch (error) {
+      if (delegated) this.trace('delegate', 'error', error);
+      throw error;
     }
   }
   async initialize(): Promise<void> {
@@ -269,11 +373,28 @@ class RunIo {
         provider.processPathFromHostPath(root) === undefined
       )
         fail('local-tools-unavailable');
-      const target = await provider.resolve(root, { cwd: root, signal });
+      let target: FsTarget;
+      this.trace('resolve-root', 'begin');
+      try {
+        target = await provider.resolve(root, { cwd: root, signal });
+        this.trace('resolve-root', 'done');
+      } catch (error) {
+        this.trace('resolve-root', 'error', error);
+        throw error;
+      }
       this.check('read');
       const path = provider.processPath(target);
-      if (!isAbsolute(path) || (await provider.stat(target, signal))?.type !== 'directory')
-        fail('local-tools-unavailable');
+      if (!isAbsolute(path)) fail('local-tools-unavailable');
+      let info: Awaited<ReturnType<FileSystem['stat']>>;
+      this.trace('stat', 'begin');
+      try {
+        info = await provider.stat(target, signal);
+        this.trace('stat', 'done');
+      } catch (error) {
+        this.trace('stat', 'error', error);
+        throw error;
+      }
+      if (info?.type !== 'directory') fail('local-tools-unavailable');
       this.check('read');
       this.root = target;
       this.rootPath = resolve(path);
@@ -289,10 +410,26 @@ class RunIo {
       !contained(this.rootPath, resolve(this.rootPath, path))
     )
       fail('local-tools-denied');
-    const root = await fs.resolve(this.workspace.root, { cwd: this.workspace.root, signal });
+    let root: FsTarget;
+    this.trace('resolve-root', 'begin');
+    try {
+      root = await fs.resolve(this.workspace.root, { cwd: this.workspace.root, signal });
+      this.trace('resolve-root', 'done');
+    } catch (error) {
+      this.trace('resolve-root', 'error', error);
+      throw error;
+    }
     this.check(action);
     if (resolve(fs.processPath(root)) !== this.rootPath) fail('local-tools-denied');
-    const target = await fs.resolve(path, { cwd: this.rootPath, signal });
+    let target: FsTarget;
+    this.trace('resolve-target', 'begin');
+    try {
+      target = await fs.resolve(path, { cwd: this.rootPath, signal });
+      this.trace('resolve-target', 'done');
+    } catch (error) {
+      this.trace('resolve-target', 'error', error);
+      throw error;
+    }
     this.check(action);
     const actual = fs.processPath(target);
     if (
@@ -319,7 +456,15 @@ class RunIo {
       try {
         const current = await io.current(target, 'read', op.signal);
         op.check();
-        const chunks = await io.producer.filesystem.streamText(current, op.signal);
+        let chunks: Awaited<ReturnType<FileSystem['streamText']>>;
+        io.trace('stream-open', 'begin');
+        try {
+          chunks = await io.producer.filesystem.streamText(current, op.signal);
+          io.trace('stream-open', 'done');
+        } catch (error) {
+          io.trace('stream-open', 'error', error);
+          throw error;
+        }
         op.check();
         const source = chunks[Symbol.asyncIterator]();
         iterator = source;
@@ -327,7 +472,15 @@ class RunIo {
         while (true) {
           await io.current(current, 'read', op.signal);
           op.check();
-          const next = await source.next();
+          let next: IteratorResult<string>;
+          io.trace('stream-next', 'begin');
+          try {
+            next = await source.next();
+            io.trace('stream-next', 'done');
+          } catch (error) {
+            io.trace('stream-next', 'error', error);
+            throw error;
+          }
           op.check();
           await io.current(current, 'read', op.signal);
           op.check();
@@ -362,7 +515,15 @@ class RunIo {
     ) =>
       io.operation('read', signal, async (live) => {
         const current = await io.current(target, 'read', live);
-        const value = await call(current, live);
+        let value: T;
+        io.trace('stat', 'begin');
+        try {
+          value = await call(current, live);
+          io.trace('stat', 'done');
+        } catch (error) {
+          io.trace('stat', 'error', error);
+          throw error;
+        }
         await io.current(current, 'read', live);
         return value;
       });
@@ -390,11 +551,27 @@ class RunIo {
           if (Buffer.byteLength(content, 'utf8') > NATIVE_RUN_LOCAL_IO_LIMITS.fileBytes)
             fail('local-tools-budget');
           const current = await io.current(target, 'write', live);
-          const info = await provider.stat(current, live);
+          let info: Awaited<ReturnType<FileSystem['stat']>>;
+          io.trace('stat', 'begin');
+          try {
+            info = await provider.stat(current, live);
+            io.trace('stat', 'done');
+          } catch (error) {
+            io.trace('stat', 'error', error);
+            throw error;
+          }
           if (info?.size !== undefined && info.size > NATIVE_RUN_LOCAL_IO_LIMITS.fileBytes)
             fail('local-tools-budget');
           const fresh = await io.current(current, 'write', live);
-          const value = await provider.writeText(fresh, content, expected, live);
+          let value: Awaited<ReturnType<FileSystem['writeText']>>;
+          io.trace('write', 'begin');
+          try {
+            value = await provider.writeText(fresh, content, expected, live);
+            io.trace('write', 'done');
+          } catch (error) {
+            io.trace('write', 'error', error);
+            throw error;
+          }
           await io.current(fresh, 'write', live);
           return value;
         }),
@@ -411,7 +588,15 @@ class RunIo {
           )
             fail('local-tools-budget');
           const current = await io.current(target, 'write', live);
-          const info = await provider.stat(current, live);
+          let info: Awaited<ReturnType<FileSystem['stat']>>;
+          io.trace('stat', 'begin');
+          try {
+            info = await provider.stat(current, live);
+            io.trace('stat', 'done');
+          } catch (error) {
+            io.trace('stat', 'error', error);
+            throw error;
+          }
           if (info?.size === undefined || info.size > NATIVE_RUN_LOCAL_IO_LIMITS.fileBytes)
             fail('local-tools-budget');
           // Bound the complete replacement, including replace-all amplification.
@@ -437,12 +622,20 @@ class RunIo {
             occurrences * (storageBytes(replacement) - storageBytes(old));
           if (projected > NATIVE_RUN_LOCAL_IO_LIMITS.fileBytes) fail('local-tools-budget');
           const fresh = await io.current(current, 'write', live);
-          const value = await provider.editText(
-            fresh,
-            edit,
-            expected ?? { version: info.version },
-            live,
-          );
+          let value: Awaited<ReturnType<FileSystem['editText']>>;
+          io.trace('edit', 'begin');
+          try {
+            value = await provider.editText(
+              fresh,
+              edit,
+              expected ?? { version: info.version },
+              live,
+            );
+            io.trace('edit', 'done');
+          } catch (error) {
+            io.trace('edit', 'error', error);
+            throw error;
+          }
           await io.current(fresh, 'write', live);
           return value;
         }),
@@ -645,15 +838,20 @@ export async function adoptNativeRunLocalTools(
     });
     context.on('tools/execute', async (exec, next) => {
       if (!toolNames.includes(exec.name as LocalFileToolName)) return next();
-      return io.operation(exec.name === 'read' ? 'read' : 'write', exec.signal, async (signal) => {
-        const prior = exec.signal;
-        exec.signal = signal;
-        try {
-          return await next();
-        } finally {
-          exec.signal = prior;
-        }
-      });
+      return io.operation(
+        exec.name === 'read' ? 'read' : 'write',
+        exec.signal,
+        async (signal) => {
+          const prior = exec.signal;
+          exec.signal = signal;
+          try {
+            return await next();
+          } finally {
+            exec.signal = prior;
+          }
+        },
+        true,
+      );
     });
     return Object.freeze({
       toolAllowlist: Object.freeze([...saved.payload.toolAllowlist]),

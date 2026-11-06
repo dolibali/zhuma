@@ -66,6 +66,19 @@ export interface MemberWorkbenchPlanValue {
   readonly spaceId: string;
   readonly proposal: PlanProposal;
 }
+export interface PlanningModelOption {
+  readonly id: string;
+  readonly label: string;
+  readonly provider: string;
+  readonly model: string;
+}
+export interface PlanningModelChoices {
+  readonly kind: 'ready' | 'unavailable';
+  readonly label: string;
+  readonly selectedId: string | null;
+  readonly message: string;
+  readonly items: readonly PlanningModelOption[];
+}
 export interface MemberWorkbenchApi {
   snapshot(signal?: AbortSignal): Promise<MemberWorkbenchSnapshot>;
   command(
@@ -73,6 +86,12 @@ export interface MemberWorkbenchApi {
     signal?: AbortSignal,
   ): Promise<MemberWorkbenchSnapshot>;
   plan(input: PlanRequest, signal?: AbortSignal): Promise<MemberWorkbenchPlanValue>;
+  planningModels(signal?: AbortSignal): Promise<PlanningModelChoices>;
+  selectPlanningModel(
+    provider: string,
+    model: string,
+    signal?: AbortSignal,
+  ): Promise<PlanningModelChoices>;
 }
 export interface MemberWorkbenchScope {
   readonly actorId: string;
@@ -317,8 +336,41 @@ export function createMemberWorkbenchApi(
       },
     };
   }
+  function routePart(value: string): string {
+    const part = value.trim();
+    if (!part || part.length > 200)
+      throw new WorkbenchError('validation', '所选规划模型当前不可用，请刷新后重试。');
+    return part;
+  }
+  function planningModels(value: unknown): PlanningModelChoices {
+    const item = scoped(value, ['kind', 'label', 'selectedId', 'message', 'items']);
+    if (item.kind !== 'ready' && item.kind !== 'unavailable') invalid();
+    const label = text(item.label);
+    if (label.length > 500) invalid();
+    if (typeof item.message !== 'string' || item.message.length > 500) invalid();
+    if (
+      item.selectedId !== null &&
+      (typeof item.selectedId !== 'string' || !item.selectedId.trim())
+    )
+      invalid();
+    if (!Array.isArray(item.items) || item.items.length > 256) invalid();
+    const items = item.items.map((raw) => {
+      const option = record(raw, ['id', 'label', 'provider', 'model']);
+      const id = text(option.id);
+      const optionLabel = text(option.label);
+      const provider = routePart(text(option.provider));
+      const model = routePart(text(option.model));
+      if (id.length > 500 || optionLabel.length > 500) invalid();
+      return { id, label: optionLabel, provider, model };
+    });
+    if (new Set(items.map((option) => option.id)).size !== items.length) invalid();
+    const selectedId = item.selectedId === null ? null : text(item.selectedId);
+    if (item.kind === 'unavailable' && (items.length || selectedId !== null)) invalid();
+    if (selectedId !== null && !items.some((option) => option.id === selectedId)) invalid();
+    return { kind: item.kind, label, selectedId, message: item.message, items };
+  }
   async function call(
-    endpoint: 'snapshot' | 'command' | 'plan',
+    endpoint: 'snapshot' | 'command' | 'plan' | 'planning-models' | 'select-planning-model',
     payload: object,
     caller?: AbortSignal,
   ): Promise<unknown> {
@@ -387,6 +439,18 @@ export function createMemberWorkbenchApi(
       )
         invalid();
       return { actorId, spaceId, proposal: proposal.data };
+    },
+    async planningModels(signal) {
+      return planningModels(await call('planning-models', { spaceId }, signal));
+    },
+    async selectPlanningModel(provider, model, signal) {
+      return planningModels(
+        await call(
+          'select-planning-model',
+          { spaceId, provider: routePart(provider), model: routePart(model) },
+          signal,
+        ),
+      );
     },
   };
 }

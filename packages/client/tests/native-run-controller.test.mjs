@@ -420,6 +420,86 @@ test('Run refresh priority contract: catalog failures close the view while histo
   }
 });
 
+test('Run refresh contract: bounded history and inbox failures keep the freshly read Run and its explicit Stop', async (t) => {
+  for (const stage of ['history', 'inbox']) {
+    for (const code of ['unavailable', 'read-timeout', 'capacity']) {
+      let armed = false,
+        stopped = false;
+      const fresh = { ...summary, nodeVersion: 7, runVersion: 5 };
+      const failure = new ExecutionError(code, 'Synthetic bounded message read failure');
+      const stops = [];
+      const h = setup({
+        options: async () => runningOptions(),
+        read: async () =>
+          stopped
+            ? { ...fresh, status: 'cancelled', resources: 'settled', stopPhase: 'confirmed' }
+            : armed
+              ? fresh
+              : summary,
+        history: async (_target, _run, after) => {
+          if (armed && stage === 'history') throw failure;
+          return { messages: [], nextAfter: after };
+        },
+        inbox: async () => {
+          if (armed && stage === 'inbox') throw failure;
+          return { asOfSeq: -1, receipts: [], items: [] };
+        },
+        stop: async (run, requestId, signal) => {
+          signal.throwIfAborted();
+          stops.push({ run, requestId });
+          stopped = true;
+        },
+      });
+      t.after(() => h.controller.dispose());
+      await h.controller.refresh();
+      armed = true;
+      await assert.rejects(h.controller.refresh(), (error) => error === failure);
+      const view = h.controller.getSnapshot().view;
+      assert.equal(view.kind, 'ready', `${stage}: ${code}`);
+      assert.deepEqual(view.run, fresh);
+      assert.equal(view.actions.stop.kind, 'available');
+      assert.match(h.controller.getSnapshot().error, /运行状态已更新/);
+      assert.equal(stops.length, 0, 'A read failure never stops or retries execution implicitly');
+      await h.controller.stop();
+      assert.equal(stops.length, 1);
+      assert.deepEqual(stops[0].run, fresh);
+      assert.equal(typeof stops[0].requestId, 'string');
+      assert.equal(h.controller.getSnapshot().view.run.resources, 'settled');
+      assert.equal(h.controller.getSnapshot().view.run.stopPhase, 'confirmed');
+      assert.equal(h.controller.getSnapshot().view.actions.stop.kind, 'unavailable');
+      assert.equal(h.calls.some(Array.isArray), false, 'No begin or send is issued');
+    }
+  }
+});
+
+test('Run refresh contract: bounded options or Run read failures never retain controls from an earlier view', async (t) => {
+  for (const stage of ['options', 'read']) {
+    for (const code of ['unavailable', 'read-timeout', 'capacity']) {
+      for (const previouslyReady of [false, true]) {
+        let armed = !previouslyReady;
+        const failure = new ExecutionError(code, 'Synthetic metadata read failure');
+        const h = setup({
+          options: async () => {
+            if (armed && stage === 'options') throw failure;
+            return runningOptions();
+          },
+          read: async () => {
+            if (armed && stage === 'read') throw failure;
+            return summary;
+          },
+        });
+        t.after(() => h.controller.dispose());
+        if (previouslyReady) await h.controller.refresh();
+        armed = true;
+        await assert.rejects(h.controller.refresh(), (error) => error === failure);
+        assert.equal(h.controller.getSnapshot().view.kind, 'unavailable');
+        await assert.rejects(h.controller.stop(), /not ready/);
+        assert.equal(h.calls.some(Array.isArray), false);
+      }
+    }
+  }
+});
+
 test('Run refresh contract: settled status is visible before blocked history and survives inbox failure', async (t) => {
   let completed = false;
   const held = heldRead();
@@ -457,24 +537,37 @@ test('Run refresh contract: settled status is visible before blocked history and
 });
 
 test('Run refresh contract: explicit history authority or target refusals close actions after a fresh status read', async (t) => {
-  for (const code of [
-    'run-authority-denied',
-    'unauthenticated',
-    'space-unavailable',
-    'run-scope-mismatch',
-    'validation',
-  ]) {
-    const h = setup({
-      options: async () => runningOptions(),
-      read: async () => ({ ...summary, status: 'completed', resources: 'settled' }),
-      history: async () => {
-        throw new ExecutionError(code, 'Original refusal');
-      },
-    });
-    t.after(() => h.controller.dispose());
-    await assert.rejects(h.controller.refresh(), (error) => error.code === code);
-    assert.equal(h.controller.getSnapshot().view.kind, 'unavailable', code);
-    await assert.rejects(h.controller.start(selection), /not ready/);
+  for (const stage of ['history', 'inbox']) {
+    for (const code of [
+      'run-authority-denied',
+      'unauthenticated',
+      'member-session-required',
+      'session-changed',
+      'space-unavailable',
+      'run-scope-mismatch',
+      'scope-mismatch',
+      'binding-state-invalid',
+      'cancelled',
+      'validation',
+    ]) {
+      const h = setup({
+        options: async () => runningOptions(),
+        read: async () => ({ ...summary, status: 'completed', resources: 'settled' }),
+        history: async (_target, _run, after) => {
+          if (stage === 'history') throw new ExecutionError(code, 'Original refusal');
+          return { messages: [], nextAfter: after };
+        },
+        inbox: async () => {
+          throw new ExecutionError(code, 'Original refusal');
+        },
+      });
+      t.after(() => h.controller.dispose());
+      await assert.rejects(h.controller.refresh(), (error) => error.code === code);
+      assert.equal(h.controller.getSnapshot().view.kind, 'unavailable', `${stage}: ${code}`);
+      await assert.rejects(h.controller.start(selection), /not ready/);
+      await assert.rejects(h.controller.stop(), /not ready/);
+      assert.equal(h.calls.some(Array.isArray), false);
+    }
   }
 });
 

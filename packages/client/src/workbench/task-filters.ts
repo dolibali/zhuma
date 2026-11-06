@@ -62,6 +62,20 @@ export function createTaskFilterStore(
   };
 }
 
+/**
+ * Opening the task list from an open project scopes that list to the project.
+ * Any other destination, including the all-projects catalog, keeps the current filter.
+ */
+export function taskFiltersForNavigation(
+  filters: TaskFilters,
+  destination: string,
+  activeProjectId: string | null,
+): TaskFilters {
+  if (destination !== 'tasks' || !activeProjectId || filters.projectId === activeProjectId)
+    return filters;
+  return { ...filters, projectId: activeProjectId };
+}
+
 /** Stage is intentionally excluded: all matching plans must be read before stage filtering. */
 export function taskFilterCandidates(tasks: readonly WorkTask[], filters: TaskFilters): WorkTask[] {
   const search = filters.search.trim().toLocaleLowerCase();

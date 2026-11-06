@@ -1,0 +1,684 @@
+diff --git a/apps/desktop/renderer/assets/welcome-brand.svg b/apps/desktop/renderer/assets/welcome-brand.svg
+index 67c917d0..b273b587 100644
+--- a/apps/desktop/renderer/assets/welcome-brand.svg
++++ b/apps/desktop/renderer/assets/welcome-brand.svg
+@@ -2,43 +2,19 @@
+ <style>
+   :root {
+     --dsw-alias-label-primary: #0f1115;
+-    --dsw-alias-label-primary-inverted: #fff;
+   }
+   @media (prefers-color-scheme: dark) {
+     :root {
+       --dsw-alias-label-primary: #f9fafb;
+-      --dsw-alias-label-primary-inverted: #353638;
+     }
+   }
++  text {
++    fill: var(--dsw-alias-label-primary);
++    font-family: system-ui, sans-serif;
++    font-size: 32px;
++    font-weight: 700;
++    letter-spacing: -0.04em;
++  }
+ </style>
+-<path d="M213.743 26.2447H212.377V24.1272H213.743C214.589 24.1272 215.443 23.9163 215.994 23.3304C216.545 22.7444 216.753 21.8455 216.753 20.9471C216.753 20.0487 216.554 19.1498 215.994 18.5643C215.435 17.9783 214.589 17.7674 213.743 17.7674C212.897 17.7674 212.042 17.9783 211.491 18.5643C210.94 19.1503 210.732 20.0487 210.732 20.9471V29.6435H208.336V15.6582H210.732V16.5488H211.171C211.219 16.4939 211.266 16.4473 211.314 16.4006C211.914 15.8535 212.832 15.6582 213.734 15.6582C215.148 15.6582 216.561 16.01 217.488 16.9866C218.414 17.9632 218.741 19.4632 218.741 20.9558C218.741 22.4485 218.405 23.9406 217.488 24.925C216.569 25.9094 215.148 26.2457 213.743 26.2457V26.2447Z" fill="var(--dsw-alias-label-primary)"/>
+-<path d="M177.282 16.0355H178.647V18.153H177.282C176.436 18.153 175.581 18.3638 175.03 18.9498C174.479 19.5358 174.272 20.4347 174.272 21.3331C174.272 22.2315 174.472 23.1299 175.03 23.7159C175.589 24.3018 176.436 24.5127 177.282 24.5127C178.128 24.5127 178.983 24.3018 179.534 23.7159C180.085 23.1299 180.293 22.2315 180.293 21.3331V12.6289H182.688V26.6224H180.293V25.7318H179.853C179.805 25.7862 179.758 25.8334 179.709 25.88C179.11 26.4266 178.192 26.6224 177.29 26.6224C175.876 26.6224 174.463 26.2711 173.537 25.2945C172.611 24.3179 172.283 22.8175 172.283 21.3253C172.283 19.8331 172.618 18.3405 173.537 17.3561C174.463 16.3795 175.876 16.0355 177.282 16.0355Z" fill="var(--dsw-alias-label-primary)"/>
+-<path d="M194.706 21.1444V21.9962H188.325V20.3009H192.557C192.462 19.6838 192.238 19.1056 191.839 18.6834C191.264 18.0741 190.377 17.8554 189.499 17.8554C188.621 17.8554 187.735 18.0741 187.16 18.6834C186.585 19.2927 186.377 20.2227 186.377 21.1449C186.377 22.0671 186.584 23.0044 187.16 23.6059C187.735 24.2074 188.621 24.4343 189.499 24.4343C190.378 24.4343 191.264 24.2157 191.839 23.6059C191.918 23.5199 191.99 23.4261 192.062 23.3323H194.426C194.219 24.067 193.891 24.7312 193.396 25.2467C192.438 26.2545 190.961 26.6218 189.499 26.6218C188.038 26.6218 186.561 26.2622 185.602 25.2467C184.644 24.2312 184.293 22.6842 184.293 21.1449C184.293 19.6056 184.636 18.0508 185.602 17.043C186.569 16.0353 188.038 15.668 189.499 15.668C190.961 15.668 192.438 16.0275 193.396 17.043C194.362 18.0585 194.706 19.6056 194.706 21.1449V21.1444Z" fill="var(--dsw-alias-label-primary)"/>
+-<path d="M206.731 21.1444V21.9962H200.351V20.3009H204.583C204.487 19.6838 204.264 19.1056 203.864 18.6834C203.289 18.0741 202.403 17.8554 201.525 17.8554C200.647 17.8554 199.76 18.0741 199.185 18.6834C198.61 19.2927 198.402 20.2227 198.402 21.1449C198.402 22.0671 198.61 23.0044 199.185 23.6059C199.76 24.2074 200.647 24.4343 201.525 24.4343C202.403 24.4343 203.289 24.2157 203.864 23.6059C203.944 23.5199 204.016 23.4261 204.087 23.3323H206.452C206.244 24.067 205.916 24.7312 205.421 25.2467C204.463 26.2545 202.986 26.6218 201.525 26.6218C200.064 26.6218 198.586 26.2622 197.628 25.2467C196.67 24.2312 196.318 22.6842 196.318 21.1449C196.318 19.6056 196.662 18.0508 197.628 17.043C198.594 16.0353 200.063 15.668 201.525 15.668C202.986 15.668 204.463 16.0275 205.421 17.043C206.387 18.0585 206.731 19.6056 206.731 21.1449V21.1444Z" fill="var(--dsw-alias-label-primary)"/>
+-<path d="M225.57 26.6228C227.031 26.6228 228.508 26.4119 229.466 25.8104C230.424 25.2088 230.776 24.2944 230.776 23.3882C230.776 22.482 230.432 21.5598 229.466 20.9661C228.508 20.3723 227.031 20.1532 225.57 20.1532C224.946 20.1532 224.371 20.0672 223.964 19.8408C223.557 19.6061 223.405 19.2548 223.405 18.903C223.405 18.5512 223.549 18.1921 223.964 17.9652C224.371 17.7306 225.003 17.6528 225.625 17.6528C226.247 17.6528 226.879 17.7388 227.287 17.9652C227.694 18.1999 227.845 18.5512 227.845 18.903H230.281C230.281 17.9963 229.97 17.0746 229.1 16.4809C228.229 15.8871 226.896 15.668 225.57 15.668C224.245 15.668 222.911 15.8788 222.041 16.4809C221.17 17.0824 220.858 17.9963 220.858 18.903C220.858 19.8097 221.17 20.7314 222.041 21.3251C222.911 21.9189 224.244 22.138 225.57 22.138C226.257 22.138 227.016 22.224 227.47 22.4505C227.926 22.6774 228.086 23.0364 228.086 23.3882C228.086 23.74 227.926 24.0991 227.47 24.326C227.016 24.5524 226.321 24.6384 225.634 24.6384C224.948 24.6384 224.245 24.5524 223.797 24.326C223.35 24.0996 223.182 23.74 223.182 23.3882H220.371C220.371 24.2949 220.714 25.2166 221.681 25.8104C222.647 26.4041 224.109 26.6228 225.57 26.6228H225.57Z" fill="var(--dsw-alias-label-primary)"/>
+-<path d="M242.801 21.1444V21.9962H236.421V20.3009H240.653C240.557 19.6838 240.333 19.1056 239.934 18.6834C239.359 18.0741 238.473 17.8554 237.594 17.8554C236.715 17.8554 235.829 18.0741 235.254 18.6834C234.68 19.2927 234.473 20.2227 234.473 21.1449C234.473 22.0671 234.68 23.0044 235.254 23.6059C235.829 24.2074 236.716 24.4343 237.594 24.4343C238.472 24.4343 239.359 24.2157 239.934 23.6059C240.014 23.5199 240.086 23.4261 240.158 23.3323H242.521C242.313 24.067 241.986 24.7312 241.491 25.2467C240.533 26.2545 239.056 26.6218 237.594 26.6218C236.132 26.6218 234.656 26.2622 233.698 25.2467C232.739 24.2312 232.389 22.6842 232.389 21.1449C232.389 19.6056 232.732 18.0508 233.698 17.043C234.664 16.0353 236.133 15.668 237.594 15.668C239.055 15.668 240.533 16.0275 241.491 17.043C242.457 18.0585 242.8 19.6056 242.8 21.1449L242.801 21.1444Z" fill="var(--dsw-alias-label-primary)"/>
+-<path d="M254.827 21.1444V21.9962H248.446V20.3009H252.679C252.583 19.6838 252.359 19.1056 251.96 18.6834C251.385 18.0741 250.499 17.8554 249.62 17.8554C248.741 17.8554 247.856 18.0741 247.281 18.6834C246.706 19.2927 246.498 20.2227 246.498 21.1449C246.498 22.0671 246.706 23.0044 247.281 23.6059C247.856 24.2074 248.742 24.4343 249.62 24.4343C250.498 24.4343 251.385 24.2157 251.96 23.6059C252.04 23.5199 252.111 23.4261 252.184 23.3323H254.547C254.339 24.067 254.012 24.7312 253.518 25.2467C252.559 26.2545 251.082 26.6218 249.62 26.6218C248.159 26.6218 246.682 26.2622 245.724 25.2467C244.766 24.2312 244.414 22.6842 244.414 21.1449C244.414 19.6056 244.757 18.0508 245.724 17.043C246.69 16.0353 248.159 15.668 249.62 15.668C251.081 15.668 252.558 16.0275 253.518 17.043C254.484 18.0585 254.827 19.6056 254.827 21.1449V21.1444Z" fill="var(--dsw-alias-label-primary)"/>
+-<path d="M258.827 12.6289H256.432V26.6224H258.827V12.6289Z" fill="var(--dsw-alias-label-primary)"/>
+-<path d="M262.917 20.8169L266.844 26.6222H263.882L259.953 20.8169L263.882 16.1523H266.844L262.917 20.8169Z" fill="var(--dsw-alias-label-primary)"/>
+-<g clip-path="url(#clip0_2141_5628)">
+-<path d="M168.384 12.9517C168.138 12.8317 168.033 13.0607 167.889 13.1767C167.84 13.2142 167.799 13.2632 167.757 13.3082C167.399 13.6912 166.98 13.9427 166.433 13.9127C165.632 13.8677 164.949 14.1192 164.345 14.7312C164.217 13.9767 163.79 13.5262 163.141 13.2372C162.802 13.0872 162.458 12.9367 162.22 12.6102C162.054 12.3776 162.009 12.1186 161.926 11.8631C161.873 11.7091 161.82 11.5516 161.643 11.5251C161.45 11.4951 161.375 11.6566 161.299 11.7916C160.997 12.3436 160.88 12.9517 160.892 13.5677C160.918 14.9532 161.503 16.0568 162.666 16.8418C162.798 16.9318 162.832 17.0218 162.79 17.1533C162.711 17.4238 162.617 17.6863 162.534 17.9568C162.481 18.1293 162.402 18.1673 162.217 18.0918C161.579 17.8253 161.028 17.4308 160.541 16.9543C159.714 16.1548 158.967 15.2722 158.035 14.5812C157.816 14.4197 157.597 14.2697 157.37 14.1267C156.419 13.2032 157.495 12.4446 157.744 12.3546C158.004 12.2606 157.834 11.9376 156.993 11.9416C156.151 11.9451 155.381 12.2271 154.4 12.6027C154.256 12.6592 154.105 12.7002 153.951 12.7342C153.06 12.5652 152.135 12.5277 151.169 12.6367C149.35 12.8392 147.897 13.6992 146.829 15.1672C145.546 16.9318 145.244 18.9368 145.613 21.0279C146.002 23.232 147.127 25.0565 148.855 26.4831C150.648 27.9621 152.713 28.6871 155.068 28.5481C156.499 28.4656 158.091 28.2741 159.888 26.7536C160.341 26.9791 160.816 27.0691 161.605 27.1366C162.212 27.1931 162.797 27.1066 163.25 27.0126C163.96 26.8626 163.911 26.2056 163.654 26.0851C161.575 25.1165 162.031 25.5105 161.616 25.1915C162.673 23.9415 164.287 21.7194 164.785 18.6938C164.834 18.3598 164.896 17.8893 164.889 17.6188C164.885 17.4538 164.923 17.3898 165.111 17.3708C165.632 17.3108 166.138 17.1683 166.603 16.9128C167.95 16.1768 168.494 14.9677 168.622 13.5187C168.641 13.2972 168.618 13.0682 168.384 12.9517ZM156.642 25.9951C154.626 24.4105 153.649 23.889 153.245 23.9115C152.868 23.934 152.936 24.366 153.019 24.6475C153.106 24.9255 153.219 25.117 153.377 25.361C153.487 25.5225 153.562 25.7625 153.268 25.9431C152.619 26.3446 151.49 25.808 151.437 25.7815C150.124 25.008 149.025 23.987 148.251 22.5905C147.504 21.2464 147.07 19.8044 146.998 18.2653C146.979 17.8938 147.089 17.7623 147.459 17.6948C147.946 17.6048 148.448 17.5858 148.934 17.6573C150.992 17.9578 152.743 18.8773 154.211 20.3344C155.049 21.1639 155.683 22.1554 156.336 23.124C157.03 24.1525 157.777 25.1325 158.729 25.9361C159.065 26.2176 159.333 26.4316 159.589 26.5896C158.816 26.6761 157.525 26.6946 156.642 25.9961V25.9951ZM157.608 19.7814C157.608 19.6164 157.74 19.4849 157.906 19.4849C157.943 19.4849 157.977 19.4924 158.008 19.5034C158.049 19.5184 158.087 19.5409 158.117 19.5749C158.17 19.6274 158.2 19.7024 158.2 19.7814C158.2 19.9464 158.068 20.0779 157.902 20.0779C157.736 20.0779 157.608 19.9464 157.608 19.7814ZM160.608 21.3204C160.416 21.3994 160.223 21.4669 160.038 21.4744C159.751 21.4894 159.438 21.3729 159.268 21.2304C159.004 21.0089 158.815 20.8849 158.736 20.4984C158.702 20.3334 158.721 20.0779 158.751 19.9314C158.819 19.6159 158.744 19.4134 158.521 19.2294C158.34 19.0793 158.11 19.0378 157.857 19.0378C157.762 19.0378 157.676 18.9963 157.611 18.9628C157.506 18.9103 157.419 18.7788 157.502 18.6173C157.528 18.5648 157.657 18.4373 157.687 18.4148C158.03 18.2193 158.426 18.2833 158.793 18.4298C159.132 18.5688 159.389 18.8238 159.759 19.1844C160.136 19.6199 160.204 19.7399 160.419 20.0669C160.589 20.3224 160.744 20.5849 160.85 20.8854C160.914 21.0729 160.831 21.2264 160.608 21.3204Z" fill="var(--dsw-alias-label-primary)"/>
+-</g>
+-<rect x="274.674" y="13.5" width="52" height="14" rx="2" fill="var(--dsw-alias-label-primary)"/>
+-<g clip-path="url(#clip1_2141_5628)">
+-<path d="M278.174 16.9328H279.406V24.1378H278.174V16.9328ZM281.826 16.9328H283.058V24.1378H281.826V16.9328ZM278.691 21.0248V19.9908H282.519V21.0248H278.691Z" fill="var(--dsw-alias-label-primary-inverted)"/>
+-<path d="M285.723 22.4328L285.998 21.4538H288.528L288.858 22.4328H285.723ZM285.613 24.1378H284.381L286.603 16.9328H287.527L287.472 17.7468L286.273 21.9158H286.295L285.613 24.1378ZM290.365 24.1378H289.067L288.396 21.9488L288.407 21.9378L287.197 17.7468L287.252 16.9328H288.143L290.365 24.1378Z" fill="var(--dsw-alias-label-primary-inverted)"/>
+-<path d="M292.172 16.9328H294.393C295.178 16.9328 295.768 17.1161 296.164 17.4828C296.56 17.8421 296.758 18.3334 296.758 18.9568C296.758 19.2208 296.722 19.4664 296.649 19.6938C296.575 19.9211 296.451 20.1264 296.274 20.3098C296.098 20.4931 295.857 20.6508 295.549 20.7828C295.248 20.9074 294.867 21.0064 294.405 21.0798V21.3218H292.172V20.6398L293.349 20.4858C293.957 20.4051 294.416 20.2988 294.724 20.1668C295.032 20.0348 295.24 19.8771 295.351 19.6938C295.461 19.5031 295.516 19.2941 295.516 19.0668C295.516 18.7001 295.409 18.4178 295.197 18.2198C294.984 18.0218 294.65 17.9228 294.195 17.9228H292.172V16.9328ZM291.72 16.9328H292.953V24.1378H291.72V16.9328ZM297.243 24.0938V24.1378H295.691L294.35 22.3228C294.196 22.1101 294.056 21.9414 293.932 21.8168C293.807 21.6848 293.671 21.5894 293.524 21.5308C293.378 21.4648 293.198 21.4208 292.986 21.3988C292.773 21.3694 292.502 21.3511 292.172 21.3438V21.1458H294.405C294.559 21.2118 294.694 21.2851 294.812 21.3658C294.936 21.4464 295.061 21.5454 295.186 21.6628C295.318 21.7801 295.464 21.9378 295.625 22.1358L297.243 24.0938Z" fill="var(--dsw-alias-label-primary-inverted)"/>
+-<path d="M298.906 17.5708L298.917 16.9328H299.786L302.91 23.5108V24.1378H302.03L298.906 17.5708ZM303.35 24.1378H302.294L302.206 16.9328H303.35V24.1378ZM299.566 24.1378H298.422V16.9328H299.478L299.566 24.1378Z" fill="var(--dsw-alias-label-primary-inverted)"/>
+-<path d="M305.289 16.9328H306.532V24.1378H305.289V16.9328ZM305.421 17.9668V16.9328H310.184V17.9668H305.421ZM305.421 24.1378V23.1038H310.228V24.1378H305.421ZM305.421 21.0138V19.9908H309.7V21.0138H305.421Z" fill="var(--dsw-alias-label-primary-inverted)"/>
+-<path d="M314.378 23.2578C314.869 23.2578 315.221 23.1661 315.434 22.9828C315.654 22.7994 315.764 22.5464 315.764 22.2238C315.764 22.0478 315.731 21.8974 315.665 21.7728C315.599 21.6481 315.478 21.5344 315.302 21.4318C315.133 21.3218 314.884 21.2154 314.554 21.1128L313.817 20.8818C313.172 20.6764 312.706 20.4051 312.42 20.0678C312.134 19.7304 311.991 19.3014 311.991 18.7808C311.991 18.4288 312.086 18.1024 312.277 17.8018C312.468 17.5011 312.754 17.2591 313.135 17.0758C313.516 16.8924 313.989 16.8008 314.554 16.8008C314.957 16.8008 315.324 16.8301 315.654 16.8888C315.991 16.9401 316.365 17.0171 316.776 17.1198L316.6 18.1758C316.16 18.0511 315.768 17.9631 315.423 17.9118C315.086 17.8531 314.789 17.8238 314.532 17.8238C314.063 17.8238 313.729 17.9081 313.531 18.0768C313.333 18.2381 313.234 18.4398 313.234 18.6818C313.234 18.8578 313.267 19.0154 313.333 19.1548C313.399 19.2868 313.516 19.4078 313.685 19.5178C313.861 19.6278 314.11 19.7341 314.433 19.8368L315.192 20.0788C315.852 20.2768 316.321 20.5334 316.6 20.8488C316.879 21.1568 317.018 21.5858 317.018 22.1358C317.018 22.5611 316.915 22.9351 316.71 23.2578C316.505 23.5804 316.204 23.8334 315.808 24.0168C315.419 24.2001 314.935 24.2918 314.356 24.2918C313.953 24.2918 313.538 24.2478 313.113 24.1598C312.688 24.0718 312.226 23.9434 311.727 23.7748L311.991 22.7188C312.482 22.8948 312.926 23.0304 313.322 23.1258C313.725 23.2138 314.077 23.2578 314.378 23.2578Z" fill="var(--dsw-alias-label-primary-inverted)"/>
+-<path d="M321.135 23.2578C321.626 23.2578 321.978 23.1661 322.191 22.9828C322.411 22.7994 322.521 22.5464 322.521 22.2238C322.521 22.0478 322.488 21.8974 322.422 21.7728C322.356 21.6481 322.235 21.5344 322.059 21.4318C321.89 21.3218 321.641 21.2154 321.311 21.1128L320.574 20.8818C319.929 20.6764 319.463 20.4051 319.177 20.0678C318.891 19.7304 318.748 19.3014 318.748 18.7808C318.748 18.4288 318.843 18.1024 319.034 17.8018C319.225 17.5011 319.511 17.2591 319.892 17.0758C320.273 16.8924 320.746 16.8008 321.311 16.8008C321.714 16.8008 322.081 16.8301 322.411 16.8888C322.748 16.9401 323.122 17.0171 323.533 17.1198L323.357 18.1758C322.917 18.0511 322.525 17.9631 322.18 17.9118C321.843 17.8531 321.546 17.8238 321.289 17.8238C320.82 17.8238 320.486 17.9081 320.288 18.0768C320.09 18.2381 319.991 18.4398 319.991 18.6818C319.991 18.8578 320.024 19.0154 320.09 19.1548C320.156 19.2868 320.273 19.4078 320.442 19.5178C320.618 19.6278 320.867 19.7341 321.19 19.8368L321.949 20.0788C322.609 20.2768 323.078 20.5334 323.357 20.8488C323.636 21.1568 323.775 21.5858 323.775 22.1358C323.775 22.5611 323.672 22.9351 323.467 23.2578C323.262 23.5804 322.961 23.8334 322.565 24.0168C322.176 24.2001 321.692 24.2918 321.113 24.2918C320.71 24.2918 320.295 24.2478 319.87 24.1598C319.445 24.0718 318.983 23.9434 318.484 23.7748L318.748 22.7188C319.239 22.8948 319.683 23.0304 320.079 23.1258C320.482 23.2138 320.834 23.2578 321.135 23.2578Z" fill="var(--dsw-alias-label-primary-inverted)"/>
+-</g>
+-<defs>
+-<clipPath id="clip0_2141_5628">
+-<rect width="23.16" height="17.0435" fill="var(--dsw-alias-label-primary-inverted)" transform="translate(145.467 11.5215)"/>
+-</clipPath>
+-<clipPath id="clip1_2141_5628">
+-<rect width="46" height="14" fill="var(--dsw-alias-label-primary-inverted)" transform="translate(277.674 13.5)"/>
+-</clipPath>
+-</defs>
++<text x="236" y="31" text-anchor="middle">Zhuma</text>
+ </svg>
+diff --git a/apps/desktop/src/locale.ts b/apps/desktop/src/locale.ts
+index 5d9d4607..5444cdad 100644
+--- a/apps/desktop/src/locale.ts
++++ b/apps/desktop/src/locale.ts
+@@ -87,7 +87,7 @@ export const en = {
+   welcomeSignIn: 'Sign in',
+   welcomeApiKey: 'Add API Key',
+   welcomeKeyTitle: 'Add an API key to get started',
+-  welcomeKeyDescription: 'Configure official DeepSeek models to start using Harness',
++  welcomeKeyDescription: 'Configure official DeepSeek models to start using Zhuma',
+   welcomeKeyPlaceholder: 'Enter API key',
+   welcomeKeySave: 'Save and continue',
+   welcomeKeyLater: 'Set up later',
+@@ -258,7 +258,7 @@ export const zh = {
+   welcomeSignIn: '登录',
+   welcomeApiKey: '添加 API Key',
+   welcomeKeyTitle: '添加一个 API Key 开始使用',
+-  welcomeKeyDescription: '配置 DeepSeek 官方模型，即可开始使用',
++  welcomeKeyDescription: '配置 DeepSeek 官方模型，即可开始使用 Zhuma',
+   welcomeKeyPlaceholder: '输入 API 密钥',
+   welcomeKeySave: '保存并继续',
+   welcomeKeyLater: '稍后配置',
+diff --git a/apps/web/public/manifest.webmanifest b/apps/web/public/manifest.webmanifest
+index 6592d6a7..aa1cd8f2 100644
+--- a/apps/web/public/manifest.webmanifest
++++ b/apps/web/public/manifest.webmanifest
+@@ -1,6 +1,6 @@
+ {
+-  "name": "DeepSeek Harness",
+-  "short_name": "DSH",
++  "name": "Zhuma",
++  "short_name": "Zhuma",
+   "start_url": "./",
+   "scope": "./",
+   "display": "fullscreen",
+diff --git a/packages/client/locale/src/locales/en.ts b/packages/client/locale/src/locales/en.ts
+index b649bbc3..1a3745f9 100644
+--- a/packages/client/locale/src/locales/en.ts
++++ b/packages/client/locale/src/locales/en.ts
+@@ -33,7 +33,7 @@ export const en = {
+   'collapse': 'Collapse',
+   'expand': 'Expand',
+   'back': 'Back',
+-  'brand.localBuild': 'DSH Local Build',
++  'brand.localBuild': 'Zhuma',
+   'workspace.defaultName': 'Default workspace',
+   'unknown': 'Unknown',
+   'none': 'None',
+diff --git a/packages/client/locale/src/locales/zh.ts b/packages/client/locale/src/locales/zh.ts
+index 11ff789b..39d21fa7 100644
+--- a/packages/client/locale/src/locales/zh.ts
++++ b/packages/client/locale/src/locales/zh.ts
+@@ -31,7 +31,7 @@ export const zh = {
+   'collapse': '收起',
+   'expand': '展开',
+   'back': '返回',
+-  'brand.localBuild': 'DSH 本地构建',
++  'brand.localBuild': 'Zhuma',
+   'workspace.defaultName': '默认工作区',
+   'unknown': '未知',
+   'none': '无',
+diff --git a/packages/client/ui-agent-preset/src/client/locales.ts b/packages/client/ui-agent-preset/src/client/locales.ts
+index 49178ca5..0d431067 100644
+--- a/packages/client/ui-agent-preset/src/client/locales.ts
++++ b/packages/client/ui-agent-preset/src/client/locales.ts
+@@ -38,7 +38,7 @@ export type AgentPresetSettingsKey =
+ export const en: Record<AgentPresetSettingsKey, string> = {
+   ...guideEn,
+   builtInGroup: 'Built-in', customGroup: 'Custom',
+-  sectionIntro: 'Choose the agent’s tools and how it works. Use Standard mode for everyday tasks, or Creator mode to add capabilities to DSH.',
++  sectionIntro: 'Choose the agent’s tools and how it works. Use Standard mode for everyday tasks, or Creator mode to add capabilities.',
+ 
+   seatHint: 'Choose the agent preset for your new task',
+   headerHint: 'The agent preset chosen when this task started',
+@@ -58,7 +58,7 @@ export const en: Record<AgentPresetSettingsKey, string> = {
+     'The agent uses a terminal and image reading, with context compaction. Useful for testing and comparing its basic performance.',
+   presetCordisName: 'Creator mode',
+   presetCordisDescription:
+-    'Customize DSH through conversation. Let the agent write plugins that add features or UI, or combine tools and prompts to create your own mode.',
++    'Extend the workbench through conversation. Let the agent write plugins that add features or UI, or combine tools and prompts to create your own mode.',
+ 
+   inUse: 'New task default',
+ 
+@@ -72,7 +72,7 @@ export const en: Record<AgentPresetSettingsKey, string> = {
+ 
+   creatorDraft: 'Let the agent help me create a preset',
+   createPlugin: 'Let the agent create a plugin',
+-  createPluginDescription: 'Enter Creator mode and make your own DSH plugin',
++  createPluginDescription: 'Enter Creator mode and make your own plugin',
+   createPluginChecking: 'Checking whether Creator mode is available',
+   createPluginUnavailable: 'Temporarily unavailable. Reopen this menu to retry',
+   createPluginMissing: 'Creator mode is not included in this configuration',
+@@ -83,7 +83,7 @@ export const en: Record<AgentPresetSettingsKey, string> = {
+ export const zh: Record<AgentPresetSettingsKey, string> = {
+   ...guideZh,
+   builtInGroup: '内置', customGroup: '自定义',
+-  sectionIntro: '选择 Agent 的工具和工作方式。日常任务用「标准模式」，扩展 DSH 的能力用「创造模式」。',
++  sectionIntro: '选择 Agent 的工具和工作方式。日常任务用「标准模式」，扩展能力用「创造模式」。',
+ 
+   seatHint: '选择新任务使用的 Agent 预设',
+   headerHint: '本任务的 Agent 预设，在任务开始时确定',
+@@ -99,7 +99,7 @@ export const zh: Record<AgentPresetSettingsKey, string> = {
+   presetMinimalName: '极简模式',
+   presetMinimalDescription: 'Agent 使用终端和图片读取工具，并支持上下文压缩，适合测试和对比其基础表现。',
+   presetCordisName: '创造模式',
+-  presetCordisDescription: '用对话定制 DSH：让 Agent 编写插件，添加新功能或界面；也能组合工具和提示词，创建自己的模式。',
++  presetCordisDescription: '用对话扩展工作台：让 Agent 编写插件，添加新功能或界面；也能组合工具和提示词，创建自己的模式。',
+ 
+   inUse: '新任务默认',
+ 
+@@ -113,7 +113,7 @@ export const zh: Record<AgentPresetSettingsKey, string> = {
+ 
+   creatorDraft: '让 Agent 帮我创建预设模式',
+   createPlugin: '让 Agent 创建插件',
+-  createPluginDescription: '进入创造模式，制作属于你的 DSH 插件',
++  createPluginDescription: '进入创造模式，制作属于你的插件',
+   createPluginChecking: '正在确认创造模式是否可用',
+   createPluginUnavailable: '暂时不可用，请重新打开菜单重试',
+   createPluginMissing: '当前配置未提供创造模式',
+diff --git a/packages/client/ui-conversation/src/client/locales.ts b/packages/client/ui-conversation/src/client/locales.ts
+index 5a221bc9..adae7e76 100644
+--- a/packages/client/ui-conversation/src/client/locales.ts
++++ b/packages/client/ui-conversation/src/client/locales.ts
+@@ -74,8 +74,8 @@ export const zh = {
+   'settings.enter.description': '智能体运行时 Enter 键和发送按钮的行为；Cmd/Ctrl+Enter 使用另一行为',
+   'settings.enter.queue': '排队发送',
+   'settings.enter.steer': '插话发送',
+-  'hero.headline': '探索未至之境',
+-  'hero.preview': '预览版',
++  'hero.headline': '从一项工作开始',
++  'hero.preview': '',
+   'hero.chooseWorkspace': '选择工作区',
+   'session.hierarchy': '会话层级',
+   'session.moreViews': '更多会话视图',
+@@ -455,8 +455,8 @@ export const en = {
+   'settings.enter.description': 'What Enter and the Send button do while the agent is running; Cmd/Ctrl+Enter uses the other behavior',
+   'settings.enter.queue': 'Queue',
+   'settings.enter.steer': 'Steer',
+-  'hero.headline': 'Into the Unknown',
+-  'hero.preview': 'Preview',
++  'hero.headline': 'Start with a task',
++  'hero.preview': '',
+   'hero.chooseWorkspace': 'Choose workspace',
+   'session.hierarchy': 'Session hierarchy',
+   'session.moreViews': 'More conversation views',
+diff --git a/packages/client/ui-conversation/src/client/skeleton/EmptyHero.tsx b/packages/client/ui-conversation/src/client/skeleton/EmptyHero.tsx
+index 40df8726..4dbb44fb 100644
+--- a/packages/client/ui-conversation/src/client/skeleton/EmptyHero.tsx
++++ b/packages/client/ui-conversation/src/client/skeleton/EmptyHero.tsx
+@@ -131,6 +131,7 @@ function HeroFish({ hovering }: { hovering: boolean }) {
+  */
+ export function HeroShell({ t, renderSlot, children }: HeroShellProps) {
+   const [hovering, setHovering] = useState(false)
++  const preview = t('hero.preview')
+   return (
+     <div className={css.root}>
+       <div className={css.stack}>
+@@ -152,7 +153,7 @@ export function HeroShell({ t, renderSlot, children }: HeroShellProps) {
+           <span className={css.titleGroup}>
+             {/* Own element: keeps the headline text addressable apart from the badge. */}
+             <span>{t('hero.headline')}</span>
+-            <span className={css.previewBadge}>{t('hero.preview')}</span>
++            {preview !== '' ? <span className={css.previewBadge}>{preview}</span> : null}
+           </span>
+         </div>
+         <div className={css.body}>
+diff --git a/packages/client/ui-entry-customization/src/client/locales.ts b/packages/client/ui-entry-customization/src/client/locales.ts
+index f35a5424..d67a3aec 100644
+--- a/packages/client/ui-entry-customization/src/client/locales.ts
++++ b/packages/client/ui-entry-customization/src/client/locales.ts
+@@ -2,16 +2,16 @@
+ export const en = {
+   install: 'Browse other plugins',
+   create: 'Create your plugin',
+-  'createPrompt.sidebar': 'Create a DSH plugin with a left sidebar entry.',
+-  'createPrompt.conversation': 'Create a DSH conversation view plugin.',
+-  'createPrompt.rightbar': 'Create a DSH plugin with a right sidebar entry.',
++  'createPrompt.sidebar': 'Create a plugin with a left sidebar entry.',
++  'createPrompt.conversation': 'Create a conversation view plugin.',
++  'createPrompt.rightbar': 'Create a plugin with a right sidebar entry.',
+ } as const
+ 
+ /** Chinese counterpart of the entry-customization dictionary. */
+ export const zh: Record<keyof typeof en, string> = {
+   install: '浏览更多插件',
+   create: '创建你的插件',
+-  'createPrompt.sidebar': '创建一个带左侧栏入口的 DSH 插件。',
+-  'createPrompt.conversation': '创建一个 DSH 会话视图插件。',
+-  'createPrompt.rightbar': '创建一个带右侧栏入口的 DSH 插件。',
++  'createPrompt.sidebar': '创建一个带左侧栏入口的插件。',
++  'createPrompt.conversation': '创建一个会话视图插件。',
++  'createPrompt.rightbar': '创建一个带右侧栏入口的插件。',
+ }
+diff --git a/packages/client/ui-plugin-manager/src/client/locales.ts b/packages/client/ui-plugin-manager/src/client/locales.ts
+index b0cb0c1d..ef3353c7 100644
+--- a/packages/client/ui-plugin-manager/src/client/locales.ts
++++ b/packages/client/ui-plugin-manager/src/client/locales.ts
+@@ -23,12 +23,12 @@ export const zh = {
+   chooseAddMethod: '选择添加插件方式',
+   installExisting: '安装第三方插件',
+   installExistingDescription: '支持 npm 包、Git 仓库和本地目录',
+-  restartNotice: '请重启 DSH 使更改生效。{reason}',
++  restartNotice: '请重启 Zhuma 使更改生效。{reason}',
+   restartReasonNoHmr: '这个 profile 只在启动时应用更改。',
+-  restartReasonPackageMoved: '已安装的插件包解析到了另一个目录，或者更改替换了 DSH 安装自带的包。从其他位置安装前请先卸载。',
+-  restartReasonHostModule: '更改涉及 DSH 自身已加载的模块。',
++  restartReasonPackageMoved: '已安装的插件包解析到了另一个目录，或者更改替换了应用自带的包。从其他位置安装前请先卸载。',
++  restartReasonHostModule: '更改涉及应用自身已加载的模块。',
+   restartReasonUnmanagedPlugin: '更改涉及一个不受插件列表管理的插件。',
+-  restartReasonModuleComparison: 'DSH 无法将已加载的插件与磁盘上的文件进行比较。',
++  restartReasonModuleComparison: '应用无法将已加载的插件与磁盘上的文件进行比较。',
+   overriddenNotice: '{name} 已保存，但被更高优先级的配置覆盖，当前未生效',
+   bundlesTitle: '已安装插件',
+   basicTitle: '内置插件配置',
+@@ -86,8 +86,8 @@ export const zh = {
+   installPathTemplateHint: '请替换为本机插件目录的实际路径',
+   installGuideFill: '填入示例',
+   installGuideFillAria: '填入示例 {example}',
+-  installGuideSafety: '请确认插件来源可信。插件在本机以你的权限运行，来源不明的插件可能损坏 DeepSeek Harness，或读取和泄露你的数据。',
+-  installUpgradeNotice: '按需安装的官方插件会在版本与 DSH 不同时提供“更新”。其他插件请先卸载再安装新版。',
++  installGuideSafety: '请确认插件来源可信。插件在本机以你的权限运行，来源不明的插件可能损坏 Zhuma，或读取和泄露你的数据。',
++  installUpgradeNotice: '按需安装的官方插件会在版本与当前运行时不同时提供“更新”。其他插件请先卸载再安装新版。',
+   registryToggle: '安装源',
+   registryLegend: '从哪个 npm 源下载插件',
+   registryDefault: '默认安装源',
+@@ -105,7 +105,7 @@ export const zh = {
+   installConfirmedRefused: '无法安装此插件',
+   installProblemInvalid: '无法识别这个包名或地址：{reason}',
+   installProblemInstalled: '该插件已安装。如需升级，请卸载后重新安装',
+-  installProblemShipped: '该插件随 DSH 提供，升级 DSH 即可获得新版本',
++  installProblemShipped: '该插件随当前运行时提供，升级 Zhuma 即可获得新版本',
+   installProblemNotFound: '未找到相关插件',
+   installProblemNotPackage: '该路径不存在或不是有效的插件包',
+   installProblemNotBundle: '这个包没有声明组合包，无法作为插件安装：{reason}',
+@@ -118,8 +118,8 @@ export const zh = {
+   statusMissingFiles: '包不可用',
+   statusUpdateAvailable: '可更新',
+   sourceNotInstalled: '未安装',
+-  sourceTargetSpec: '当前 DSH 对应来源',
+-  sourceTargetVersion: '当前 DSH 对应版本',
++  sourceTargetSpec: '当前运行时对应来源',
++  sourceTargetVersion: '当前运行时对应版本',
+   update: '更新',
+   updateLabel: '更新 {name}',
+   installFailedTitle: '插件安装失败',
+@@ -193,7 +193,7 @@ export const zh = {
+   terminalSignal: '信号 {signal}',
+   terminalNoExitCode: '未正常退出',
+   installDoneNothing: '安装完成，没有新增依赖。',
+-  installDoneRestart: '已安装，请重启 DSH 加载它。{reason}',
++  installDoneRestart: '已安装，请重启 Zhuma 加载它。{reason}',
+   installDoneApproved: '已允许运行安装脚本：{names}',
+   installDoneOtherVersion: '根据 pnpm 供应链安全策略（minimumReleaseAge），发布时间未满规定时长的版本不会被自动安装，因此本次安装的是 {installed}，而非最新版本 {version}。新发布的版本尚未经过该观察期，可能存在未被发现的恶意代码或缺陷。如确需使用 {version}，请先卸载当前版本，再安装 {exact} 以指定该版本。',
+   installApprovalTitle: '需要允许安装脚本',
+@@ -223,10 +223,10 @@ export const zh = {
+   reasonStopProfile: '这个 profile 没有启用 HMR，正在使用的包要停止后用 dsh plugin 卸载',
+   reasonBundleInUse: '其他配置仍在使用这个组合包的组件，请先停用它们',
+   reasonStaleApproval: '待允许的安装脚本列表已变化，请重新安装以刷新',
+-  reasonIncompatibleVersion: '{plugin} 与 DSH {runtime} 不兼容（要求 {requirements}），运行它可能导致崩溃或数据丢失。',
+-  reasonIncompatibleVersionUnnamed: '这个插件与当前 DSH 版本不兼容，运行它可能导致崩溃或数据丢失。',
+-  reasonIncompatibleInstall: '请安装与当前 DSH 兼容的插件版本。',
+-  reasonIncompatibleInstalled: '请卸载后重新安装与当前 DSH 兼容的版本。',
++  reasonIncompatibleVersion: '{plugin} 与当前运行时 {runtime} 不兼容（要求 {requirements}），运行它可能导致崩溃或数据丢失。',
++  reasonIncompatibleVersionUnnamed: '这个插件与当前运行时版本不兼容，运行它可能导致崩溃或数据丢失。',
++  reasonIncompatibleInstall: '请安装与当前运行时兼容的插件版本。',
++  reasonIncompatibleInstalled: '请卸载后重新安装与当前运行时兼容的版本。',
+   reasonOperationError: 'Host 报告了一个错误',
+ } satisfies Record<string, string>
+ 
+@@ -251,12 +251,12 @@ export const en = {
+   chooseAddMethod: 'Choose how to add a plugin',
+   installExisting: 'Install a third-party plugin',
+   installExistingDescription: 'Supports npm packages, Git repositories, and local directories',
+-  restartNotice: 'Restart DSH to apply the change. {reason}',
++  restartNotice: 'Restart Zhuma to apply the change. {reason}',
+   restartReasonNoHmr: 'This profile applies changes only at startup.',
+-  restartReasonPackageMoved: 'An installed package now resolves to another directory, or the change replaces a package the DSH installation provides. Uninstall a package before installing it from another location.',
+-  restartReasonHostModule: 'The change reaches modules DSH itself loaded.',
++  restartReasonPackageMoved: 'An installed package now resolves to another directory, or the change replaces a package this app provides. Uninstall a package before installing it from another location.',
++  restartReasonHostModule: 'The change reaches modules this app itself loaded.',
+   restartReasonUnmanagedPlugin: 'The change reaches a plugin running outside the plugin list.',
+-  restartReasonModuleComparison: 'DSH could not compare the loaded plugins with their files.',
++  restartReasonModuleComparison: 'The app could not compare the loaded plugins with their files.',
+   overriddenNotice: '{name} was saved, but a higher-priority configuration overrides it, so it is not in effect',
+   bundlesTitle: 'Installed plugins',
+   basicTitle: 'Built-in plugin settings',
+@@ -314,8 +314,8 @@ export const en = {
+   installPathTemplateHint: 'Replace this with the actual path to your local plugin directory.',
+   installGuideFill: 'Use example',
+   installGuideFillAria: 'Use the example {example}',
+-  installGuideSafety: 'Install only plugins you trust: they run with your permissions and can damage DeepSeek Harness or leak your data.',
+-  installUpgradeNotice: 'On-demand Official plugins offer Update when their version differs from DSH. To update other plugins, uninstall and reinstall them.',
++  installGuideSafety: 'Install only plugins you trust: they run with your permissions and can damage Zhuma or leak your data.',
++  installUpgradeNotice: 'On-demand Official plugins offer Update when their version differs from this runtime. To update other plugins, uninstall and reinstall them.',
+   registryToggle: 'Registry',
+   registryLegend: 'The npm registry the plugin is downloaded from',
+   registryDefault: 'Default registry',
+@@ -333,7 +333,7 @@ export const en = {
+   installConfirmedRefused: 'This plugin cannot be installed',
+   installProblemInvalid: 'This is not a package name or address that can be installed: {reason}',
+   installProblemInstalled: 'This plugin is already installed. To upgrade it, uninstall it and install it again',
+-  installProblemShipped: 'This plugin ships with DSH; upgrading DSH updates it',
++  installProblemShipped: 'This plugin ships with this runtime; upgrading Zhuma updates it',
+   installProblemNotFound: 'No such plugin was found',
+   installProblemNotPackage: 'The path does not exist or is not a valid plugin package',
+   installProblemNotBundle: 'This package declares no bundle, so it cannot be installed as a plugin: {reason}',
+@@ -346,8 +346,8 @@ export const en = {
+   statusMissingFiles: 'Package unavailable',
+   statusUpdateAvailable: 'Update available',
+   sourceNotInstalled: 'Not installed',
+-  sourceTargetSpec: 'Source for this DSH',
+-  sourceTargetVersion: 'Version for this DSH',
++  sourceTargetSpec: 'Source for this runtime',
++  sourceTargetVersion: 'Version for this runtime',
+   update: 'Update',
+   updateLabel: 'Update {name}',
+   installFailedTitle: 'The plugin could not be installed',
+@@ -421,7 +421,7 @@ export const en = {
+   terminalSignal: 'signal {signal}',
+   terminalNoExitCode: 'no exit code',
+   installDoneNothing: 'Install finished with no new dependency.',
+-  installDoneRestart: 'Installed; restart DSH to load it. {reason}',
++  installDoneRestart: 'Installed; restart Zhuma to load it. {reason}',
+   installDoneApproved: 'Install scripts allowed for {names}',
+   installDoneOtherVersion: 'Under pnpm\'s supply-chain security policy (minimumReleaseAge), versions published more recently than the required age are not installed automatically, so this installation used {installed} instead of the latest version {version}. A newly published version has not completed this waiting period and may contain undetected malicious code or defects. If you need {version}, uninstall the current version and then install {exact} to request that version.',
+   installApprovalTitle: 'Install scripts need permission',
+@@ -451,9 +451,9 @@ export const en = {
+   reasonStopProfile: 'This profile runs without HMR; stop it and uninstall the package with dsh plugin.',
+   reasonBundleInUse: 'Other configuration still uses this bundle\'s components; switch them off first.',
+   reasonStaleApproval: 'The pending script approvals changed; install again to refresh them.',
+-  reasonIncompatibleVersion: '{plugin} is incompatible with DSH {runtime} (requires {requirements}); running it may cause crashes or data loss.',
+-  reasonIncompatibleVersionUnnamed: 'This plugin is incompatible with the running DSH version; running it may cause crashes or data loss.',
+-  reasonIncompatibleInstall: 'Install a plugin version compatible with this DSH.',
+-  reasonIncompatibleInstalled: 'Uninstall it and install a version compatible with this DSH.',
++  reasonIncompatibleVersion: '{plugin} is incompatible with runtime {runtime} (requires {requirements}); running it may cause crashes or data loss.',
++  reasonIncompatibleVersionUnnamed: 'This plugin is incompatible with the running runtime version; running it may cause crashes or data loss.',
++  reasonIncompatibleInstall: 'Install a plugin version compatible with this runtime.',
++  reasonIncompatibleInstalled: 'Uninstall it and install a version compatible with this runtime.',
+   reasonOperationError: 'The Host reported an error.',
+ } satisfies Record<PluginManagerLocaleKey, string>
+diff --git a/packages/client/ui-plugin-market/src/client/locales.ts b/packages/client/ui-plugin-market/src/client/locales.ts
+index 63bc504c..8cceda42 100644
+--- a/packages/client/ui-plugin-market/src/client/locales.ts
++++ b/packages/client/ui-plugin-market/src/client/locales.ts
+@@ -53,10 +53,10 @@ export const zh = {
+   openInstalled: '在已安装中查看 {name}',
+   statusInstalled: '已安装',
+   statusUpdate: '有新版本',
+-  statusProvided: '随 DSH 提供',
+-  incompatible: '此版本与当前的 DSH {runtime} 不兼容，它要求 DSH {range}',
+-  noCompatibleVersion: '没有与当前 DSH {runtime} 兼容的版本',
+-  exempted: '此版本与当前 DSH 不兼容，但你已为它设置了兼容性豁免',
++  statusProvided: '随当前运行时提供',
++  incompatible: '此版本与当前运行时 {runtime} 不兼容，它要求运行时 {range}',
++  noCompatibleVersion: '没有与当前运行时 {runtime} 兼容的版本',
++  exempted: '此版本与当前运行时不兼容，但你已为它设置了兼容性豁免',
+   backToList: '发现',
+   factSource: '来源',
+   factPackage: '软件包',
+@@ -138,10 +138,10 @@ export const en = {
+   openInstalled: 'View {name} in Installed',
+   statusInstalled: 'Installed',
+   statusUpdate: 'Update available',
+-  statusProvided: 'Provided by DSH',
+-  incompatible: 'This version is not compatible with the running DSH {runtime}; it requires DSH {range}.',
+-  noCompatibleVersion: 'No version is compatible with DSH {runtime}',
+-  exempted: 'This version is not compatible with the running DSH, but you set a compatibility exemption for it.',
++  statusProvided: 'Provided by this runtime',
++  incompatible: 'This version is not compatible with runtime {runtime}; it requires runtime {range}.',
++  noCompatibleVersion: 'No version is compatible with runtime {runtime}',
++  exempted: 'This version is not compatible with this runtime, but you set a compatibility exemption for it.',
+   backToList: 'Discover',
+   factSource: 'Source',
+   factPackage: 'Package',
+diff --git a/packages/client/ui-settings-account/src/client/locales.ts b/packages/client/ui-settings-account/src/client/locales.ts
+index b38e869e..c72362a9 100644
+--- a/packages/client/ui-settings-account/src/client/locales.ts
++++ b/packages/client/ui-settings-account/src/client/locales.ts
+@@ -13,7 +13,7 @@ export const en = {
+   timeoutTitle: 'Sign in timed out', timeoutDescription: 'Sign in again to continue.',
+   failureTitle: 'Could not sign in',
+   platformFailed: 'Could not complete the operation. Try again.', platformRetry: 'Retry',
+-  loading: 'Loading…', backToHarness: 'Back to DeepSeek Harness',
++  loading: 'Loading…', backToHarness: 'Back to Zhuma',
+   settings: 'Settings', contactUs: 'Feedback', menu: 'Account menu',
+   nav: 'Account', signedIn: 'Signed in to DeepSeek', signedOut: 'Not signed in',
+   signIn: 'Sign in', signOut: 'Sign out',
+@@ -24,14 +24,14 @@ export const en = {
+   completing: 'Completing sign in…', expired: 'Sign in expired. Try again.',
+   failed: 'Could not complete the operation. Try again.',
+   noResponse: 'Something went wrong. Please check your network connection and try again.',
+-  settingsSignedOutTitle: 'You are not signed in to DeepSeek Harness',
+-  settingsSignedOutDescription: 'Sign in to DeepSeek Harness to get your dedicated API Key',
++  settingsSignedOutTitle: 'You are not signed in to DeepSeek',
++  settingsSignedOutDescription: 'Sign in to your DeepSeek account to get a dedicated API key',
+   signInDescription: 'Use your DeepSeek account to get started.',
+   profileUnavailable: 'Account details are not available yet.',
+   balance: 'Topped-up balance', bonusBalance: 'Granted balance', balanceUnavailable: 'View on Platform', balanceSignedOut: 'Sign in to view',
+   accountInfo: 'More account information', more: 'More', usage: 'View usage', topUp: 'Top up',
+   quotaTitle: 'No balance available',
+-  quotaDescription: 'DeepSeek Harness cannot start a new task with this account when no balance is available. Would you like to top up? You can also top up later in Settings → Account.',
++  quotaDescription: 'This account cannot start a new task when no balance is available. Would you like to top up? You can also top up later in Settings → Account.',
+   quotaTopUp: 'Top up',
+   bonusNoticeTitle: 'Bonus credited',
+ } as const
+@@ -49,7 +49,7 @@ export const zh: Record<AccountKey, string> = {
+   timeoutTitle: '登录已超时', timeoutDescription: '请重新登录后继续操作。',
+   failureTitle: '登录失败',
+   platformFailed: '操作未完成，请重试', platformRetry: '重试',
+-  loading: '加载中…', backToHarness: '返回 DeepSeek Harness',
++  loading: '加载中…', backToHarness: '返回 Zhuma',
+   settings: '设置', contactUs: '意见反馈', menu: '账号菜单',
+   nav: '账号与余额', signedIn: '已登录 DeepSeek', signedOut: '尚未登录',
+   signIn: '登录', signOut: '退出登录',
+@@ -60,14 +60,14 @@ export const zh: Record<AccountKey, string> = {
+   completing: '正在完成登录…', expired: '登录已过期，请重试。',
+   failed: '操作未完成，请重试。',
+   noResponse: '操作未完成，可能是网络异常，请检查你的网络状况后重试',
+-  settingsSignedOutTitle: '当前未登录 DeepSeek Harness 账号',
+-  settingsSignedOutDescription: '登录 DeepSeek Harness 账号获取专属 API Key',
++  settingsSignedOutTitle: '当前未登录 DeepSeek 账号',
++  settingsSignedOutDescription: '登录 DeepSeek 账号以获取专属 API Key',
+   signInDescription: '登录 DeepSeek 账号以开始使用',
+   profileUnavailable: '账号资料暂不可用',
+   balance: '充值余额', bonusBalance: '赠金余额', balanceUnavailable: '前往开放平台查看', balanceSignedOut: '登录后查看',
+   accountInfo: '更多账号信息', more: '更多', usage: '查询用量', topUp: '充值',
+   quotaTitle: '当前无可用余额',
+-  quotaDescription: '没有可用额度时，DeepSeek Harness 无法开始新的任务，是否前往充值？或者可以稍后前往 设置 → 账号与余额 进行充值。',
++  quotaDescription: '没有可用额度时，此账号无法开始新的任务，是否前往充值？或者可以稍后前往 设置 → 账号与余额 进行充值。',
+   quotaTopUp: '去充值',
+   bonusNoticeTitle: '赠金已到账',
+ }
+diff --git a/packages/client/ui-settings-account/src/client/locales/onboarding.ts b/packages/client/ui-settings-account/src/client/locales/onboarding.ts
+index 50998644..7fd6192a 100644
+--- a/packages/client/ui-settings-account/src/client/locales/onboarding.ts
++++ b/packages/client/ui-settings-account/src/client/locales/onboarding.ts
+@@ -2,11 +2,11 @@
+ export const onboardingCopy = {
+   onboardingArtworkLocale: 'zh',
+   onboardingWelcome: '欢迎使用',
+-  onboardingBrand: 'DeepSeek Harness',
+-  onboardingIntroduction: 'DeepSeek Harness 会以本地文件夹作为工作区，通过调用各种工具，读写本机文件，完成搜索整理资料、制作文档表格、编写代码、排查问题等各种任务。',
++  onboardingBrand: 'Zhuma',
++  onboardingIntroduction: 'Zhuma 会以本地文件夹作为工作区，通过调用各种工具，读写本机文件，完成搜索整理资料、制作文档表格、编写代码、排查问题等各种任务。',
+   onboardingStart: '开始设置',
+   onboardingCredit: '准备可用额度',
+-  onboardingCreditDescription: 'DeepSeek Harness 执行任务时，会根据模型与工具使用的 token 量扣除额度。请提前添加额度，避免任务在执行过程中被迫中断。你的余额只会在 Agent 实际执行任务时消耗。',
++  onboardingCreditDescription: '执行任务时，会根据模型与工具使用的 token 量扣除额度。请提前添加额度，避免任务在执行过程中被迫中断。你的余额只会在 Agent 实际执行任务时消耗。',
+   onboardingTopUp: '去充值',
+   onboardingLater: '下一步',
+   onboardingFundedTopUp: '去充值',
+@@ -19,7 +19,7 @@ export const onboardingCopy = {
+   onboardingDevelopmentDescription: '修改代码、调试问题、运行命令和管理项目文件等',
+   onboardingContinue: '继续',
+   onboardingProcess: '你希望看到多少工作过程？',
+-  onboardingProcessDescription: '这只会影响工作过程的展示方式，不会影响 DeepSeek Harness 的工作能力。',
++  onboardingProcessDescription: '这只会影响工作过程的展示方式，不会影响能完成的工作。',
+   onboardingCompact: '聚焦结果',
+   onboardingCompactDescription: '只看结果，保持界面简洁明了',
+   onboardingStandard: '关键细节',
+@@ -33,7 +33,7 @@ export const onboardingCopy = {
+   onboardingSkipDescription: '你可以随时前往 设置 → 通用设置 中调整工作过程、性能与用量展示方式或开启代码工作工具。',
+   onboardingKeepSetting: '继续设置',
+   onboardingNoCreditTitle: '暂时跳过充值？',
+-  onboardingNoCreditDescription: '没有可用额度时，DeepSeek Harness 将无法开始新的任务。你可以稍后前往 设置 → 账号与余额 进行充值。',
++  onboardingNoCreditDescription: '没有可用额度时，将无法开始新的任务。你可以稍后前往 设置 → 账号与余额 进行充值。',
+   onboardingUnderstood: '我知道了',
+   onboardingGoTopUp: '前往充值',
+   onboardingSaveFailed: '未能保存设置，请重试。',
+@@ -45,11 +45,11 @@ export const onboardingCopy = {
+ export const onboardingEnglishCopy: Record<keyof typeof onboardingCopy, string> = {
+   onboardingArtworkLocale: 'en',
+   onboardingWelcome: 'Welcome to',
+-  onboardingBrand: 'DeepSeek Harness',
+-  onboardingIntroduction: 'DeepSeek Harness works in a local folder and uses tools to read and write files on your computer. It can help you research and organize information, create documents and spreadsheets, write code, troubleshoot issues, and more.',
++  onboardingBrand: 'Zhuma',
++  onboardingIntroduction: 'Zhuma works in a local folder and uses tools to read and write files on your computer. It can help you research and organize information, create documents and spreadsheets, write code, troubleshoot issues, and more.',
+   onboardingStart: 'Get started',
+   onboardingCredit: 'Add credits',
+-  onboardingCreditDescription: 'DeepSeek Harness charges credits based on the tokens used by models and tools. Add credits in advance to keep your tasks running without interruption. Your balance is only used while the agent is working on a task.',
++  onboardingCreditDescription: 'Tasks use credits based on the tokens used by models and tools. Add credits in advance to keep tasks running without interruption. Your balance is only used while the agent is working on a task.',
+   onboardingTopUp: 'Add credits',
+   onboardingLater: 'Next',
+   onboardingFundedTopUp: 'Add credits',
+@@ -62,7 +62,7 @@ export const onboardingEnglishCopy: Record<keyof typeof onboardingCopy, string>
+   onboardingDevelopmentDescription: 'Edit code, debug issues, run commands, manage project files, and more',
+   onboardingContinue: 'Continue',
+   onboardingProcess: 'How much detail would you like to see?',
+-  onboardingProcessDescription: 'This only changes how progress is shown, not what DeepSeek Harness can do.',
++  onboardingProcessDescription: 'This only changes how progress is shown, not what the agent can do.',
+   onboardingCompact: 'Results only',
+   onboardingCompactDescription: 'See just the results in a clean, simple interface',
+   onboardingStandard: 'Key details',
+@@ -76,7 +76,7 @@ export const onboardingEnglishCopy: Record<keyof typeof onboardingCopy, string>
+   onboardingSkipDescription: 'You can change how progress, performance, and usage are displayed, or enable Coding Tools, anytime in Settings → General.',
+   onboardingKeepSetting: 'Continue setup',
+   onboardingNoCreditTitle: 'Skip adding credits?',
+-  onboardingNoCreditDescription: 'DeepSeek Harness can’t start new tasks without credits. You can add them later in Settings → Account.',
++  onboardingNoCreditDescription: 'New tasks cannot start without credits. You can add them later in Settings → Account.',
+   onboardingUnderstood: 'Got it',
+   onboardingGoTopUp: 'Add credits',
+   onboardingSaveFailed: 'Could not save settings. Try again.',
+diff --git a/packages/client/ui-settings-models/src/client/locales.ts b/packages/client/ui-settings-models/src/client/locales.ts
+index 9bcfa18e..a4e0bf6c 100644
+--- a/packages/client/ui-settings-models/src/client/locales.ts
++++ b/packages/client/ui-settings-models/src/client/locales.ts
+@@ -126,8 +126,8 @@ export const en = {
+   settingsPathUnresolvable: 'unresolvable settings path',
+   create: 'Create provider',
+   creating: 'Creating\u2026',
+-  welcomeTitle: 'Preview Notice',
+-  welcomeBody: 'DeepSeek Harness 0.2 is still in preview, and many areas need continued improvement and refinement. We welcome feedback and suggestions from all developers and users. The new desktop app now targets a broad range of users, while developer-related advanced features can be enabled in the settings. DeepSeek Harness’s product features and plugin APIs are expected to continue rapid iteration and evolution, and will gradually stabilize over time.\n\nWe look forward to exploring the limits of intelligence together with users and developers around the world, building on open-source, reusable, and composable infrastructure. We welcome everyone to bring their ideas to life with DeepSeek Harness and participate in the community to enrich the plugin ecosystem.',
++  welcomeTitle: 'Zhuma',
++  welcomeBody: 'Welcome to Zhuma. Add a model provider when you need one; you can change it later in Settings.',
+   welcomeContinue: 'Continue',
+   welcomeError: 'The acknowledgement could not be saved. Please try again.',
+   onboardingTitle: 'Add an API key to get started',
+@@ -267,8 +267,8 @@ export const zh: { [Key in keyof typeof en]: string } = {
+   settingsPathUnresolvable: '无法解析设置路径',
+   create: '创建提供商',
+   creating: '创建中\u2026',
+-  welcomeTitle: '预览版说明',
+-  welcomeBody: 'DeepSeek Harness 目前的 0.2 版本仍处于预览阶段，还有许多地方需要持续改进和打磨，希望听取广大开发者和用户的反馈建议。现在，新的桌面端面向广泛用户，开发者相关的进阶功能可在配置中开启使用。预计 DeepSeek Harness 的产品功能以及插件 API 都会继续快速迭代、持续演化，并逐渐趋于稳定。\n\n我们期待与全球用户和开发者一起，在开源、可复用、可组合的基础设施之上，共同探索智能上限。欢迎大家用 DeepSeek Harness 将想法变成现实，与社区一起丰富插件生态。',
++  welcomeTitle: 'Zhuma',
++  welcomeBody: '欢迎使用 Zhuma。需要时再添加模型，之后也可在设置里修改。',
+   welcomeContinue: '继续',
+   welcomeError: '暂时无法保存确认状态，请重试。',
+   onboardingTitle: '添加一个 API Key 开始使用',
+diff --git a/packages/client/ui-shortcuts/src/client/locales.ts b/packages/client/ui-shortcuts/src/client/locales.ts
+index 13cd61d4..f1f3ab76 100644
+--- a/packages/client/ui-shortcuts/src/client/locales.ts
++++ b/packages/client/ui-shortcuts/src/client/locales.ts
+@@ -21,9 +21,9 @@ export const zh = {
+   'not-ready': '快捷键尚未准备好，请稍后重试。',
+   read: '无法读取 {location}。请检查访问权限后{reload}。',
+   invalid: '{location} 的快捷键配置内容损坏。请先备份并修复该配置，然后{reload}。',
+-  future: '{location} 的快捷键配置由更新版本创建。请升级 Harness 后重试。',
++  future: '{location} 的快捷键配置由更新版本创建。请升级 Zhuma 后重试。',
+   'web-document': '当前网站本地存储中的 dsh.keybindings.v1', 'desktop-document': 'userData/keybindings.json',
+-  'web-reload': '刷新页面', 'desktop-reload': '重新启动 Harness',
++  'web-reload': '刷新页面', 'desktop-reload': '重新启动 Zhuma',
+   'using-defaults': '当前使用默认键位。', 'using-accepted': '当前继续使用上次读取成功的键位。',
+   'native-failed': '无法启用桌面录键保护，请关闭后重试。',
+   'global-hint': '全局唤起查看', 'clear-search': '清空搜索',
+@@ -56,9 +56,9 @@ export const en: Record<keyof typeof zh, string> = {
+   'not-ready': 'Shortcuts are not ready. Please try again.',
+   read: 'Could not read {location}. Check access permissions, then {reload}.',
+   invalid: 'Shortcut configuration in {location} is damaged. Back up and repair this configuration, then {reload}.',
+-  future: 'Shortcut configuration in {location} was created by a newer version. Upgrade Harness and try again.',
++  future: 'Shortcut configuration in {location} was created by a newer version. Upgrade Zhuma and try again.',
+   'web-document': 'this site’s localStorage entry dsh.keybindings.v1', 'desktop-document': 'userData/keybindings.json',
+-  'web-reload': 'reload the page', 'desktop-reload': 'restart Harness',
++  'web-reload': 'reload the page', 'desktop-reload': 'restart Zhuma',
+   'using-defaults': 'Default bindings are active.', 'using-accepted': 'The last successfully read bindings remain active.',
+   'native-failed': 'Could not protect desktop key recording. Exit recording and try again.',
+   'global-hint': 'Open from anywhere', 'clear-search': 'Clear search',
+diff --git a/packages/client/ui-sidebar-documentpreview/src/client/office/locales.ts b/packages/client/ui-sidebar-documentpreview/src/client/office/locales.ts
+index e6562604..65f25f12 100644
+--- a/packages/client/ui-sidebar-documentpreview/src/client/office/locales.ts
++++ b/packages/client/ui-sidebar-documentpreview/src/client/office/locales.ts
+@@ -8,7 +8,7 @@ export const zh = {
+   missingFontsDescription: '本次预览无法使用以下字体，预览中的文字和排版可能与原文档不同。',
+   missingFontsCount: '{count} 种字体',
+   closeDetails: '关闭字体详情',
+-  unavailable: 'Office 预览不可用。请在运行 DeepSeek Harness 的主机上启用文档预览服务。',
++  unavailable: 'Office 预览不可用。请在运行 Zhuma 的主机上启用文档预览服务。',
+   invalid: '无法预览此 Office 文件。文件可能已损坏、受密码保护，或与扩展名不符。',
+   tooLarge: 'Office 文件或转换后的 PDF 超过预览大小上限，请缩小文件或调整预览配置。',
+   failed: 'Office 转换失败，未生成可用的 PDF。请检查该文件后重试。',
+@@ -30,7 +30,7 @@ export const en = {
+   missingFontsDescription: 'These fonts are unavailable for this preview. Text and layout may differ from the original document.',
+   missingFontsCount: 'Fonts: {count}',
+   closeDetails: 'Close font details',
+-  unavailable: 'Office previews are unavailable. Enable the document preview service on the computer running DeepSeek Harness.',
++  unavailable: 'Office previews are unavailable. Enable the document preview service on the computer running Zhuma.',
+   invalid: 'This Office file cannot be previewed. It may be damaged, password protected, or have the wrong extension.',
+   tooLarge: 'The Office file or converted PDF exceeds the preview size limit. Reduce the file size or adjust the preview configuration.',
+   failed: 'Office conversion did not produce a usable PDF. Check the file and try again.',
+diff --git a/packages/client/web/src/boot-page.ts b/packages/client/web/src/boot-page.ts
+index 23b27ad4..3bbb83f8 100644
+--- a/packages/client/web/src/boot-page.ts
++++ b/packages/client/web/src/boot-page.ts
+@@ -34,7 +34,7 @@ export class BootPage {
+     this.root = div(css.boot)
+     this.root.dataset.dshBoot = ''
+     this.card = div(css.card)
+-    this.wordmark = div(css.wordmark, 'HARNESS')
++    this.wordmark = div(css.wordmark, 'Zhuma')
+     this.spinner = div(css.spinner)
+     this.spinner.dataset.dshBootSpinner = ''
+     this.hint = div(css.hint, 'Loading plugins…')
+diff --git a/packages/client/ui-settings-models/tests/welcome-notice.client.spec.tsx b/packages/client/ui-settings-models/tests/welcome-notice.client.spec.tsx
+index 107266f0..3788fa13 100644
+--- a/packages/client/ui-settings-models/tests/welcome-notice.client.spec.tsx
++++ b/packages/client/ui-settings-models/tests/welcome-notice.client.spec.tsx
+@@ -106,12 +106,21 @@ function mount(
+ describe('WelcomeNotice', () => {
+   it('uses the exact owner copy in both GUI locales', () => {
+     expect(WELCOME_NOTICE_COPY.en).toEqual({
+-      title: 'Preview Notice',
+-      body: 'DeepSeek Harness 0.2 is still in preview, and many areas need continued improvement and refinement. We welcome feedback and suggestions from all developers and users. The new desktop app now targets a broad range of users, while developer-related advanced features can be enabled in the settings. DeepSeek Harness’s product features and plugin APIs are expected to continue rapid iteration and evolution, and will gradually stabilize over time.\n\nWe look forward to exploring the limits of intelligence together with users and developers around the world, building on open-source, reusable, and composable infrastructure. We welcome everyone to bring their ideas to life with DeepSeek Harness and participate in the community to enrich the plugin ecosystem.',
++      title: 'Zhuma',
++      body: 'Welcome to Zhuma. Add a model provider when you need one; you can change it later in Settings.',
+       continueLabel: 'Continue',
+     })
++    expect(WELCOME_NOTICE_COPY.zh).toEqual({
++      title: 'Zhuma',
++      body: '欢迎使用 Zhuma。需要时再添加模型，之后也可在设置里修改。',
++      continueLabel: '继续',
++    })
+     expect(en.welcomeBody).toBe(WELCOME_NOTICE_COPY.en.body)
+     expect(zh.welcomeBody).toBe(WELCOME_NOTICE_COPY.zh.body)
++    expect(en.welcomeTitle).toBe(WELCOME_NOTICE_COPY.en.title)
++    expect(zh.welcomeTitle).toBe(WELCOME_NOTICE_COPY.zh.title)
++    expect(en.welcomeBody.includes('\n\n')).toBe(false)
++    expect(zh.welcomeBody.includes('\n\n')).toBe(false)
+   })
+ 
+   it('renders one blocking modal action and focuses the title', async () => {
+@@ -120,7 +129,7 @@ describe('WelcomeNotice', () => {
+     for (const paragraph of WELCOME_NOTICE_COPY.zh.body.split('\n\n')) {
+       expect(screen.getByText(paragraph, { exact: true })).toBeTruthy()
+     }
+-    expect(dialog.querySelectorAll('p')).toHaveLength(2)
++    expect(dialog.querySelectorAll('p')).toHaveLength(1)
+     expect(dialog.querySelectorAll('button')).toHaveLength(1)
+     expect(screen.getByRole('button', { name: WELCOME_NOTICE_COPY.zh.continueLabel })).toBeTruthy()
+     expect(document.activeElement).toBe(screen.getByRole('heading', { name: WELCOME_NOTICE_COPY.zh.title }))

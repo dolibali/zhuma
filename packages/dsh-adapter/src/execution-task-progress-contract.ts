@@ -15,10 +15,13 @@ export const taskProgressTargetSchema = z.strictObject({
   revision: z.number().int().positive().refine(Number.isSafeInteger),
 });
 export type TaskProgressTarget = z.infer<typeof taskProgressTargetSchema>;
+/** Opt-in for per-node phase and workflow drive. Absent requests keep the summary. */
+export const TASK_PROGRESS_DETAIL = 'nodes' as const;
 export const taskProgressQuerySchema = z
   .strictObject({
     spaceId: id,
     plans: z.array(taskProgressTargetSchema).min(1).max(TASK_PROGRESS_LIMITS.plans),
+    detail: z.literal(TASK_PROGRESS_DETAIL).optional(),
   })
   .refine((value) => new Set(value.plans.map((plan) => plan.taskId)).size === value.plans.length)
   .refine((value) => Buffer.byteLength(JSON.stringify(value)) <= TASK_PROGRESS_LIMITS.requestBytes);
@@ -30,14 +33,35 @@ export interface TaskProgressResources {
   readonly reviewHeld: number;
   readonly stopRequested: number;
 }
+/** Per-node phase already read for the counts. Titles stay on the confirmed plan. */
+export interface TaskProgressNodeState {
+  readonly nodeId: string;
+  readonly status: NodeStatus;
+  readonly authorHeld: number;
+  readonly assignee: 'human' | 'expert';
+}
+/**
+ * Present only when the request opts into `detail: 'nodes'`.
+ * `running` is a live arm in this process. `requires-resume` is persisted
+ * intent after that arm is gone. Resource holds stay on `resources`.
+ */
+export type TaskProgressWorkflow =
+  'inactive' | 'running' | 'stopping' | 'paused' | 'completed' | 'requires-resume';
 interface KnownCounts {
   readonly target: TaskProgressTarget;
   readonly expectedNodes: number;
   readonly acceptedNodes: number;
   readonly byStatus: Readonly<Record<NodeStatus, number>>;
+  /** Omitted on the summary protocol. Null only for an unknown row that opted in. */
+  readonly nodeStatuses?: readonly TaskProgressNodeState[] | null;
+  /** Omitted on the summary protocol. Null until a plan receipt exists. */
+  readonly workflow?: TaskProgressWorkflow | null;
   readonly assigneeCounts: { readonly human: number; readonly expert: number };
-  /** Human assignees whose node status is `ready`: delivery is waiting on that person. */
-  readonly humanReady: number;
+  /**
+   * Human assignees whose node status is `ready`. Present with node detail.
+   * Summary responses omit it so older readers keep the previous key set.
+   */
+  readonly humanReady?: number;
   readonly resources: TaskProgressResources;
 }
 export type TaskProgressUnknownReason =
@@ -68,8 +92,11 @@ export type TaskProgressRow =
       /** No partial ratio, execution counts or cleanup claims on incomplete facts. */
       readonly acceptedNodes: null;
       readonly byStatus: null;
+      readonly nodeStatuses?: null;
+      readonly workflow?: null;
       readonly assigneeCounts: null;
-      readonly humanReady: null;
+      /** Present with node detail. Omitted on the summary protocol. */
+      readonly humanReady?: null;
       readonly resources: null;
     };
 export interface TaskProgressValue {

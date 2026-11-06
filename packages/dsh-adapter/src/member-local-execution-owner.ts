@@ -70,6 +70,11 @@ import {
   registerMemberKnowledgeTool,
   type MemberKnowledgeToolPorts,
 } from './member-knowledge-tool.js';
+import {
+  describeTeamAssetFileTool,
+  registerTeamAssetFileTool,
+  type TeamAssetFileToolPorts,
+} from './team-asset-file-tool.js';
 import type {
   MemberLocalReviewProtocol,
   MemberLocalAcceptedReview,
@@ -85,6 +90,15 @@ export interface MemberLocalOwnerOptions {
    * for this exact accepted Run. Factory construction/registration must do no IO. */
   readonly knowledge?: {
     create(binding: NativeSessionBinding, grant: NativeWorkGrant): MemberKnowledgeToolPorts;
+  };
+  /** Pure construction for this original issued Run. Actual check/read IO is
+   * admitted only when the original Agent invokes the registered tool. */
+  readonly teamAssets?: {
+    create(
+      binding: NativeSessionBinding,
+      grant: NativeWorkGrant,
+      run: MemberLocalRunHandle,
+    ): TeamAssetFileToolPorts;
   };
   /** Normal local model owner; this does not copy provider credentials. */
   assertModel(selection: NativeSessionSelection, signal: AbortSignal): void | Promise<void>;
@@ -191,6 +205,12 @@ export class MemberLocalExecutionOwner {
     ReturnType<typeof describeMemberKnowledgeTool>['sourceVersion'] | undefined {
     return !this.lifetime.signal.aborted && typeof this.options.knowledge?.create === 'function'
       ? describeMemberKnowledgeTool().sourceVersion
+      : undefined;
+  }
+  /** Local registration availability only, never a selected file read grant. */
+  get teamAssetSource(): ReturnType<typeof describeTeamAssetFileTool>['sourceVersion'] | undefined {
+    return !this.lifetime.signal.aborted && typeof this.options.teamAssets?.create === 'function'
+      ? describeTeamAssetFileTool().sourceVersion
       : undefined;
   }
   /** Read-only local SDK availability for the accept capability declaration.
@@ -356,6 +376,11 @@ export class MemberLocalExecutionOwner {
             snapshot.schemaVersion === 2 && snapshot.payload.knowledgeTool
               ? this.registerKnowledge(agentCtx, state, binding, grant)
               : { context: '', toolAllowlist: [] };
+          const teamAssets =
+            snapshot.schemaVersion === 2 &&
+            (snapshot.payload.teamAssets || snapshot.payload.teamAssetTool)
+              ? this.registerTeamAssets(agentCtx, state, binding, grant)
+              : undefined;
           state.resources = await registerExecutionRunResources(
             agentCtx,
             snapshot,
@@ -385,6 +410,7 @@ export class MemberLocalExecutionOwner {
           );
           await state.resources.ready;
           this.check(state, 'send');
+          teamAssets?.assertCurrent();
           if (
             canonicalPayload([
               ...extra.toolAllowlist,
@@ -393,6 +419,7 @@ export class MemberLocalExecutionOwner {
               ...output.toolAllowlist,
               ...result.toolAllowlist,
               ...knowledge.toolAllowlist,
+              ...(teamAssets?.toolAllowlist ?? []),
               ...state.resources.toolAllowlist,
             ]) !== canonicalPayload(snapshot.payload.toolAllowlist)
           )
@@ -408,9 +435,9 @@ export class MemberLocalExecutionOwner {
           });
           state.resources.signal.addEventListener('abort', () => this.wake(state), { once: true });
           return {
-            context: knowledge.context
-              ? `${snapshot.payload.context}\n${knowledge.context}`
-              : snapshot.payload.context,
+            context: [snapshot.payload.context, knowledge.context, teamAssets?.context]
+              .filter(Boolean)
+              .join('\n'),
             toolAllowlist: snapshot.payload.toolAllowlist,
           };
         },
@@ -574,6 +601,110 @@ export class MemberLocalExecutionOwner {
         .map((link) => link.reference),
     );
   }
+  private registerTeamAssets(
+    ctx: Context,
+    state: Owned,
+    binding: NativeSessionBinding,
+    grant: NativeWorkGrant,
+  ) {
+    const factory = this.options.teamAssets,
+      create = factory?.create,
+      run = this.starts.get(grant),
+      snapshot = this.composition(state),
+      bindingIdentity = canonicalPayload(binding);
+    if (
+      !factory ||
+      !create ||
+      !run ||
+      run !== this.workRun(state) ||
+      snapshot.schemaVersion !== 2 ||
+      !snapshot.payload.teamAssets ||
+      canonicalPayload(snapshot.payload.teamAssetTool) !==
+        canonicalPayload(describeTeamAssetFileTool())
+    )
+      throw new NativeWorkError('configuration-mismatch');
+    const filesIdentity = canonicalPayload(snapshot.payload.teamAssets.files);
+    this.check(state, 'send');
+    this.options.protocol.assertReadBinding(run, binding);
+    const ports = create.call(factory, binding, grant, run);
+    if (
+      !ports ||
+      !ports.signal ||
+      typeof ports.assertCurrent !== 'function' ||
+      typeof ports.openFile !== 'function'
+    )
+      throw new NativeWorkError('configuration-mismatch');
+    const catalog = ports.catalog,
+      signal = ports.signal,
+      assert = ports.assertCurrent,
+      openFile = ports.openFile;
+    const identity = () => {
+      this.check(state, 'send');
+      if (
+        this.state(grant) !== state ||
+        this.starts.get(grant) !== run ||
+        this.workRun(state) !== run ||
+        this.options.teamAssets !== factory ||
+        factory.create !== create ||
+        ports.catalog !== catalog ||
+        ports.signal !== signal ||
+        ports.assertCurrent !== assert ||
+        ports.openFile !== openFile ||
+        signal.aborted ||
+        canonicalPayload(binding) !== bindingIdentity ||
+        canonicalPayload(grant.scope) !== canonicalPayload(binding.scope) ||
+        canonicalPayload(catalog?.scope) !== canonicalPayload(snapshot.payload.scope) ||
+        canonicalPayload(catalog?.files) !== filesIdentity
+      )
+        throw new NativeWorkError('configuration-mismatch');
+      this.options.protocol.assertStartHandle(run);
+      this.options.protocol.assertReadBinding(run, binding);
+    };
+    identity();
+    const registered = registerTeamAssetFileTool(ctx, binding, grant, this.native.service, {
+      catalog,
+      signal,
+      assertCurrent: async (operationSignal, reference) => {
+        // Actual invocation only: awaiting this in unpublished compose would
+        // deadlock the same original SDK admission that must publish us first.
+        await this.admission(grant);
+        operationSignal.throwIfAborted();
+        identity();
+        await assert.call(ports, operationSignal, reference);
+        identity();
+      },
+      openFile: (reference, operationSignal) => {
+        identity();
+        const reading = openFile.call(ports, reference, operationSignal);
+        return {
+          result: reading.result.then((handle) => {
+            const check = handle.check,
+              release = handle.release;
+            const guarded = {
+              file: handle.file,
+              signal: handle.signal,
+              check: () => {
+                identity();
+                if (handle.check !== check || handle.release !== release)
+                  throw new NativeWorkError('configuration-mismatch');
+                check.call(handle);
+                identity();
+              },
+              release: () => release.call(handle),
+            };
+            // Do not reject/discard a late handle here: the original tool must
+            // own it through actual drain, then release it on cancellation.
+            return handle.carrier !== undefined
+              ? { ...guarded, carrier: handle.carrier }
+              : { ...guarded, bytes: handle.bytes };
+          }),
+          // Preserve the original physical operation, without an early race.
+          drain: reading.drain,
+        };
+      },
+    });
+    return { ...registered, assertCurrent: identity };
+  }
   private update(state: Owned, view: RemoteRunView, before: number): void {
     if (
       canonicalPayload(view.scope) !== canonicalPayload(state.run.value.scope) ||
@@ -654,6 +785,7 @@ export class MemberLocalExecutionOwner {
         !this.publicationResults) ||
       (snapshot.payload.outputFilePublisherTool && !this.outputFileSource) ||
       (snapshot.payload.knowledgeTool && !this.knowledgeSource) ||
+      (snapshot.payload.teamAssetTool && !this.teamAssetSource) ||
       (snapshot.payload.tools.kind === 'local-tools' && !this.options.native) ||
       (snapshot.payload.resources?.mcp.length && !this.options.openMcp)
     )

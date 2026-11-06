@@ -1,0 +1,141 @@
+:root {
+  color-scheme: light;
+  font-family: system-ui, sans-serif;
+  color: #20332e;
+  background: #f3f5f2;
+  font-size: 15px;
+  line-height: 1.6;
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+}
+main {
+  width: min(920px, calc(100% - 40px));
+  margin: 56px auto;
+}
+h1 {
+  margin: 4px 0 8px;
+  font-size: clamp(26px, 4vw, 36px);
+  letter-spacing: -0.04em;
+}
+h2 {
+  margin: 0;
+  font-size: 18px;
+}
+p {
+  margin: 0 0 16px;
+}
+.eyebrow {
+  color: #567269;
+  font-size: 13px;
+  margin: 0;
+}
+form,
+#result {
+  padding: 28px;
+  border: 1px solid #d7e0d9;
+  background: white;
+  border-radius: 14px;
+  margin-top: 28px;
+}
+label {
+  display: block;
+  font-weight: 600;
+  margin-bottom: 12px;
+}
+input {
+  font: inherit;
+  max-width: 100%;
+}
+.hint,
+footer {
+  color: #60756a;
+  font-size: 13px;
+}
+.hint {
+  margin: 12px 0 20px;
+  overflow-wrap: anywhere;
+}
+button {
+  border: 1px solid #235f4c;
+  border-radius: 7px;
+  background: #235f4c;
+  color: white;
+  padding: 9px 16px;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+button:hover {
+  background: #1b4a3b;
+}
+button:focus-visible,
+input:focus-visible {
+  outline: 3px solid #83bba8;
+  outline-offset: 3px;
+}
+button:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+#status {
+  margin-top: 16px;
+  min-height: 24px;
+  overflow-wrap: anywhere;
+}
+.result-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+.result-header button {
+  background: white;
+  color: #235f4c;
+}
+.table-scroll {
+  overflow-x: auto;
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+}
+th,
+td {
+  padding: 10px 12px;
+  border-bottom: 1px solid #e5ebe6;
+  white-space: nowrap;
+}
+th {
+  color: #52675d;
+  background: #f7f9f6;
+  font-weight: 500;
+}
+#error-section {
+  margin-top: 24px;
+  color: #8c4628;
+}
+ul {
+  padding-left: 22px;
+}
+footer {
+  margin-top: 24px;
+}
+@media (max-width: 560px) {
+  main {
+    margin: 28px auto;
+  }
+  form,
+  #result {
+    padding: 20px;
+  }
+  .result-header {
+    align-items: start;
+    flex-direction: column;
+  }
+}

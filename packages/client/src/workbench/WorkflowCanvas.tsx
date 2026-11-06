@@ -12,7 +12,10 @@ import {
   type ReactFlowInstance,
 } from '@xyflow/react';
 import type { WorkTask, Workflow, Participant } from '@zhuma/agent-core';
+import { NODE_STATUS_LABELS } from '../execution-view.js';
+import type { FlowNodeMark } from '../execution/progress-focus.js';
 import { visibleWorkflows, workflowPath, type WorkTree } from './navigation.js';
+import { NodeStatusMark } from './NodeStatusMark.js';
 
 export function WorkflowCanvas({
   workflow,
@@ -28,6 +31,7 @@ export function WorkflowCanvas({
   locateRequest,
   fitInitially = false,
   roleMode = false,
+  marks,
 }: {
   workflow: Workflow;
   members: Participant[];
@@ -42,6 +46,7 @@ export function WorkflowCanvas({
   locateRequest: number;
   fitInitially?: boolean;
   roleMode?: boolean;
+  marks?: ReadonlyMap<string, FlowNodeMark> | undefined;
 }) {
   const canvas = useRef<HTMLDivElement>(null);
   const [flow, setFlow] = useState<ReactFlowInstance | null>(null);
@@ -60,6 +65,12 @@ export function WorkflowCanvas({
     columns.set(level, offset + w.nodes.length * 210 + 60);
     return w.nodes.map((n, index) => {
       const member = members.find((m) => m.id === n.assigneeId);
+      const mark = marks?.get(n.id);
+      const statusLabel = mark
+        ? mark.executing || mark.status === 'running'
+          ? '执行中'
+          : NODE_STATUS_LABELS[mark.status]
+        : '';
       return {
         id: n.id,
         initialWidth: 240,
@@ -68,10 +79,11 @@ export function WorkflowCanvas({
         position: tree ? { x: level * 340, y: offset + index * 210 } : n.position,
         sourcePosition: Position.Right,
         targetPosition: Position.Left,
-        ariaLabel: `${n.title}，${w.name}`,
+        ariaLabel: `${n.title}，${w.name}${statusLabel ? `，${statusLabel}` : ''}`,
         data: {
           label: (
             <>
+              <NodeStatusMark status={mark?.status} executing={mark?.executing === true} />
               {tree && (
                 <small className="zm-flow-context">
                   <span>{w.name}</span>
@@ -111,7 +123,7 @@ export function WorkflowCanvas({
             </>
           ),
         },
-        className: `zm-flow-node ${tree && parentNodes.has(n.id) ? 'zm-tree-ancestor' : ''}`,
+        className: `zm-flow-node${mark ? ' zm-flow-node-status' : ''} ${tree && parentNodes.has(n.id) ? 'zm-tree-ancestor' : ''}`,
         selected: n.id === selectedId,
       };
     });

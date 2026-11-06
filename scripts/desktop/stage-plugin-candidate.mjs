@@ -7,6 +7,7 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { createHash } from 'node:crypto';
+import { verifyDesktopMemberTransport } from '../lib/desktop-member-transport.mjs';
 const root = fileURLToPath(new URL('../..', import.meta.url));
 const { values } = parseArgs({
   options: {
@@ -33,6 +34,10 @@ for (const file of [
   'apps/desktop/.desktop-build/targets/mac-arm64/runtime/primary-runtime/runtime.json',
 ])
   await access(join(stage, file));
+const desktopMemberTransport = await verifyDesktopMemberTransport(
+  stage,
+  join(root, 'packages/dsh-adapter/src/desktop-member-cookie.ts'),
+);
 const target = join(stage, 'packages/bundle/web-app/lib/zhuma-workbench');
 if (!(await realpath(target)).startsWith((await realpath(stage)) + '/'))
   throw Error('Plugin output must be an owned directory within this SDK');
@@ -158,6 +163,7 @@ const report = {
   sourceCommit: frozen?.head ?? git(root, 'rev-parse', 'HEAD'),
   sourceTree: frozen?.tree ?? git(root, 'rev-parse', 'HEAD^{tree}'),
   sdkPin: pin,
+  desktopMemberTransport,
   target,
   backup,
   hashes: candidate,

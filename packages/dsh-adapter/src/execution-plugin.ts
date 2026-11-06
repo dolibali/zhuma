@@ -552,10 +552,53 @@ export async function apply(ctx: Context, config: ExecutionPluginConfig): Promis
   const workspaceApprovals = domain.table('workspace_approvals');
   if ([...workspaceApprovals.entries()].some(([key]) => key !== 'state'))
     throw new WorkbenchError('unavailable', '工作区授权存储不兼容。');
+  // The fixed SDK returns its stored immutable records, replaced by put/update.
+  // Enforce that contract before a record leaves this adapter. A shallow freeze
+  // or caller-provided revision is not evidence that a validation can be reused.
+  const sealed = new WeakSet<object>();
+  const seal = (value: unknown): void => {
+    if (
+      value === null ||
+      value === undefined ||
+      ['string', 'number', 'boolean'].includes(typeof value)
+    )
+      return;
+    if (typeof value !== 'object') throw new WorkbenchError('unavailable', '执行存储不兼容。');
+    if (sealed.has(value)) return;
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null && prototype !== Array.prototype)
+      throw new WorkbenchError('unavailable', '执行存储不兼容。');
+    for (const key of Reflect.ownKeys(value)) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (typeof key !== 'string' || !descriptor || !Object.hasOwn(descriptor, 'value'))
+        throw new WorkbenchError('unavailable', '执行存储不兼容。');
+      seal(descriptor.value);
+    }
+    Object.freeze(value);
+    sealed.add(value);
+  };
+  const nodeGet = nodes.get,
+    nodeEntries = nodes.entries,
+    nodePut = nodes.put;
+  const assertNodeSource = () => {
+    if (nodes.get !== nodeGet || nodes.entries !== nodeEntries || nodes.put !== nodePut)
+      throw new WorkbenchError('unavailable', '执行存储来源已变更。');
+  };
   const storage: ExecutionStorage = {
-    readNode: (key) => nodes.get(key),
+    readNode: (key) => {
+      assertNodeSource();
+      const value = nodeGet.call(nodes, key);
+      seal(value);
+      return value;
+    },
     writeNode: (key, value) => nodes.put(key, value),
-    listNodes: () => [...nodes.entries()].map(([, value]) => value),
+    listNodes: () => {
+      assertNodeSource();
+      return [...nodeEntries.call(nodes)].map(([, value]) => {
+        seal(value);
+        return value;
+      });
+    },
     readPlan: (key) => plans.get(key),
     writePlan: (key, value: PlanReceipt) =>
       plans.put(key, { ...value, nodeIds: [...value.nodeIds] }),
@@ -769,6 +812,56 @@ export async function apply(ctx: Context, config: ExecutionPluginConfig): Promis
     },
   });
   stops.push(uploadStop);
+  stops.push(
+    registerProductFetch(ctx, {
+      path: '/api/zhuma-efficiency/export',
+      methods: ['POST'],
+      requestBody: 'streaming',
+      fetch: async (request) => {
+        const signal = AbortSignal.any([request.signal, lifetime.signal]);
+        let rpcId = '';
+        try {
+          if (signal.aborted) throw new DOMException('aborted', 'AbortError');
+          const original = { headers: fetchHeaders(request) };
+          const member = await resolveMember(ctx, original);
+          if (!member.ok) {
+            return Response.json(
+              { ok: false, error: { code: member.code } },
+              { status: member.status },
+            );
+          }
+          if (request.headers.get('content-type')?.split(';')[0] !== 'application/json') {
+            return new Response(null, { status: 415 });
+          }
+          const body = await readLimitedJson(request, signal);
+          const envelope = clientRequestSchema.safeParse(body);
+          if (!envelope.success || envelope.data.method !== 'zhuma-efficiency/export') {
+            return new Response(null, { status: 400 });
+          }
+          rpcId = envelope.data.rpcId;
+          if (signal.aborted) throw new DOMException('aborted', 'AbortError');
+          const result = await service.exportEfficiency({ member }, envelope.data.payload);
+          return Response.json({ type: 'server-response', rpcId, result });
+        } catch (error) {
+          if (error instanceof BodyRejected) {
+            return Response.json(
+              { ok: false, error: { code: error.code } },
+              { status: error.status },
+            );
+          }
+          if (signal.aborted) {
+            return Response.json({ type: 'server-response', rpcId, result: unavailable(true) });
+          }
+          if (rpcId === '') return new Response(null, { status: 400 });
+          return Response.json({
+            type: 'server-response',
+            rpcId,
+            result: unavailable(false),
+          });
+        }
+      },
+    }),
+  );
 
   stops.push(
     registerProductFetch(ctx, {
