@@ -281,12 +281,12 @@ test('Host workspace source: each real SDK workspace check uses one fresh Servic
       body.composition.configurationId,
     );
   assert.equal(check(), undefined);
-  // One full store graph; the target is still separately read and checked at
-  // the original current-node gate. No continuous check has been removed.
+  // Read the full current table each time. Only its sealed historical-row
+  // validation is reused; the original current-node gate is still checked.
   assert.deepEqual({ lists, parses }, { lists: 1, parses: 3 });
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(check(), undefined);
-  assert.deepEqual({ lists, parses }, { lists: 2, parses: 6 });
+  assert.deepEqual({ lists, parses }, { lists: 2, parses: 5 });
   checked(
     await h.api.operations.revoke(h.request, {
       requestId: randomUUID(),
