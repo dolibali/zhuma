@@ -81,7 +81,7 @@ new file mode 100644
 diff --git a/packages/api/session-controller/README.md b/packages/api/session-controller/README.md
 --- a/packages/api/session-controller/README.md
 +++ b/packages/api/session-controller/README.md
-@@ -135,3 +135,9 @@
+@@ -135,3 +135,11 @@
  None.
  
  </details>
@@ -91,6 +91,8 @@ diff --git a/packages/api/session-controller/README.md b/packages/api/session-co
 +Host integrations can call `followReadOnly` after their own authorization. It retains the original journal and assistant frames without promoting a prepared Session to an Agent; the ordinary `follow` behavior stays unchanged. This method is not exposed as a Remote endpoint.
 +
 +Client integrations install `sessions.registerSessionDelegate(id, delegate)` before retaining a Session. The original Session, submission identities, event stream and reference counts remain the owners of Client state. Releasing or aborting the delegate invalidates that generation; later acquisitions require a new delegate, and stale references never fall back to ordinary RPC. Only page, follow, prompt and cancel have delegate adapters. Other mutations are unavailable for a delegated Session. Host authorization remains mandatory.
++
++Delegated history calls the Gateway stream factory with its original service receiver, preserving the Host connection and stream supervisor.
 diff --git a/packages/api/session-controller/src/client/contract/sessions.ts b/packages/api/session-controller/src/client/contract/sessions.ts
 --- a/packages/api/session-controller/src/client/contract/sessions.ts
 +++ b/packages/api/session-controller/src/client/contract/sessions.ts
@@ -360,7 +362,7 @@ diff --git a/packages/api/session-controller/src/client/sessions/session.ts b/pa
      this.notifier.markDirty()
 -    const events = new SessionEventStream(this.remote, this.sessionAddress(), {
 +    const transport = this.delegated ? {
-+      $stream: this.remote.$stream,
++      $stream: this.remote.$stream.bind(this.remote),
 +      session: {
 +        page: ((...args) => this.currentDelegate().page(...args)) as SessionDelegate['page'],
 +        follow: ((...args) => this.currentDelegate().follow(...args)) as SessionDelegate['follow'],
@@ -438,7 +440,7 @@ diff --git a/packages/api/session-controller/tests/native-delegate.client.spec.t
 new file mode 100644
 --- /dev/null
 +++ b/packages/api/session-controller/tests/native-delegate.client.spec.ts
-@@ -0,0 +1,148 @@
+@@ -0,0 +1,187 @@
 +/** Original Session submission contracts; no Agent or model. */
 +import { describe, expect, it, vi } from 'vitest'
 +import { Session } from '../src/client/sessions/session.ts'
@@ -447,7 +449,8 @@ new file mode 100644
 +import { SessionId } from '@deepseek-ai/dsh-session/types'
 +import type { SessionFollowFrame, SessionFollowRequest } from '../src/types.ts'
 +import { Context } from '@deepseek-ai/cordis'
-+import { RemoteStream, type RemoteStreamOptions } from '@deepseek-ai/dsh-api-gateway/client'
++import { apply as applyGateway, RemoteStream, type RemoteStreamOptions } from '@deepseek-ai/dsh-api-gateway/client'
++import type { ConnectionHandle } from '@deepseek-ai/dsh-client-connection/client'
 +import { ClientSessions } from '../src/client/sessions/service.ts'
 +const sid = SessionId('native-work-proof')
 +const unsupported = (): never => { throw new Error('unexpected fixture operation') }
@@ -483,6 +486,44 @@ new file mode 100644
 +  return { session, rawPrompt, rawCancel, command, abort, delegate, prompt, cancel }
 +}
 +describe('controlled native Session delegate', () => {
++  it.each([false, true])('opens history through the original Gateway service with delegated=%s', async (delegated) => {
++    const ctx = new Context()
++    ctx.provide('connection', {
++      interactions: 'answer', isLoopback: true, openWebSocket: unsupported,
++      generation: { getSnapshot: () => ({ id: 1, host: { home: '/fixture' } }), subscribe: () => () => {} },
++      state: { getSnapshot: () => undefined, subscribe: () => () => {} },
++      reconnect() {}, registerGenerationSource: () => () => {},
++      rpc: { call: unsupported, open: unsupported }, start: () => ({ stop() {} }),
++    } satisfies ConnectionHandle)
++    applyGateway(ctx)
++    const follow = vi.fn((_request: SessionFollowRequest, provided?: AbortSignal) => {
++      const lifetime = new AbortController()
++      const signal = provided ? AbortSignal.any([provided, lifetime.signal]) : lifetime.signal
++      const iterator = (async function* (): AsyncGenerator<SessionFollowFrame> {
++        yield { type: 'snapshot', header: { id: sid, version: 1, createdAt: 1, isSeeded: false },
++          cursor: -1, records: [], hasMore: false,
++          projections: { asOfSeq: -1, values: {} }, assistantStream: { revision: 0 } }
++        await new Promise<void>(resolve => {
++          if (signal.aborted) resolve()
++          else signal.addEventListener('abort', () => resolve(), { once: true })
++        })
++      })()
++      return { [Symbol.asyncIterator]: () => iterator, send: unsupported, end() {}, dispose() { lifetime.abort() } }
++    })
++    ctx.provide('remote.session', remotesFor({ follow }).session)
++    const session = new Session(sid, ctx.remote as SessionRemotes)
++    const lifetime = new AbortController()
++    if (delegated) session.configureDelegate({ signal: lifetime.signal, follow, page: unsupported, prompt: unsupported, cancel: unsupported })
++    try {
++      await session.open()
++      expect(session.getSnapshot().openState).toBe('open')
++      expect(follow).toHaveBeenCalledOnce()
++    } finally {
++      lifetime.abort()
++      await session.dispose()
++      await ctx.fiber.dispose()
++    }
++  })
 +  it('retires the original submission when its delegated transport throws', async () => {
 +    const b = bench()
 +    b.session.configureDelegate(b.delegate)
