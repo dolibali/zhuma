@@ -1,9 +1,23 @@
 import { test, expect } from '@playwright/test';
-import { applyWorkbenchCommand } from '@zhuma/agent-core';
+import { applyWorkbenchCommand, NODE_STATUSES } from '@zhuma/agent-core';
 import { fixture } from '../../../../tests/fixtures/workbench.mjs';
 
 // Response replay only. Real member/JSON/Host composition is tested separately in s1a-host.test.mjs.
-async function replay(page, { empty = false, model = true } = {}) {
+function progressRow(target, facts) {
+  const byStatus = Object.fromEntries(NODE_STATUSES.map((status) => [status, 0]));
+  if (facts === 'present') byStatus.ready = 1;
+  return {
+    target,
+    facts,
+    delivery: 'pending',
+    expectedNodes: 1,
+    acceptedNodes: 0,
+    byStatus,
+    assigneeCounts: { human: 1, expert: 0 },
+    resources: { authorHeld: 0, reviewHeld: 0, stopRequested: 0 },
+  };
+}
+async function replay(page, { empty = false, model = true, progress } = {}) {
   const initial = fixture().state;
   initial.assets = [];
   initial.participants = initial.participants.filter((p) => p.id === 'chen');
@@ -17,7 +31,15 @@ async function replay(page, { empty = false, model = true } = {}) {
     initial.tasks = [];
     initial.projects = [];
   }
-  const control = { state: initial, calls: [], legacy: [], execution: [] };
+  const control = {
+    state: initial,
+    calls: [],
+    legacy: [],
+    execution: [],
+    holdStart: null,
+    failStart: false,
+    startedPlan: null,
+  };
   const space = { id: 'team-a', kind: 'team', name: '产品团队' };
   const snapshot = () => ({
     actorId: 'chen',
@@ -87,22 +109,99 @@ async function replay(page, { empty = false, model = true } = {}) {
     }
     await route.fulfill({ json: { type: 'server-response', rpcId: request.rpcId, result } });
   });
-  await page.route('**/api/zhuma-exec/**', (route) => {
+  await page.route('**/api/zhuma-exec/**', async (route) => {
     const request = route.request().postDataJSON();
     control.execution.push(request);
+    if (request.method === 'zhuma-exec/start-plan' && control.failStart) {
+      return route.fulfill({
+        json: {
+          type: 'server-response',
+          rpcId: request.rpcId,
+          result: {
+            ok: false,
+            error: { code: 'conflict', message: '这项计划已经开始。', details: {} },
+          },
+        },
+      });
+    }
+    if (request.method === 'zhuma-exec/start-plan' && control.holdStart) await control.holdStart;
+    const payload = request.payload ?? {};
+    if (request.method === 'zhuma-exec/start-plan')
+      control.startedPlan = {
+        taskId: payload.taskId,
+        planId: payload.planId,
+        revision: payload.revision,
+      };
+    const started = control.startedPlan;
     const value =
       request.method === 'zhuma-exec/startable'
         ? {
             actorId: 'chen',
             spaceId: space.id,
-            plans: control.state.appliedPlans.map((p) => ({
-              taskId: p.taskId,
-              planId: p.id,
-              revision: p.revision,
-              title: control.state.tasks.find((t) => t.id === p.taskId).title,
-            })),
+            plans: control.state.appliedPlans
+              .filter((p) => !started || p.id !== started.planId)
+              .map((p) => ({
+                taskId: p.taskId,
+                planId: p.id,
+                revision: p.revision,
+                title: control.state.tasks.find((t) => t.id === p.taskId).title,
+              })),
           }
-        : { actorId: 'chen', spaceId: space.id, nodes: [], items: [] };
+        : progress && request.method === 'zhuma-exec/task-progress'
+          ? {
+              actorId: 'chen',
+              spaceId: space.id,
+              coverage: 'current-confirmed-plans',
+              items: (payload.plans ?? []).map((target) => progressRow(target, progress)),
+            }
+          : request.method === 'zhuma-exec/start-plan'
+            ? {
+                disposition: 'started',
+                reports: [
+                  {
+                    nodeId: 'node-1',
+                    taskId: payload.taskId,
+                    workflowVersionId: payload.planId,
+                    revision: payload.revision,
+                    status: 'ready',
+                    upstreamAffected: false,
+                  },
+                ],
+              }
+            : request.method === 'zhuma-exec/inbox' && started
+              ? {
+                  actorId: 'chen',
+                  spaceId: space.id,
+                  items: [
+                    {
+                      id: 'inbox-1',
+                      kind: 'deliver',
+                      actorId: 'chen',
+                      nodeId: 'node-1',
+                      taskId: started.taskId,
+                      reason: 'assignee-delivery',
+                      action: 'submit',
+                    },
+                  ],
+                  nodes: [
+                    {
+                      nodeId: 'node-1',
+                      taskId: started.taskId,
+                      planId: started.planId,
+                      revision: started.revision,
+                      version: 1,
+                      status: 'ready',
+                      goal: '设计登录接口',
+                      expectedOutput: '接口定义',
+                      assigneeId: 'chen',
+                      reviewerIds: [],
+                      artifacts: [],
+                      rounds: [],
+                      comments: [],
+                    },
+                  ],
+                }
+              : { actorId: 'chen', spaceId: space.id, nodes: [], items: [] };
     return route.fulfill({
       json: { type: 'server-response', rpcId: request.rpcId, result: { ok: true, value } },
     });
@@ -255,3 +354,76 @@ for (const operation of ['command', 'plan'])
       gate.resolve();
     }
   });
+
+async function confirmTask(page) {
+  await page.goto('/?member-workbench&strict');
+  await page.locator('.zm-task-row').filter({ hasText: '账号登录' }).click();
+  await button(page, '确认工作流').click();
+}
+const startCalls = (control) =>
+  control.execution.filter((request) => request.method === 'zhuma-exec/start-plan');
+
+test('member UI replay: a confirmed plan that has not started is started from the task, then work opens', async ({
+  page,
+}) => {
+  const control = await replay(page, { progress: 'not-started' });
+  let release = () => {};
+  control.holdStart = new Promise((resolve) => {
+    release = resolve;
+  });
+  try {
+    await confirmTask(page);
+    await expect(page.getByText('尚未开始', { exact: true })).toBeVisible();
+    await expect(button(page, '开始执行')).toBeVisible();
+    await expect(button(page, '查看待办')).toHaveCount(0);
+    expect(startCalls(control)).toEqual([]);
+    await button(page, '开始执行').dblclick();
+    await expect.poll(() => startCalls(control).length).toBe(1);
+    const plan = control.state.appliedPlans[0];
+    const payload = startCalls(control)[0].payload;
+    expect(payload).toMatchObject({
+      taskId: plan.taskId,
+      planId: plan.id,
+      revision: plan.revision,
+      spaceId: 'team-a',
+    });
+    expect(payload.idempotencyKey).toEqual(expect.any(String));
+    expect(payload.idempotencyKey.length).toBeGreaterThan(10);
+    expect(payload.actorId).toBeUndefined();
+    await expect(page.getByRole('heading', { name: '我的工作', exact: true })).toHaveCount(0);
+    release();
+    await expect(page.getByRole('heading', { name: '我的工作', exact: true })).toBeVisible();
+    await expect(
+      page.getByRole('heading', { name: '待我交付 1 个工作项', exact: true }),
+    ).toBeVisible();
+    await expect(button(page, '提交产物')).toBeEnabled();
+    await expect(page.getByText('现在没有需要你处理的工作。')).toHaveCount(0);
+    await expect(page.getByText('暂无待开始的计划', { exact: true })).toBeVisible();
+    expect(startCalls(control)).toHaveLength(1);
+  } finally {
+    release();
+  }
+});
+
+test('member UI replay: an already started plan keeps view-only navigation', async ({ page }) => {
+  const control = await replay(page, { progress: 'present' });
+  await confirmTask(page);
+  await expect(page.getByText('待处理 1', { exact: true })).toBeVisible();
+  await expect(button(page, '查看待办')).toBeVisible();
+  await expect(button(page, '开始执行')).toHaveCount(0);
+  await button(page, '查看待办').click();
+  await expect(page.getByRole('heading', { name: '我的工作', exact: true })).toBeVisible();
+  expect(startCalls(control)).toEqual([]);
+});
+
+test('member UI replay: a refused start stays on the confirmed task', async ({ page }) => {
+  const control = await replay(page, { progress: 'not-started' });
+  control.failStart = true;
+  await confirmTask(page);
+  await button(page, '开始执行').click();
+  await expect(page.getByRole('alert').filter({ hasText: '这项计划已经开始。' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '账号登录', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '我的工作', exact: true })).toHaveCount(0);
+  await expect(button(page, '开始执行')).toBeEnabled();
+  expect(startCalls(control)).toHaveLength(1);
+});
