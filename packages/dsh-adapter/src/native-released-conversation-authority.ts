@@ -1,7 +1,11 @@
 import { z } from 'zod';
 import { canonicalPayload, type ExecutionNodeRecord } from '@zhuma/agent-core';
 import type { MemberRequest } from './member-session.js';
-import type { ExecutionMemberLease, ExecutionRunLocator } from './execution-run-authority.js';
+import type {
+  ExecutionMemberLease,
+  ExecutionRunLocator,
+  ExecutionRunAuthoritySource,
+} from './execution-run-authority.js';
 import { requireExecutionRunWriter } from './execution-run-protocol.js';
 import { executionRunScope, readExecutionRunState } from './execution-run-state.js';
 import {
@@ -73,7 +77,10 @@ export interface NativeReleasedConversationReadEpoch {
  * Shared-backend facts must come from authenticated current HTTP facts, never
  * an in-process grant transported across Hosts or a browser's claimed member.
  */
-export interface NativeReleasedConversationAuthoritySource {
+export interface NativeReleasedConversationAuthoritySource extends Pick<
+  ExecutionRunAuthoritySource,
+  'assertWorkspace'
+> {
   readonly signal: AbortSignal;
   writerState(): unknown;
   memberLease(request: MemberRequest): Promise<ExecutionMemberLease>;
@@ -228,6 +235,7 @@ const methods = [
   'backend',
   'assertNodeAccess',
   'assertController',
+  'assertWorkspace',
   'onChange',
   'openEpoch',
   'assertEpoch',
@@ -277,6 +285,7 @@ export class NativeReleasedConversationAuthorities {
       backend: source.backend,
       assertNodeAccess: source.assertNodeAccess,
       assertController: source.assertController,
+      assertWorkspace: source.assertWorkspace,
       onChange: source.onChange,
       openEpoch: source.openEpoch,
       assertEpoch: source.assertEpoch,
@@ -354,6 +363,16 @@ export class NativeReleasedConversationAuthorities {
         origin.spaceId,
         node,
         'history',
+      ),
+    );
+    assertion(
+      this.ports.assertWorkspace.call(
+        this.source,
+        lease.memberId,
+        origin.spaceId,
+        run.workspace,
+        'read',
+        run.selection.configurationId,
       ),
     );
     if (purpose === 'send')

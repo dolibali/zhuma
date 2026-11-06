@@ -114,6 +114,8 @@ function delivered() {
 
 function setup(options = {}) {
   let row = options.row ?? stopped();
+  let workspace = true;
+  const workspaceCalls = [];
   let current = true,
     controller = 'chen',
     member = true;
@@ -178,6 +180,16 @@ function setup(options = {}) {
     },
     assertController(actor) {
       if (actor !== controller) throw Error('PRIVATE controller');
+    },
+    assertWorkspace(...args) {
+      workspaceCalls.push(args);
+      const known = readExecutionRunState(row)?.runs.some(
+        (run) =>
+          run.selection.configurationId === args[4] &&
+          canonicalPayload(run.workspace) === canonicalPayload(args[2]),
+      );
+      if (!workspace || !current || args[1] !== 'north' || args[3] !== 'read' || !known)
+        throw Error('PRIVATE workspace/read fence');
     },
     onChange(fn) {
       changes.add(fn);
@@ -266,6 +278,10 @@ function setup(options = {}) {
     epochs,
     requests,
     changes,
+    workspaceCalls,
+    set workspace(value) {
+      workspace = value;
+    },
     authorize(req, actor = 'chen') {
       authRequests.set(req, actor);
     },
@@ -1144,3 +1160,39 @@ test('passive contract: removal of an already-known native Session identity inva
   assert.equal(h.retireCalls, 0);
   await h.manager.close();
 });
+
+test('workspace contract: the original workspace assertion is mandatory, never a missing-permission default', async () => {
+  const h = setup();
+  await h.manager.close();
+  delete h.source.assertWorkspace;
+  assert.throws(() => new NativeReleasedConversationAuthorities(h.source), unavailable);
+  assert.equal(h.opens, 0);
+});
+
+for (const mode of ['send', 'read'])
+  test(`workspace contract: ${mode} checks current reader workspace access before and after admission`, async () => {
+    const h = mode === 'read' ? await setupRead() : setup();
+    h.workspace = false;
+    const acquire = () => (mode === 'read' ? h.manager.openRead(outside, locator(h.row)) : open(h));
+    await assert.rejects(acquire(), denied);
+    assert.equal(h.opens, 0);
+    h.workspace = true;
+    const owned = await acquire();
+    const actor = mode === 'read' ? 'outside' : 'chen';
+    assert.ok(
+      h.workspaceCalls.every(
+        (args) => args[0] === actor && args[1] === 'north' && args[3] === 'read',
+      ),
+    );
+    assert.equal(owned.grant.origin.scope.actorId, 'chen');
+    h.workspace = false;
+    assert.throws(
+      () =>
+        mode === 'read'
+          ? h.manager.assertReadGrant(owned.grant)
+          : h.manager.assertGrant(owned.grant, 'send'),
+      denied,
+    );
+    await h.manager.close();
+    assert.equal(h.retireCalls, mode === 'read' ? 0 : 1);
+  });
