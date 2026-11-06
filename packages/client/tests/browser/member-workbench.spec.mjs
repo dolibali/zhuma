@@ -260,3 +260,58 @@ for (const operation of ['command', 'plan'])
       gate.resolve();
     }
   });
+
+test('member UI replay: reselecting 团队工作台 returns from task detail, and unsaved edits must confirm', async ({
+  page,
+}) => {
+  const control = await replay(page);
+  const native = [];
+  page.on('dialog', async (dialog) => {
+    native.push(dialog.type());
+    await dialog.dismiss();
+  });
+  await page.goto('/?member-workbench&strict');
+  await page.locator('.zm-task-row').filter({ hasText: '账号登录' }).click();
+  const title = page.getByLabel('任务标题', { exact: true });
+  await expect(title).toBeVisible();
+  await button(page, '团队工作台').click();
+  await expect(title).toHaveCount(0);
+  await expect(page.locator('.zm-task-row')).toContainText('账号登录');
+
+  await page.locator('.zm-task-row').filter({ hasText: '账号登录' }).click();
+  await title.fill('尚未保存的登录要求');
+  await button(page, '团队工作台').click();
+  const modal = page.getByRole('dialog', { name: '离开当前页面？', exact: true });
+  await expect(modal).toBeVisible();
+  await button(modal, '继续编辑').click();
+  await expect(title).toHaveValue('尚未保存的登录要求');
+  await button(page, '团队工作台').click();
+  await button(modal, '放弃并离开').click();
+  await expect(title).toHaveCount(0);
+  await expect(page.locator('.zm-task-row')).toContainText('账号登录');
+  expect(control.state.tasks[0].title).toBe('账号登录');
+  expect(native).toEqual([]);
+});
+
+test('member UI replay: a narrow editor still leaves the task list from the breadcrumb', async ({
+  page,
+}) => {
+  await replay(page);
+  await page.setViewportSize({ width: 1120, height: 820 });
+  await page.goto('/?member-workbench&strict');
+  await page.locator('.zm-task-row').filter({ hasText: '账号登录' }).click();
+  const title = page.getByLabel('任务标题', { exact: true });
+  await expect(title).toBeVisible();
+  const scrim = page.locator('.zm-drawer-scrim');
+  await expect(scrim).toBeVisible();
+  const back = button(page, '任务清单');
+  const backBox = await back.boundingBox();
+  const scrimBox = await scrim.boundingBox();
+  expect(backBox.x).toBeGreaterThanOrEqual(scrimBox.x - 1);
+  expect(backBox.y).toBeGreaterThanOrEqual(scrimBox.y - 1);
+  expect(backBox.x + backBox.width).toBeLessThanOrEqual(scrimBox.x + scrimBox.width + 1);
+  expect(backBox.y + backBox.height).toBeLessThanOrEqual(scrimBox.y + scrimBox.height + 1);
+  await back.click();
+  await expect(title).toHaveCount(0);
+  await expect(page.locator('.zm-task-row')).toContainText('账号登录');
+});

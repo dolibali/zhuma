@@ -712,6 +712,12 @@ export function WorkbenchPage({
             setInitialPlanning(null);
             setActiveTaskId(null);
           }}
+          returnToCatalog={() => {
+            setInitialPlanning(null);
+            setActiveTaskId(null);
+            setActiveProjectId(null);
+            setSection('tasks');
+          }}
           progress={progressFor(activeTask.id)}
           refreshProgress={progress.refresh}
           backLabel={activeProject ? '项目' : '任务清单'}
