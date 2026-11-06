@@ -11,6 +11,7 @@ import {
 import { open, checked, refused, stable } from './execution-service-run-fixture.mjs';
 import { localWorkspace } from './execution-run-fixture.mjs';
 import { ExecutionWorkspaceApprovals } from '../dist/execution-workspace-approval.js';
+import { nativeExecutionStateSchema } from '../dist/execution-run-state.js';
 
 const latch = () => Promise.withResolvers();
 const turn = () => new Promise((resolve) => setImmediate(resolve));
@@ -522,5 +523,157 @@ test('workspace approval contract: a bounded Run observation refusal cannot prev
     assert.equal(puts, 1);
   } finally {
     await service.close();
+  }
+});
+
+test('workspace approval: the genuine Service snapshot scans and validates native rows once, with the original slow port retaining its shape', async (t) => {
+  const h = await approvalHost(t, { seed: true });
+  checked(await h.owner.approve(h.request, approvalCommand()));
+  checked(await h.service.startRun(h.request, h.begin({ workspace: localWorkspace })));
+  const original = h.service.workspaceApprovalOwner.source;
+  const slowSource = { ...original };
+  delete slowSource.readSnapshot;
+  const slow = new ExecutionWorkspaceApprovals(slowSource, h.source);
+  t.after(() => slow.close());
+  let lists = 0,
+    parses = 0;
+  const list = h.service.storage.listNodes;
+  t.mock.method(h.service.storage, 'listNodes', () => {
+    lists++;
+    return list();
+  });
+  const parse = nativeExecutionStateSchema.safeParse;
+  t.mock.method(nativeExecutionStateSchema, 'safeParse', (...args) => {
+    parses++;
+    return parse(...args);
+  });
+  const snapshot = h.owner.snapshot();
+  assert.deepEqual(Object.keys(snapshot).sort(), ['runs', 'state']);
+  assert.equal(snapshot.runs.length, 1);
+  assert.deepEqual({ lists, parses }, { lists: 1, parses: 1 });
+  lists = parses = 0;
+  assert.deepEqual(slow.owner.snapshot(), snapshot);
+  assert.deepEqual({ lists, parses }, { lists: 2, parses: 2 });
+  snapshot.state.approvals[0].status = 'revoked';
+  snapshot.runs[0].resources = 'settled';
+  await turn();
+  lists = parses = 0;
+  const fresh = h.owner.snapshot();
+  assert.equal(fresh.state.approvals[0].status, 'approved');
+  assert.equal(fresh.runs[0].resources, 'held');
+  assert.deepEqual({ lists, parses }, { lists: 1, parses: 1 });
+});
+
+test('workspace approval: fresh combined reads still reject persisted composition damage and missing compatibility markers', async (t) => {
+  const h = await approvalHost(t, { seed: true });
+  checked(await h.owner.approve(h.request, approvalCommand()));
+  checked(await h.service.startRun(h.request, h.begin({ workspace: localWorkspace })));
+  const table = h.domain.table('nodes');
+  const [key, original] = [...table.entries()].find(([, node]) => node.nodeId === 'produce');
+  const [otherKey, other] = [...table.entries()].find(([, node]) => node.nodeId === 'parallel');
+  const approvals = h.domain.table('workspace_approvals');
+  const approvalState = approvals.get('state');
+  const global = h.domain.global.get();
+  assert.equal(h.owner.snapshot().runs.length, 1);
+  try {
+    const damaged = structuredClone(original);
+    damaged.nativeExecution.runs[0].composition.payload.firstMessage.text = 'PRIVATE_TAMPER';
+    await table.put(key, damaged);
+    assert.throws(() => h.owner.snapshot(), { code: 'run-state-invalid' });
+    await table.put(key, original);
+    await table.put(otherKey, { ...other, nativeExecution: { schemaVersion: 99 } });
+    assert.throws(() => h.owner.snapshot(), { code: 'run-state-invalid' });
+    await table.put(otherKey, other);
+    await approvals.put('state', { invalid: true });
+    assert.throws(() => h.owner.snapshot(), { code: 'workspace-approval-incompatible' });
+    // Store compatibility still precedes approval-state parsing in the combined read.
+    await h.domain.global.set({ schemaVersion: 99 });
+    assert.throws(() => h.owner.snapshot(), { code: 'run-writer-incompatible' });
+    await approvals.put('state', approvalState);
+    await h.domain.global.set({ schemaVersion: 1 });
+    assert.throws(() => h.owner.snapshot(), { code: 'run-writer-unavailable' });
+    const { workspaceApprovalWriter: _approvalWriter, ...unapproved } = global;
+    await h.domain.global.set(unapproved);
+    assert.throws(() => h.owner.snapshot(), { code: 'run-writer-unavailable' });
+  } finally {
+    await table.put(key, original);
+    await table.put(otherKey, other);
+    await approvals.put('state', approvalState);
+    await h.domain.global.set(global);
+  }
+  assert.equal(h.owner.snapshot().runs.length, 1);
+});
+
+test('workspace approval: combined and legacy snapshots keep state validation before the 4096 Run bound and never reuse prior material', async (t) => {
+  const h = await approvalHost(t);
+  checked(await h.owner.approve(h.request, approvalCommand()));
+  const state = h.owner.snapshot().state;
+  for (const combined of [false, true]) {
+    let currentState = state,
+      runs = [],
+      reads = 0;
+    const source = {
+      ...h.service.workspaceApprovalOwner.source,
+      read: () => currentState,
+      runs: () => runs,
+    };
+    delete source.readSnapshot;
+    if (combined)
+      source.readSnapshot = () => {
+        reads++;
+        return { state: currentState, runs };
+      };
+    const service = new ExecutionWorkspaceApprovals(source, h.source);
+    try {
+      assert.deepEqual(service.owner.snapshot().runs, []);
+      runs = Array.from({ length: 4096 }, () => ({ contractOnly: true }));
+      assert.equal(service.owner.snapshot().runs.length, 4096);
+      runs.push({ contractOnly: true });
+      assert.throws(() => service.owner.snapshot(), { code: 'workspace-approval-capacity' });
+      currentState = { invalid: true };
+      assert.throws(() => service.owner.snapshot(), { code: 'workspace-approval-incompatible' });
+      currentState = state;
+      runs = [];
+      assert.equal(service.owner.snapshot().state.approvals[0].status, 'approved');
+      assert.equal(reads, combined ? 5 : 0);
+    } finally {
+      await service.close();
+    }
+  }
+});
+
+test('workspace approval: a combined issuer cannot be replaced, turn asynchronous, or change its source during publication', async (t) => {
+  const h = await approvalHost(t);
+  const original = h.service.workspaceApprovalOwner.source;
+  for (const field of ['readSnapshot', 'signal', 'read', 'assertCompatible', 'runs']) {
+    const source = { ...original };
+    const service = new ExecutionWorkspaceApprovals(source, h.source);
+    try {
+      assert.equal(service.owner.snapshot().state, undefined);
+      source[field] = field === 'signal' ? new AbortController().signal : () => undefined;
+      assert.throws(() => service.owner.snapshot(), { code: 'workspace-approval-unavailable' });
+    } finally {
+      await service.close();
+    }
+  }
+  const asyncSource = { ...original, readSnapshot: async () => ({ state: undefined, runs: [] }) };
+  const asynchronous = new ExecutionWorkspaceApprovals(asyncSource, h.source);
+  try {
+    assert.throws(() => asynchronous.owner.snapshot(), { code: 'workspace-approval-incompatible' });
+  } finally {
+    await asynchronous.close();
+  }
+  const source = {
+    ...original,
+    readSnapshot() {
+      source.read = () => undefined;
+      return { state: undefined, runs: [] };
+    },
+  };
+  const changed = new ExecutionWorkspaceApprovals(source, h.source);
+  try {
+    assert.throws(() => changed.owner.snapshot(), { code: 'workspace-approval-unavailable' });
+  } finally {
+    await changed.close();
   }
 });

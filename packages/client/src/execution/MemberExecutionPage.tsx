@@ -13,6 +13,7 @@ import { MemberSessionBoundary } from '../identity/MemberSessionBoundary.js';
 import { MemberSpaceBoundary, type MemberSpaceLifetime } from '../identity/MemberSpaceBoundary.js';
 import type { MemberShell, SpaceSwitch } from '../identity/shell.js';
 import { createExecutionHttpApi } from './http.js';
+import { EfficiencyExportControls } from './EfficiencyExport.js';
 import { StartablePlansPanel } from './StartablePlansPanel.js';
 import { ExecutionWorkspace } from './ExecutionWorkspace.js';
 import type { AppearanceStore } from '../workbench/Appearance.js';
@@ -235,6 +236,7 @@ function MemberWork({
       ) : (
         <main className="zm-page">
           <h1>我的工作</h1>
+          <EfficiencyExportControls fetcher={fetcher} />
           <div className="zm-execution-workspace">
             <StartablePlansPanel api={api} onStarted={started} />
             <ExecutionWorkspace

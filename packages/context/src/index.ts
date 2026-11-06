@@ -55,3 +55,20 @@ export {
 
 export type { McpCallLog, McpCallQuery, McpCallRecord } from './mcp-call-log.js';
 export { appendMcpCall, createMcpCallLog, readMcpCalls } from './mcp-call-log.js';
+
+export type {
+  EfficiencyEventKind,
+  EfficiencyMetricName,
+  EfficiencyEvent,
+  EfficiencyMetric,
+  EfficiencySummary,
+  EfficiencyAppendResult,
+} from './efficiency-log.js';
+export {
+  EFFICIENCY_EVENT_KINDS,
+  EFFICIENCY_METRICS,
+  appendEfficiencyEvent,
+  summarizeEfficiency,
+  exportEfficiencyJson,
+  exportEfficiencyCsv,
+} from './efficiency-log.js';

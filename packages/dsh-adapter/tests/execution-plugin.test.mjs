@@ -210,6 +210,7 @@ test('the execution channel is an exact fetch route and hides storage failures',
     [
       ...executionEndpoints.map((endpoint) => `/api/zhuma-exec/${endpoint}`),
       '/api/zhuma-exec/upload-file',
+      '/api/zhuma-efficiency/export',
       '/api/zhuma-exec/file',
     ],
   );
