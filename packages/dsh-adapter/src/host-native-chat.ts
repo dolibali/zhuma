@@ -63,7 +63,8 @@ export function createHostNativeChat(options: {
     signal.throwIfAborted();
     const owner = owners.get(sessionId);
     const work = (async () => {
-      await owner?.activation;
+      // Wait for admission to settle; fresh D/C reads determine current availability after failure.
+      if (owner?.activation) await Promise.allSettled([owner.activation]);
       if (owner?.handle?.grant.signal.aborted)
         await options.authorities.whenSettled(owner.handle.grant);
       active();

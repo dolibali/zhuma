@@ -406,7 +406,9 @@ export function installMemberNativeNavigation(
     const { workflow: _workflow, workspaceApprovals: _approvals, ...remoteApi } = api;
     if (!selected.origin && found.presentation === 'sdk-native') {
       const lifetime = new AbortController();
+      let freshChat: NativeConversationStatus | undefined;
       const update = (run: NativeRunRead, chat?: NativeConversationStatus) => {
+        freshChat = chat;
         if (entry?.kind !== 'work' || entry.key !== acceptedEpoch || !entry.conversation) return;
         const terminal = ['completed', 'failed', 'cancelled'].includes(run.status);
         blocks.set(
@@ -470,11 +472,12 @@ export function installMemberNativeNavigation(
           },
           conversation: {
             run,
+            ...(freshChat ? { chat: freshChat } : {}),
             refresh: () => conversation.refresh(lifetime.signal),
             stop: conversation.stop,
           },
         };
-        update(run);
+        update(run, freshChat);
       }, signal);
       if (!accepted) {
         active = false;

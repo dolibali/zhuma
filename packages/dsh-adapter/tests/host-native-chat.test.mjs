@@ -2,6 +2,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createHostNativeChat } from '../dist/host-native-chat.js';
+import { NativeWorkError } from '../dist/native-work-session-contract.js';
 const target = {
   spaceId: 'space',
   taskId: 'task',
@@ -33,6 +34,8 @@ function setup() {
     epoch = 0,
     stops = 0;
   const sends = [];
+  let fault,
+    unknownSlot = false;
   const valid = new WeakSet();
   const authorities = {
     async openRead() {
@@ -81,6 +84,13 @@ function setup() {
     async send(value, request) {
       assert.equal(value, grant);
       sends.push(request);
+      if (fault === 'conflict') throw new NativeWorkError('idempotency-mismatch');
+      if (fault === 'discarded')
+        return { ...request, messageId: request.requestId, status: 'discarded' };
+      if (fault === 'unknown') {
+        unknownSlot = true;
+        return { ...request, messageId: request.requestId, status: 'unknown' };
+      }
       return { ...request, messageId: request.requestId, status: 'received' };
     },
   };
@@ -98,7 +108,22 @@ function setup() {
     request,
     ...patch,
   });
-  return { chat, raw, sends, settled, control, counts: () => ({ opens, releases, stops }) };
+  const openView = native.open;
+  native.open = (...args) => {
+    if (unknownSlot) throw new NativeWorkError('migration-not-ready');
+    return openView(...args);
+  };
+  return {
+    chat,
+    raw,
+    sends,
+    settled,
+    control,
+    setFault(value) {
+      fault = value;
+    },
+    counts: () => ({ opens, releases, stops }),
+  };
 }
 test('passive status opens only a read ticket and send eligibility, never a chat epoch', async () => {
   const h = setup();
@@ -151,6 +176,54 @@ test('substituted session/scope/actor cannot reserve any native send owner', asy
     await assert.rejects(h.chat.send({}, h.raw({ requestId: 'sdk', text: 'text' }, patch)));
     assert.equal(h.counts().opens, 0);
     assert.equal(h.sends.length, 0);
+    h.settled.resolve();
+    await h.chat.close();
+  }
+});
+
+for (const fault of ['conflict', 'discarded'])
+  test(`a rejected ${fault} send does not prevent fresh status or stopping the retained owner`, async () => {
+    const h = setup();
+    try {
+      await h.chat.send({}, h.raw({ requestId: 'original', text: 'original' }));
+      h.setFault(fault);
+      await assert.rejects(h.chat.send({}, h.raw({ requestId: 'original', text: 'changed' })));
+      const before = h.counts().releases;
+      const state = await h.chat.status({}, h.raw());
+      assert.equal(state.canStop, true);
+      assert.equal(
+        h.counts().releases,
+        before + 1,
+        'status acquires and releases a fresh read ticket',
+      );
+      assert.equal((await h.chat.stop({}, h.raw())).status, 'pending');
+      assert.equal(
+        h.chat.canSwitchBackend(),
+        false,
+        'a failed admission or aborted signal is not physical drain',
+      );
+    } finally {
+      h.settled.resolve();
+      await h.chat.close();
+    }
+  });
+
+test('after a rejected unknown receipt the fresh native read still fences the unknown slot', async () => {
+  const h = setup();
+  try {
+    await h.chat.send({}, h.raw({ requestId: 'original', text: 'original' }));
+    h.setFault('unknown');
+    await assert.rejects(
+      h.chat.send({}, h.raw({ requestId: 'later', text: 'later' })),
+      (error) => error.code === 'delivery-unknown',
+    );
+    await assert.rejects(
+      h.chat.status({}, h.raw()),
+      (error) => error.code === 'migration-not-ready',
+    );
+    assert.equal(h.chat.canSwitchBackend(), false);
+    assert.equal(h.counts().stops, 0);
+  } finally {
     h.settled.resolve();
     await h.chat.close();
   }
