@@ -4,6 +4,10 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import fs from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import {
   mkdtemp,
   mkdir,
@@ -25,10 +29,12 @@ import SessionStore, { SessionId } from '@deepseek-ai/dsh-session';
 import SessionProjections from '@deepseek-ai/dsh-session-projection';
 import { createScope } from '@deepseek-ai/dsh-scope';
 import * as ToolFs from '@deepseek-ai/dsh-tool-fs';
+import { canonicalPayload } from '@zhuma/agent-core';
 import {
   adoptNativeRunLocalTools,
   describeNativeRunLocalTools,
   NativeRunLocalToolProducer,
+  NativeRunLocalToolError,
   NATIVE_RUN_LOCAL_TOOL_CONFIG,
   NATIVE_RUN_LOCAL_TOOL_SOURCE_VERSION,
 } from '../dist/native-run-local-tools.js';
@@ -693,3 +699,271 @@ test('real file tools + JSON Run: the complete local configuration is saved befo
   assert.equal(await readFile(join(h.root, 'a.txt'), 'utf8'), 'persisted configuration\n');
   assert.deepEqual(run.service.readRunComposition(run.runLocator()), saved);
 });
+
+// Separate processes keep the private flag, diagnostic budget and failing stdout
+// isolated from the normal semantic tests. Only synthetic workspace bytes are used.
+function localIoDiagnosticChild(mode, flag) {
+  const env = { ...process.env, ZHUMA_TEST_LOCAL_IO_DIAGNOSTIC_MODE: mode };
+  delete env.NODE_TEST_CONTEXT;
+  delete env.ZHUMA_NATIVE_STARTUP_DIAGNOSTICS_STDOUT;
+  if (flag !== undefined) env.ZHUMA_NATIVE_STARTUP_DIAGNOSTICS_STDOUT = flag;
+  const output = execFileSync(
+    process.execPath,
+    [
+      '--test',
+      '--test-reporter=tap',
+      '--test-name-pattern=^private local I/O diagnostic child$',
+      import.meta.filename,
+    ],
+    { env, encoding: 'utf8', timeout: 30_000, maxBuffer: 2_097_152 },
+  );
+  const lines = output.split('\n').map((line) => line.replace(/^# /u, ''));
+  const records = lines
+    .filter((line) => line.startsWith('{"event":"zhuma-native-local-io-stage"'))
+    .map((line) => JSON.parse(line));
+  const result = lines.find((line) => line.startsWith('LOCAL_IO_TEST_RESULT '));
+  assert(result, output);
+  return { records, result: JSON.parse(result.slice('LOCAL_IO_TEST_RESULT '.length)), lines };
+}
+const diagnosticHash = (scope) =>
+  createHash('sha256').update(canonicalPayload(scope)).digest('hex').slice(0, 16);
+
+test('private local I/O diagnostics: exact opt-in preserves calls and bytes; repeated successes cannot exhaust the final failure', () => {
+  const enabled = localIoDiagnosticChild('success-then-revoke', '1');
+  for (const flag of [undefined, '0', 'true', ' 1', '1 ']) {
+    const quiet = localIoDiagnosticChild('success-then-revoke', flag);
+    assert.deepEqual(quiet.records, []);
+    assert.deepEqual(quiet.result, enabled.result);
+  }
+  assert(enabled.records.length > 0 && enabled.records.length <= 32);
+  assert.equal(new Set(enabled.records.map((record) => record.stage)).size, enabled.records.length);
+  const correlation = diagnosticHash(compositionFacts().scope);
+  for (const record of enabled.records) {
+    assert.deepEqual(Object.keys(record).sort(), ['code', 'correlation', 'event', 'stage']);
+    assert.equal(record.event, 'zhuma-native-local-io-stage');
+    assert.equal(record.correlation, correlation);
+    assert.match(
+      record.stage,
+      /^(delegate|permission|resolve-root|resolve-target|stat|stream-open|stream-next|write|edit)-(begin|done|error)$/u,
+    );
+    assert.match(
+      record.code,
+      /^(none|unexpected-error|cancelled|local-tools-(unavailable|denied|mismatch|budget|timeout))$/u,
+    );
+  }
+  for (const stage of [
+    'delegate',
+    'permission',
+    'resolve-root',
+    'resolve-target',
+    'stat',
+    'stream-open',
+    'stream-next',
+    'write',
+    'edit',
+  ])
+    assert(enabled.records.some((record) => record.stage === `${stage}-done`));
+  assert(
+    enabled.records.some(
+      (record) => record.stage === 'delegate-error' && record.code === 'local-tools-denied',
+    ),
+  );
+  assert.doesNotMatch(
+    JSON.stringify(enabled.records),
+    /PRIVATE|a\.txt|run-1|chen|callId|content|arguments/u,
+  );
+});
+
+test('private local I/O diagnostics: provider and permission errors never inspect private getters or replace the original rejection', () => {
+  for (const mode of ['provider-error', 'permission-error', 'controlled-error']) {
+    const { records, result } = localIoDiagnosticChild(mode, '1');
+    assert.equal(result.getterReads, 0);
+    assert.equal(result.originalPreserved, true);
+    const stage = mode === 'permission-error' ? 'permission-error' : 'resolve-root-error';
+    assert(
+      records.some(
+        (record) =>
+          record.stage === stage &&
+          record.code ===
+            (mode === 'controlled-error' ? 'local-tools-timeout' : 'unexpected-error'),
+      ),
+    );
+    assert.doesNotMatch(JSON.stringify(records), /PRIVATE|private|secret|stack|message|cause/u);
+  }
+});
+
+test('private local I/O diagnostics: an outstanding stream callback has begin before settlement, and output failure changes no result', () => {
+  const pending = localIoDiagnosticChild('pending-stream', '1');
+  const begin = pending.lines.findIndex((line) => line.includes('"stage":"stream-next-begin"'));
+  const marker = pending.lines.indexOf('LOCAL_IO_TEST_PENDING');
+  const done = pending.lines.findIndex((line) => line.includes('"stage":"stream-next-done"'));
+  assert(begin >= 0 && begin < marker && marker < done);
+  assert.equal(pending.result.completed, true);
+  const broken = localIoDiagnosticChild('output-failure', '1');
+  assert.deepEqual(broken.records, []);
+  assert.equal(broken.result.completed, true);
+  assert.equal(broken.result.getterReads, 0);
+});
+
+test('private local I/O diagnostics: the 256-scope bound is not renewed by disposal, retries or disabled observations', () => {
+  const { records, result } = localIoDiagnosticChild('scope-limit', '1');
+  assert.equal(new Set(records.map((record) => record.correlation)).size, 256);
+  assert(records.length <= 256 * 32);
+  const counts = new Map();
+  for (const record of records)
+    counts.set(record.correlation, (counts.get(record.correlation) ?? 0) + 1);
+  assert([...counts.values()].every((count) => count <= 32));
+  assert.equal(counts.has(result.overflow), false);
+  assert.equal(result.completed, true);
+});
+
+test(
+  'private local I/O diagnostic child',
+  { skip: !process.env.ZHUMA_TEST_LOCAL_IO_DIAGNOSTIC_MODE },
+  async (t) => {
+    const mode = process.env.ZHUMA_TEST_LOCAL_IO_DIAGNOSTIC_MODE;
+    let getterReads = 0;
+    const poison = {};
+    for (const key of ['code', 'name', 'message', 'stack', 'cause'])
+      Object.defineProperty(poison, key, {
+        get() {
+          getterReads++;
+          throw Error('PRIVATE_GETTER_BODY');
+        },
+      });
+    if (mode === 'output-failure') {
+      const prior = fs.writeSync;
+      fs.writeSync = (fd, text, ...args) => {
+        if (
+          fd === 1 &&
+          typeof text === 'string' &&
+          text.startsWith('{"event":"zhuma-native-local-io-stage"')
+        )
+          throw poison;
+        return prior(fd, text, ...args);
+      };
+      syncBuiltinESMExports();
+      t.after(() => {
+        fs.writeSync = prior;
+        syncBuiltinESMExports();
+      });
+    }
+    const h = await host(t);
+    if (mode === 'scope-limit') {
+      const adoptScope = async (index) => {
+        const scope = { ...h.facts.scope, runId: `diagnostic-scope-${index}` };
+        const composition = freezeExecutionRunComposition({
+          ...h.facts,
+          scope,
+          tools: h.composition.payload.tools,
+        });
+        h.binding.scope = structuredClone(scope);
+        h.binding.selection = executionRunCompositionRequest(composition).selection;
+        h.grant.scope = structuredClone(scope);
+        h.workspace.scope = structuredClone(scope);
+        const adopted = await h.adopt({ composition });
+        await adopted.dispose();
+        return diagnosticHash(scope);
+      };
+      // Disabled observations must not consume the enabled global scope budget.
+      delete process.env.ZHUMA_NATIVE_STARTUP_DIAGNOSTICS_STDOUT;
+      await adoptScope('disabled');
+      process.env.ZHUMA_NATIVE_STARTUP_DIAGNOSTICS_STDOUT = '1';
+      let overflow;
+      for (let index = 0; index <= 256; index++) overflow = await adoptScope(index);
+      await adoptScope(0);
+      console.log('LOCAL_IO_TEST_RESULT ' + JSON.stringify({ completed: true, overflow }));
+      return;
+    }
+    const counts = { grant: 0, workspace: 0, resolve: 0, write: 0 };
+    for (const [key, object] of [
+      ['grant', h.grant],
+      ['workspace', h.workspace],
+    ]) {
+      const prior = object.assertCurrent;
+      object.assertCurrent = function (...args) {
+        counts[key]++;
+        return prior.apply(this, args);
+      };
+    }
+    h.backend.afterResolve = () => {
+      counts.resolve++;
+    };
+    h.backend.beforeWrite = () => {
+      counts.write++;
+    };
+    if (['provider-error', 'controlled-error', 'permission-error'].includes(mode)) {
+      let original;
+      const reject = () => {
+        original =
+          mode === 'controlled-error' ? new NativeRunLocalToolError('local-tools-timeout') : poison;
+        if (mode === 'controlled-error')
+          Object.defineProperty(original, 'code', {
+            get() {
+              getterReads++;
+              throw Error('PRIVATE_CONTROLLED_CODE');
+            },
+          });
+        throw original;
+      };
+      if (mode === 'permission-error') h.workspace.assertCurrent = reject;
+      else h.backend.afterResolve = reject;
+      let originalPreserved = false;
+      await assert.rejects(h.adopt(), (error) => {
+        // Initialization already maps unknown provider errors to unavailable and
+        // permission errors to denied; known C errors retain their identity.
+        originalPreserved =
+          mode === 'controlled-error'
+            ? error === original
+            : error.code ===
+              (mode === 'permission-error' ? 'local-tools-denied' : 'local-tools-unavailable');
+        return originalPreserved;
+      });
+      console.log('LOCAL_IO_TEST_RESULT ' + JSON.stringify({ getterReads, originalPreserved }));
+      return;
+    }
+    await h.adopt();
+    if (mode === 'pending-stream') {
+      const entered = Promise.withResolvers(),
+        release = Promise.withResolvers();
+      h.backend.transformStream = (source) => ({
+        async *[Symbol.asyncIterator]() {
+          entered.resolve();
+          await release.promise;
+          yield* source;
+        },
+      });
+      const call = h.call('read', { file_path: 'a.txt' });
+      await entered.promise;
+      console.log('LOCAL_IO_TEST_PENDING');
+      release.resolve();
+      okay(await call);
+      console.log('LOCAL_IO_TEST_RESULT ' + JSON.stringify({ completed: true }));
+      return;
+    }
+    okay(await h.call('read', { file_path: 'a.txt' }));
+    okay(
+      await h.call('edit', { file_path: 'a.txt', old_string: 'hello', new_string: 'PRIVATE_EDIT' }),
+    );
+    okay(
+      await h.call(
+        'write',
+        { file_path: 'created.txt', content: 'PRIVATE_CONTENT' },
+        { callId: 'PRIVATE_CALL_ID' },
+      ),
+    );
+    assert.equal(await readFile(join(h.root, 'a.txt'), 'utf8'), 'PRIVATE_EDIT\n');
+    assert.equal(await readFile(join(h.root, 'created.txt'), 'utf8'), 'PRIVATE_CONTENT');
+    if (mode === 'success-then-revoke') {
+      for (let index = 0; index < 20; index++) okay(await h.call('read', { file_path: 'a.txt' }));
+      h.backend.beforeWrite = (signal) => {
+        counts.write++;
+        h.permission.abort();
+        signal.throwIfAborted();
+      };
+      denied(await h.call('write', { file_path: 'revoked.txt', content: 'PRIVATE_CONTENT' }));
+      await assert.rejects(readFile(join(h.root, 'revoked.txt')));
+      console.log('LOCAL_IO_TEST_RESULT ' + JSON.stringify(counts));
+    } else console.log('LOCAL_IO_TEST_RESULT ' + JSON.stringify({ completed: true, getterReads }));
+  },
+);
