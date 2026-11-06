@@ -96,6 +96,7 @@ import {
   type UpstreamInputView,
 } from './upstream-inputs.js';
 import type { MemberRequest } from './member-session.js';
+import type { NativeReleasedConversationAuthoritySource } from './native-released-conversation-authority.js';
 import type { MemberWorkbenchDirectory } from './member-workbench-dto.js';
 import {
   taskProgressQuerySchema,
@@ -565,6 +566,20 @@ export interface ExecutionRunHostPorts
   ): undefined;
   assertWorkspace(...args: Parameters<ExecutionRunAuthoritySource['assertWorkspace']>): undefined;
 }
+
+/** Runtime ports only. Identity, directory, node, controller and workspace
+ * gates are always taken from this ExecutionService's installed Host.
+ */
+export type NativeReleasedConversationRuntimePorts = Pick<
+  NativeReleasedConversationAuthoritySource,
+  | 'backend'
+  | 'openEpoch'
+  | 'assertEpoch'
+  | 'retireEpoch'
+  | 'whenEpochSettled'
+  | 'openReadEpoch'
+  | 'assertReadEpoch'
+>;
 
 type NativeResultPort = {
   readonly issuer: NativeFixedResultIssuer | NativeFixedResultPublicationsIssuer;
@@ -1457,6 +1472,180 @@ export class ExecutionService {
     this.runHost = host;
     this.runAuthorities = authorities;
     return authorities;
+  }
+
+  /** Host-only composition seam. This creates callbacks, not another manager
+   * or task store. A holds/closes the authority manager with the same Host.
+   */
+  createNativeReleasedConversationAuthoritySource(
+    runtime: NativeReleasedConversationRuntimePorts,
+  ): NativeReleasedConversationAuthoritySource {
+    const host = this.requireRunHost(),
+      hostSignal = host.signal;
+    const hostMethods = {
+      memberLease: host.memberLease,
+      assertProjectSpace: host.assertProjectSpace,
+      assertWorkspace: host.assertWorkspace,
+      onChange: host.onChange,
+    };
+    if (Object.values(hostMethods).some((method) => typeof method !== 'function'))
+      throw new ExecutionRunError('run-authority-unavailable');
+    const {
+      backend,
+      openEpoch,
+      assertEpoch,
+      retireEpoch,
+      whenEpochSettled,
+      openReadEpoch,
+      assertReadEpoch,
+    } = runtime ?? {};
+    if (
+      [backend, openEpoch, assertEpoch, retireEpoch, whenEpochSettled].some(
+        (method) => typeof method !== 'function',
+      ) ||
+      (openReadEpoch !== undefined && typeof openReadEpoch !== 'function') ||
+      (assertReadEpoch !== undefined && typeof assertReadEpoch !== 'function')
+    )
+      throw new ExecutionRunError('run-authority-unavailable');
+    const runtimeMethods = {
+      backend,
+      openEpoch,
+      assertEpoch,
+      retireEpoch,
+      whenEpochSettled,
+      openReadEpoch,
+      assertReadEpoch,
+    };
+    const signal = AbortSignal.any([hostSignal, this.runLifetime.signal]);
+    const active = () => {
+      if (
+        this.requireRunHost() !== host ||
+        host.signal !== hostSignal ||
+        signal.aborted ||
+        Object.entries(hostMethods).some(([name, method]) => Reflect.get(host, name) !== method) ||
+        Object.entries(runtimeMethods).some(
+          ([name, method]) => Reflect.get(runtime, name) !== method,
+        )
+      )
+        throw new ExecutionRunError('run-authority-unavailable');
+    };
+    const readLocal: NativeReleasedConversationAuthoritySource['readNode'] = (locator) => {
+      active();
+      const node = this.readRunNode(locator);
+      if (
+        node &&
+        readExecutionRunState(node)?.runs.find((run) => run.attempt.id === locator.runId)?.remote
+      )
+        throw new ExecutionRunError('run-authority-denied');
+      active();
+      return node;
+    };
+    const beforeEpoch = (input: Parameters<typeof openEpoch>[0]) => {
+      active();
+      synchronousRunAssertion(input.assertCurrent());
+      const node = readLocal(input.origin);
+      const run =
+        node &&
+        readExecutionRunState(node)?.runs.find((item) => item.attempt.id === input.origin.runId);
+      if (
+        !node ||
+        !run ||
+        canonicalPayload(executionRunScope(node, run)) !== canonicalPayload(input.origin)
+      )
+        throw new ExecutionRunError('run-authority-denied');
+      active();
+    };
+    active();
+    return Object.freeze({
+      signal,
+      writerState: () => {
+        active();
+        return this.readRunGlobal();
+      },
+      memberLease: (request: MemberRequest) => {
+        active();
+        return hostMethods.memberLease.call(host, request);
+      },
+      readNode: readLocal,
+      assertNodeAccess: (
+        memberId: string,
+        spaceId: string,
+        node: ExecutionNodeRecord,
+        action: 'history',
+      ) => {
+        active();
+        if (action !== 'history') throw new ExecutionRunError('run-authority-denied');
+        this.assertRunNodeAccess(host, memberId, spaceId, node);
+        active();
+        return undefined;
+      },
+      assertController: (memberId: string, node: ExecutionNodeRecord) => {
+        active();
+        this.assertRunController(memberId, node);
+        active();
+        return undefined;
+      },
+      assertWorkspace: (...args: Parameters<ExecutionRunAuthoritySource['assertWorkspace']>) => {
+        active();
+        synchronousRunAssertion(hostMethods.assertWorkspace.call(host, ...args));
+        active();
+        return undefined;
+      },
+      onChange: (listener: () => void) => {
+        active();
+        const stop = hostMethods.onChange.call(host, listener);
+        if (typeof stop !== 'function') {
+          void Promise.resolve(stop).catch(() => undefined);
+          throw new ExecutionRunError('run-authority-unavailable');
+        }
+        this.runChanges.add(listener);
+        let stopped = false;
+        return () => {
+          if (stopped) return;
+          stopped = true;
+          this.runChanges.delete(listener);
+          stop();
+        };
+      },
+      backend: () => {
+        active();
+        const value = backend.call(runtime);
+        active();
+        return value;
+      },
+      openEpoch: (input: Parameters<typeof openEpoch>[0]) => {
+        beforeEpoch(input);
+        return openEpoch.call(runtime, input);
+      },
+      assertEpoch: (...args: Parameters<typeof assertEpoch>) => {
+        active();
+        synchronousRunAssertion(assertEpoch.call(runtime, ...args));
+        active();
+        return undefined;
+      },
+      // Cleanup remains bound to the original native owner after revocation.
+      retireEpoch: (epoch: Parameters<typeof retireEpoch>[0]) => retireEpoch.call(runtime, epoch),
+      whenEpochSettled: (epoch: Parameters<typeof whenEpochSettled>[0]) =>
+        whenEpochSettled.call(runtime, epoch),
+      ...(openReadEpoch
+        ? {
+            openReadEpoch: (input: Parameters<typeof openReadEpoch>[0]) => {
+              beforeEpoch(input);
+              return openReadEpoch.call(runtime, input);
+            },
+          }
+        : {}),
+      ...(assertReadEpoch
+        ? {
+            assertReadEpoch: (epoch: Parameters<typeof assertReadEpoch>[0]) => {
+              active();
+              synchronousRunAssertion(assertReadEpoch.call(runtime, epoch));
+              active();
+              return undefined;
+            },
+          }
+        : {}),
+    });
   }
 
   startWorkflowExecution(
