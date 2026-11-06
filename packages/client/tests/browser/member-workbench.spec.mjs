@@ -1,9 +1,10 @@
 import { test, expect } from '@playwright/test';
 import { applyWorkbenchCommand } from '@zhuma/agent-core';
 import { fixture } from '../../../../tests/fixtures/workbench.mjs';
+import { deliveryNode, inbox } from './execution-fixture.mjs';
 
 // Response replay only. Real member/JSON/Host composition is tested separately in s1a-host.test.mjs.
-async function replay(page, { empty = false, model = true } = {}) {
+async function replay(page, { empty = false, model = true, delivery = false } = {}) {
   const initial = fixture().state;
   initial.assets = [];
   initial.participants = initial.participants.filter((p) => p.id === 'chen');
@@ -91,18 +92,22 @@ async function replay(page, { empty = false, model = true } = {}) {
     const request = route.request().postDataJSON();
     control.execution.push(request);
     const value =
-      request.method === 'zhuma-exec/startable'
-        ? {
-            actorId: 'chen',
-            spaceId: space.id,
-            plans: control.state.appliedPlans.map((p) => ({
-              taskId: p.taskId,
-              planId: p.id,
-              revision: p.revision,
-              title: control.state.tasks.find((t) => t.id === p.taskId).title,
-            })),
-          }
-        : { actorId: 'chen', spaceId: space.id, nodes: [], items: [] };
+      request.method === 'zhuma-exec/draft'
+        ? { version: 0, text: '', links: [], files: [] }
+        : request.method === 'zhuma-exec/startable'
+          ? {
+              actorId: 'chen',
+              spaceId: space.id,
+              plans: control.state.appliedPlans.map((p) => ({
+                taskId: p.taskId,
+                planId: p.id,
+                revision: p.revision,
+                title: control.state.tasks.find((t) => t.id === p.taskId).title,
+              })),
+            }
+          : delivery && request.method === 'zhuma-exec/inbox'
+            ? { ...inbox([deliveryNode]), actorId: 'chen', spaceId: space.id }
+            : { actorId: 'chen', spaceId: space.id, nodes: [], items: [] };
     return route.fulfill({
       json: { type: 'server-response', rpcId: request.rpcId, result: { ok: true, value } },
     });
@@ -166,6 +171,25 @@ test('member UI replay: save before confirm, explicit planning failure preserves
       .map((c) => c.payload.command.type),
   ).toEqual(['update-task', 'confirm-task']);
   expect(control.legacy).toEqual([]);
+});
+
+test('member UI replay: an unsaved delivery draft does not block sidebar navigation', async ({
+  page,
+}) => {
+  await replay(page, { delivery: true });
+  await page.goto('/?member-workbench&strict');
+  await button(page, '我的工作').click();
+  await expect(page.getByRole('heading', { name: '我的工作', exact: true })).toBeVisible();
+  await button(page, '打开提交').click();
+  await expect(page.getByText('提交面板已打开', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '提交产物', exact: true })).toHaveCount(1);
+  const draft = page.getByLabel('补充说明（选填）', { exact: true });
+  await expect(page.locator('.zm-draft-status')).toHaveText('尚未保存草稿');
+  await draft.fill('侧栏切换不应被挡住');
+  await button(page, '团队工作台').click();
+  await expect(page.getByRole('dialog', { name: '离开当前页面？', exact: true })).toHaveCount(0);
+  await expect(page.locator('.zm-task-row').filter({ hasText: '账号登录' })).toBeVisible();
+  await expect(draft).toHaveCount(0);
 });
 
 test('member UI replay: compact editor leave modal cancels and escapes back to its trigger without losing input', async ({

@@ -54,8 +54,21 @@ test('panels render delivery and review without an actor control', () => {
   );
   assert.match(inbox, /需要我处理/);
   assert.match(inbox, /待我交付/);
-  assert.match(inbox, /提交产物/);
+  assert.match(inbox, /打开提交/);
+  assert.equal(inbox.includes('提交产物'), false);
   assert.equal(inbox.includes('actorId'), false);
+  const opened = renderToStaticMarkup(
+    createElement(InboxPanel, {
+      items: [item],
+      nodes: [{ ...node, status: 'ready' }],
+      openedItemId: item.id,
+      reload() {},
+      open() {},
+    }),
+  );
+  assert.match(opened, /提交面板已打开/);
+  assert.equal(opened.includes('打开提交'), false);
+  assert.equal(opened.includes('提交产物'), false);
   const empty = renderToStaticMarkup(
     createElement(InboxPanel, { items: [], nodes: [], reload() {}, open() {} }),
   );

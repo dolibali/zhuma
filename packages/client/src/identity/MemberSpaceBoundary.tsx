@@ -63,11 +63,16 @@ export function MemberSpaceBoundary({
     controller.getSnapshot,
     controller.getSnapshot,
   );
-  const dirtyForms = useRef(new Set<object>());
-  const register = useCallback((token: object, dirty: boolean) => {
-    if (dirty) dirtyForms.current.add(token);
+  const spaceDirty = useRef(new Set<object>());
+  const pageDirty = useRef(new Set<object>());
+  const register = useCallback((token: object, dirty: boolean, scope: 'page' | 'form' = 'page') => {
+    if (dirty) {
+      spaceDirty.current.add(token);
+      if (scope !== 'form') pageDirty.current.add(token);
+    }
     return () => {
-      dirtyForms.current.delete(token);
+      spaceDirty.current.delete(token);
+      pageDirty.current.delete(token);
     };
   }, []);
   const pickerId = useId();
@@ -89,7 +94,7 @@ export function MemberSpaceBoundary({
       const current = controller.getSnapshot();
       if (current.status === 'ready') {
         if (current.space.id === id) return;
-        if (dirtyForms.current.size) {
+        if (spaceDirty.current.size) {
           setProposed({ id, restoreFocus });
           return;
         }
@@ -205,7 +210,7 @@ export function MemberSpaceBoundary({
           <div key={`${state.epoch}:${state.space.id}`} className="zm-space-content">
             {children(state.space, () => controller.invalidate(state.epoch), {
               isCurrent,
-              hasUnsavedChanges: () => dirtyForms.current.size > 0,
+              hasUnsavedChanges: () => pageDirty.current.size > 0,
               onUnauthenticated: () => {
                 if (isCurrent()) invalidation.current();
               },

@@ -7,7 +7,7 @@ const draft = (page) => page.getByLabel('产物正文', { exact: true });
 async function open(page, mode = 'submit', strict = false) {
   await page.goto(`/?upstream-client&${strict ? 'strict&' : ''}upstream-mode=${mode}`);
   await page
-    .getByRole('button', { name: mode === 'revise' ? '提交新版本' : '提交产物', exact: true })
+    .getByRole('button', { name: mode === 'revise' ? '提交新版本' : '打开提交', exact: true })
     .click();
   await expect(page.locator('.zm-draft-status')).toHaveText('尚未保存草稿');
 }
@@ -164,7 +164,7 @@ test('upstream content: an old API read cannot leak into a replacement session',
     old.replaceSession();
   }, oldIndex);
   await expect(sources(page)).toHaveCount(0);
-  await page.getByRole('button', { name: '提交产物', exact: true }).click();
+  await page.getByRole('button', { name: '打开提交', exact: true }).click();
   await draft(page).fill('新会话工作');
   await page.evaluate(() => window.oldUpstream.complete(window.oldUpstream.oldIndex));
   await expect(sources(page)).not.toContainText('旧账号资料');

@@ -158,7 +158,7 @@ test('switching selected work preserves the current delivery when an old review 
   await button(page, '提交评审').click();
   await page.getByLabel('评审意见', { exact: true }).fill('旧评审');
   await button(page, '通过').click();
-  await button(page, '提交产物').click();
+  await button(page, '打开提交').click();
   await page.getByLabel('产物正文', { exact: true }).fill('当前交付正文');
   await probe(page, () => {
     const index = window.executionProbe.calls.findIndex((call) =>

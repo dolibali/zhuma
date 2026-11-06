@@ -137,6 +137,9 @@ function Workspace({ api, plan, refreshKey, nativeRun }: Props) {
         pending={pending}
         reload={() => void reload()}
         open={open}
+        {...(selected && node && selected.item.action === 'submit'
+          ? { openedItemId: selected.item.id }
+          : {})}
         renderAgentAction={nativeRun ? (node) => agentAction(node, '打开 Agent 会话') : undefined}
       />
       {selected && !node && <p className="zm-empty">这项工作的版本已变化，请重新选择待办。</p>}

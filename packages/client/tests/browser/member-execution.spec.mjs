@@ -92,7 +92,7 @@ test('formal member entry remains behind login and never falls back to owner rou
   await page.getByLabel('密码', { exact: true }).fill('fixture-only');
   await page.getByRole('button', { name: '登录', exact: true }).click();
   await expect(page.getByRole('heading', { name: '我的工作', exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: '提交产物', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '打开提交', exact: true })).toBeVisible();
   expect(
     state.calls.every((call) => ['zhuma-exec/inbox', 'zhuma-exec/startable'].includes(call.method)),
   ).toBe(true);
@@ -104,7 +104,7 @@ test('execution HTTP401 unmounts old input; another member never sees the previo
 }) => {
   const state = await routes(page, 'chen');
   await page.goto('/?member-execution&strict');
-  await page.getByRole('button', { name: '提交产物', exact: true }).click();
+  await page.getByRole('button', { name: '打开提交', exact: true }).click();
   await expect(page.locator('.zm-draft-status')).toHaveText('尚未保存草稿');
   await page.getByLabel('补充说明（选填）', { exact: true }).fill('previous-member-private-draft');
   state.expired = true;

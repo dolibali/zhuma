@@ -46,7 +46,7 @@ test('inbox normal entry groups loaded work items, preserves unsupported obligat
 });
 
 for (const [title, action, detail] of [
-  ['编写订单状态帮助文案', '提交产物', '产物正文'],
+  ['编写订单状态帮助文案', '打开提交', '产物正文'],
   ['补齐订单查询的接口约定', '提交新版本', '产物正文'],
   ['确认订单状态接口', '提交评审', '评审意见'],
 ])
@@ -54,9 +54,20 @@ for (const [title, action, detail] of [
     await open(page);
     await row(page, title).getByRole('button', { name: action, exact: true }).click();
     await expect(page.getByLabel(detail, { exact: true })).toBeVisible();
-    if (detail === '产物正文')
+    if (detail === '产物正文') {
       await expect(page.locator('.zm-draft-status')).toHaveText('尚未保存草稿');
-    else
+      if (action === '打开提交') {
+        await expect(
+          row(page, title).getByRole('button', { name: action, exact: true }),
+        ).toHaveCount(0);
+        await expect(row(page, title)).toContainText('提交面板已打开');
+        await expect(
+          page
+            .locator('.zm-execution-detail')
+            .getByRole('button', { name: '提交产物', exact: true }),
+        ).toHaveCount(1);
+      }
+    } else
       await expect(
         page.getByText('订单状态支持待支付、已支付、已取消。\n取消原因单独返回。', { exact: true }),
       ).toBeVisible();
@@ -170,7 +181,7 @@ test('places duplicate mappings or multiple node revisions keep source unknown a
   const work = page.getByRole('article').first();
   await expect(work).toContainText('工作版本尚未确定');
   await expect(work).toContainText('来源路径未提供');
-  await expect(work.getByRole('button', { name: '提交产物', exact: true })).toBeDisabled();
+  await expect(work.getByRole('button', { name: '打开提交', exact: true })).toBeDisabled();
   expect(await page.evaluate(() => window.inboxGroupsProbe.opened.length)).toBe(0);
 });
 
@@ -189,7 +200,7 @@ test('places narrow layout wraps long source paths and the normal row action sta
   await expect(page.locator('.zm-inbox-path').first()).toContainText('LongParentPath');
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   const action = row(page, '编写订单状态帮助文案').getByRole('button', {
-    name: '提交产物',
+    name: '打开提交',
     exact: true,
   });
   await action.focus();
