@@ -412,7 +412,9 @@ export class NativeReleasedConversationController {
           slot = this.slot(entry);
           slot = {
             ...slot,
-            ...(receipt.status === 'unknown' ? { phase: 'unknown' as const } : {}),
+            // Durable reconciliation completes this epoch's admission even
+            // when the existing message needs no native Agent resume.
+            phase: receipt.status === 'unknown' ? 'unknown' : 'active',
             receipts: slot.receipts.map((r) =>
               r.actorId === previous.actorId &&
               r.backendId === previous.backendId &&
