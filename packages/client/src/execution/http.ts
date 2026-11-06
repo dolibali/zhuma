@@ -84,7 +84,12 @@ export function createExecutionHttpApi(
         ['unauthenticated', 'member-session-required', 'session-changed'].includes(error.code)
       )
         throw new ExecutionError('unauthenticated', '登录已失效，请重新登录。');
-      throw new ExecutionError('scope-unavailable', '暂时无法确认空间权限，请重新连接。');
+      if (
+        error instanceof IdentityApiError &&
+        ['space-unavailable', 'untrusted-request'].includes(error.code)
+      )
+        throw new ExecutionError(error.code, error.message);
+      throw new ExecutionError('unavailable', '暂时无法确认空间权限，请重试。');
     }
   }
   const rpc: ClientConnectionRpc = {
@@ -179,6 +184,15 @@ export function createExecutionHttpApi(
   const api = createExecutionApi(rpc, scope?.spaceId);
   const projectArtifacts = api.projectArtifacts;
   const taskProgress = api.taskProgress;
+  function transientReadFailure(error: unknown): boolean {
+    if (error instanceof ExecutionError) return ['unavailable', 'validation'].includes(error.code);
+    return (
+      error instanceof TypeError ||
+      error instanceof SyntaxError ||
+      (error instanceof DOMException &&
+        ['AbortError', 'TimeoutError', 'NetworkError'].includes(error.name))
+    );
+  }
   async function observed<T>(
     request: Promise<T>,
     signal?: AbortSignal,
@@ -193,9 +207,14 @@ export function createExecutionHttpApi(
         onUnauthenticated();
       else if (
         !signal?.aborted &&
-        (closeOnFailure ||
+        ((closeOnFailure && !transientReadFailure(error)) ||
           (error instanceof ExecutionError &&
-            ['scope-mismatch', 'space-unavailable', 'scope-unavailable'].includes(error.code)))
+            [
+              'scope-mismatch',
+              'space-unavailable',
+              'scope-unavailable',
+              'untrusted-request',
+            ].includes(error.code)))
       )
         scope?.onUnavailable();
       throw error;
