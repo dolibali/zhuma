@@ -526,7 +526,7 @@ test('workspace approval contract: a bounded Run observation refusal cannot prev
   }
 });
 
-test('workspace approval: the genuine Service snapshot scans and validates native rows once, with the original slow port retaining its shape', async (t) => {
+test('workspace approval: current records are reread while sealed validation is reused without sharing snapshot material', async (t) => {
   const h = await approvalHost(t, { seed: true });
   checked(await h.owner.approve(h.request, approvalCommand()));
   checked(await h.service.startRun(h.request, h.begin({ workspace: localWorkspace })));
@@ -553,7 +553,7 @@ test('workspace approval: the genuine Service snapshot scans and validates nativ
   assert.deepEqual({ lists, parses }, { lists: 1, parses: 1 });
   lists = parses = 0;
   assert.deepEqual(slow.owner.snapshot(), snapshot);
-  assert.deepEqual({ lists, parses }, { lists: 2, parses: 2 });
+  assert.deepEqual({ lists, parses }, { lists: 2, parses: 0 });
   snapshot.state.approvals[0].status = 'revoked';
   snapshot.runs[0].resources = 'settled';
   await turn();
@@ -561,7 +561,7 @@ test('workspace approval: the genuine Service snapshot scans and validates nativ
   const fresh = h.owner.snapshot();
   assert.equal(fresh.state.approvals[0].status, 'approved');
   assert.equal(fresh.runs[0].resources, 'held');
-  assert.deepEqual({ lists, parses }, { lists: 1, parses: 1 });
+  assert.deepEqual({ lists, parses }, { lists: 1, parses: 0 });
 });
 
 test('workspace approval: fresh combined reads still reject persisted composition damage and missing compatibility markers', async (t) => {
