@@ -85,13 +85,14 @@ export function createHostNativeConversation(options: {
       const assert = () => {
         signal.throwIfAborted();
         options.assertCurrent();
+        // The fresh authority check also validates C's current epoch and binding.
         options.authorities.assertReadGrant(grant);
         if (
           data.actorId !== grant.actorId ||
           data.spaceId !== grant.spaceId ||
           canonicalPayload(data.target) !==
             canonicalPayload(conversationTarget(grant.origin.scope)) ||
-          options.native.open(grant)?.binding.nativeSessionId !== data.sessionId
+          grant.origin.nativeSessionId !== data.sessionId
         )
           throw new NativeWorkError('scope-mismatch');
       };

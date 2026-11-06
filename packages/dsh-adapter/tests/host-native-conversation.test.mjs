@@ -16,6 +16,8 @@ function setup() {
   let disposed = 0,
     opened = 0,
     reads = 0,
+    nativeOpens = 0,
+    authorityChecks = 0,
     allowed = true;
   const abort = new AbortController();
   const scope = { ...target, actorId: 'member' };
@@ -52,6 +54,7 @@ function setup() {
   const conversation = createHostNativeConversation({
     authorities: {
       assertReadGrant(value) {
+        authorityChecks++;
         assert.equal(value, grant);
         grant.assertCurrent();
       },
@@ -74,7 +77,12 @@ function setup() {
         };
       },
     },
-    native: { open: () => ({ binding: { nativeSessionId: 'native' } }) },
+    native: {
+      open: () => {
+        nativeOpens++;
+        return { binding: { nativeSessionId: 'native' } };
+      },
+    },
     signal: new AbortController().signal,
     assertCurrent() {},
     async transition() {},
@@ -98,6 +106,8 @@ function setup() {
     memberRequest,
     abort,
     originalFrame,
+    nativeOpens: () => nativeOpens,
+    authorityChecks: () => authorityChecks,
     raw: (query = {}) => ({
       actorId: 'member',
       spaceId: 'space',
@@ -287,4 +297,67 @@ test('revoked epoch uses a fresh passive ticket before requesting a new SDK phys
   );
   assert.deepEqual(seen, [frame, { type: 'history-restart', chatEpoch: 1 }]);
   assert.equal(releases, 2);
+});
+
+test('full SDK follow revalidates each frame without reopening and cloning a native presentation', async () => {
+  const h = setup();
+  const frames = [
+    h.originalFrame,
+    { type: 'assistant-stream', frame: { revision: 1 } },
+    { type: 'assistant-stream', frame: { revision: 2 } },
+  ];
+  h.setFollow(async function* () {
+    yield* frames;
+  });
+  const seen = [];
+  let checkedAtLastSink = 0;
+  await h.conversation.follow(
+    h.memberRequest,
+    h.raw({ assistantStream: true }),
+    async (frame) => {
+      assert(
+        h.authorityChecks() > checkedAtLastSink,
+        'fresh D authority before every delivered frame',
+      );
+      checkedAtLastSink = h.authorityChecks();
+      await Promise.resolve();
+      seen.push(frame);
+    },
+    h.abort.signal,
+  );
+  assert.deepEqual(seen, frames);
+  assert(
+    h.authorityChecks() > checkedAtLastSink,
+    'fresh D authority after the final awaited delivery',
+  );
+  assert.equal(
+    h.nativeOpens(),
+    0,
+    'the authorized origin SID needs no native view/status or binding clone',
+  );
+});
+
+test('authority revoked across an awaited frame still rejects the next publication without native open', async () => {
+  const h = setup();
+  const seen = [];
+  h.setFollow(async function* () {
+    yield h.originalFrame;
+    yield { type: 'assistant-stream', frame: { revision: 1 } };
+  });
+  await assert.rejects(
+    h.conversation.follow(
+      h.memberRequest,
+      h.raw({ assistantStream: true }),
+      async (frame) => {
+        seen.push(frame);
+        await Promise.resolve();
+        h.deny();
+      },
+      h.abort.signal,
+    ),
+    /revoked/,
+  );
+  assert.deepEqual(seen, [h.originalFrame]);
+  assert.equal(h.nativeOpens(), 0);
+  assert.equal(h.counts().disposed, 1);
 });
