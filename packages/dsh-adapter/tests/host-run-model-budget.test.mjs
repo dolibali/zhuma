@@ -2,6 +2,101 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { Context } from '@deepseek-ai/cordis';
 import { readHostRunModels } from '../dist/host-run-models.js';
+import { createPlanningModels } from '../dist/planning-model.js';
+
+test('planning metadata resolves the optional LLM in an actual Cordis child without a hard dependency', async (t) => {
+  const root = new Context();
+  t.after(() => root.fiber.dispose());
+  let modelCalls = 0;
+  await root.plugin({
+    name: 'metadata-provider-contract',
+    apply(ctx) {
+      ctx.provide('llm', {
+        listProviders: () => [{ id: 'contract' }],
+        listModels: async () => [{ provider: 'contract', id: 'model', name: 'Configured' }],
+        generate() {
+          modelCalls++;
+          assert.fail('Reading metadata cannot start inference');
+        },
+      });
+    },
+  });
+  await root.plugin({
+    name: 'planning-without-llm-inject-contract',
+    async apply(ctx) {
+      assert.throws(() => ctx.llm, /without inject/u);
+      assert.ok(ctx.get('llm'));
+      const catalog = await createPlanningModels(ctx).catalog(new AbortController().signal);
+      assert.equal(catalog.kind, 'ready');
+      assert.equal(catalog.items.length, 1);
+      assert.equal(catalog.items[0].model, 'model');
+    },
+  });
+  await root.plugin({
+    name: 'run-with-llm-inject-contract',
+    inject: ['llm'],
+    async apply(ctx) {
+      const catalog = await readHostRunModels(ctx, new AbortController().signal);
+      assert.equal(catalog.kind, 'ready');
+      assert.equal(catalog.items.length, 1);
+    },
+  });
+  assert.equal(modelCalls, 0);
+});
+
+test('a planning child can mount without an LLM while its metadata stays unavailable', async (t) => {
+  const root = new Context();
+  t.after(() => root.fiber.dispose());
+  await root.plugin({
+    name: 'planning-without-provider-contract',
+    async apply(ctx) {
+      const catalog = await createPlanningModels(ctx).catalog(new AbortController().signal);
+      assert.equal(catalog.kind, 'unavailable');
+      await assert.rejects(readHostRunModels(ctx, new AbortController().signal), {
+        code: 'run-authority-unavailable',
+      });
+    },
+  });
+});
+
+test('optional planning metadata still rejects removal or replacement of its LLM owner during a read', async (t) => {
+  for (const replace of [false, true]) {
+    const root = new Context(),
+      reply = Promise.withResolvers();
+    t.after(() => root.fiber.dispose());
+    const provider = root.plugin({
+      name: 'retiring-metadata-provider-contract',
+      apply(ctx) {
+        ctx.provide('llm', {
+          listProviders: () => [{ id: 'contract' }],
+          listModels: () => reply.promise,
+        });
+      },
+    });
+    await provider;
+    let child;
+    await root.plugin({
+      name: 'optional-reader-contract',
+      apply: (ctx) => {
+        child = ctx;
+      },
+    });
+    const rejected = assert.rejects(readHostRunModels(child, new AbortController().signal), {
+      code: 'run-authority-unavailable',
+    });
+    await provider.dispose();
+    if (replace) {
+      await root.plugin({
+        name: 'replacement-metadata-provider-contract',
+        apply(ctx) {
+          ctx.provide('llm', { listProviders: () => [], listModels: async () => [] });
+        },
+      });
+    }
+    reply.resolve([]);
+    await rejected;
+  }
+});
 
 test('new model choices cap the application budget at 16k and respect original public adapter metadata', async (t) => {
   for (const [configured, context, expected] of [

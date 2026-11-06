@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { nativeWorkResultIntentSchema } from './native-work-session-result-intent.js';
+import type { NativeConversationSession } from './native-work-session-conversation-contract.js';
 import {
   NativeWorkError,
   type NativeWorkScope,
@@ -110,6 +111,59 @@ export const nativeMigrationDataSchema = z.strictObject({
   selection: nativeSelectionSchema,
 });
 
+export const nativeConversationPrefixSchema = z.strictObject({
+  asOfSeq: z.number().int().min(-1).refine(Number.isSafeInteger),
+  eventCount: z.number().int().min(0).max(10_000),
+  inheritedEventCount: z.number().int().min(0).refine(Number.isSafeInteger),
+  headerDigest: digest,
+  eventsDigest: digest,
+});
+const conversationSessionSchema = z
+  .strictObject({
+    origin: nativeWorkSessionBindingSchema.pick({
+      scope: true,
+      nativeSessionId: true,
+      nativeAgentId: true,
+      selection: true,
+    }),
+    prefix: nativeConversationPrefixSchema,
+    chatEpoch: positive,
+    actorId: id,
+    backendId: id,
+    phase: z.enum(['reserved', 'active', 'retiring', 'settled', 'unknown']),
+    receipts: z
+      .array(
+        z.strictObject({
+          requestId: id,
+          messageId: id,
+          fingerprint: digest,
+          mode: z.literal('followup'),
+          status: z.enum(['reserved', 'received', 'claimed', 'discarded', 'unknown']),
+          actorId: id,
+          backendId: id,
+          chatEpoch: positive,
+        }),
+      )
+      .max(256),
+  })
+  .superRefine((value, context) => {
+    const keys = value.receipts.map((r) => JSON.stringify([r.actorId, r.backendId, r.requestId]));
+    if (
+      new Set(keys).size !== keys.length ||
+      value.receipts.some((r) => r.chatEpoch > value.chatEpoch)
+    )
+      context.addIssue({ code: 'custom', message: 'Invalid conversation receipts.' });
+  });
+const conversationMetadataSchema = z
+  .strictObject({
+    schemaVersion: z.literal(1),
+    sessions: z.array(conversationSessionSchema).min(1).max(NATIVE_LINEAGE_LIMITS.segments),
+  })
+  .superRefine((value, context) => {
+    if (new Set(value.sessions.map((s) => s.origin.nativeSessionId)).size !== value.sessions.length)
+      context.addIssue({ code: 'custom', message: 'Duplicate conversation Session.' });
+  });
+
 const lineageSchema = z
   .strictObject({
     schemaVersion: z.literal(2),
@@ -158,18 +212,52 @@ const lineageSchema = z
     });
   });
 export const nativeWorkSessionRecordSchema = z
-  .union([nativeWorkSessionBindingSchema, lineageSchema])
+  .union([
+    nativeWorkSessionBindingSchema.extend({ conversation: conversationMetadataSchema.optional() }),
+    lineageSchema.safeExtend({ conversation: conversationMetadataSchema.optional() }),
+  ])
   .superRefine((record, ctx) => {
     if (Buffer.byteLength(JSON.stringify(record)) > NATIVE_LINEAGE_LIMITS.bytes)
       ctx.addIssue({ code: 'custom', message: 'binding-state-invalid' });
+    const bindings =
+      record.schemaVersion === 1
+        ? [record]
+        : [record.current, ...record.prior.map((r) => r.binding)];
+    for (const chat of record.conversation?.sessions ?? []) {
+      const origin = bindings.find((b) => b.nativeSessionId === chat.origin.nativeSessionId);
+      if (
+        !origin ||
+        nativeScopeKey(origin.scope) !== nativeScopeKey(chat.origin.scope) ||
+        origin.nativeAgentId !== chat.origin.nativeAgentId ||
+        JSON.stringify(origin.selection) !== JSON.stringify(chat.origin.selection) ||
+        (origin.resultIntent?.cut && origin.resultIntent.cut.asOfSeq !== chat.prefix.asOfSeq)
+      )
+        ctx.addIssue({ code: 'custom', message: 'Invalid conversation origin.' });
+    }
   });
 export function readNativeRecord(value: unknown): NativeWorkSessionRecord {
   const parsed = nativeWorkSessionRecordSchema.safeParse(value);
   if (!parsed.success) throw new NativeWorkError('binding-state-invalid');
   return parsed.data;
 }
-export const currentBinding = (record: NativeWorkSessionRecord): NativeSessionBinding =>
-  record.schemaVersion === 1 ? record : record.current;
+export const currentBinding = (record: NativeWorkSessionRecord): NativeSessionBinding => {
+  if (record.schemaVersion === 2) return record.current;
+  if (!record.conversation) return record;
+  const { conversation: _conversation, ...binding } = record;
+  return binding;
+};
+export function preserveNativeConversation(
+  previous: NativeWorkSessionRecord,
+  next: NativeWorkSessionRecord,
+): NativeWorkSessionRecord {
+  return previous.conversation ? { ...next, conversation: previous.conversation } : next;
+}
+export function nativeConversationSession(
+  record: NativeWorkSessionRecord,
+  sessionId: string,
+): NativeConversationSession | undefined {
+  return record.conversation?.sessions.find((entry) => entry.origin.nativeSessionId === sessionId);
+}
 export const previousBindings = (record: NativeWorkSessionRecord): NativeSessionLineage['prior'] =>
   record.schemaVersion === 1 ? [] : record.prior;
 export function bindingForScope(

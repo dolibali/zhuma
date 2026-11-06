@@ -168,9 +168,13 @@ const knowledgeToolSchema = toolSchema
   );
 const teamAssetToolSchema = toolSchema
   .extend({ name: z.literal('team_asset'), sourceVersion: z.literal('zhuma-native-team-assets@1') })
-  .refine(
-    (value) => hash(value) === '2c1ad05a92c3234960ae32ce7c7fe7251ad511c426ade5274d4fd36a35127b68',
-  );
+  .refine((value) => {
+    const digest = hash(value);
+    return (
+      digest === '2c1ad05a92c3234960ae32ce7c7fe7251ad511c426ade5274d4fd36a35127b68' ||
+      digest === 'e236b45ae90019f6e975617f65c8c792a39d661077bb9dae551db3e227fae8aa'
+    );
+  });
 const teamAssetSnapshotSchema = MemberAssetFileSnapshotSchema.refine(
   (value) => hash(memberAssetFileSnapshotDigestInput(value)) === value.sha256,
 );
@@ -593,7 +597,7 @@ function derive(source: Source, completionGuidance = true) {
   };
 }
 /** Strict serializable format for the existing Run wrapper, not a separate configuration store. */
-export const executionRunCompositionSchema = z.preprocess(
+const completeExecutionRunCompositionSchema = z.preprocess(
   (value) => {
     try {
       bound(value, EXECUTION_COMPOSITION_LIMITS.snapshotBytes);
@@ -645,9 +649,63 @@ export const executionRunCompositionSchema = z.preprocess(
     }
   }),
 );
+
+// A certificate belongs to immutable input data, not a Run or an authority.
+// Always retain the complete schema's parsed output, never the unchecked input.
+const compositionCertificates = new WeakMap<object, FrozenExecutionRunComposition>();
+const sealedCompositionData = new WeakSet<object>();
+function isSealedCompositionData(value: unknown): boolean {
+  if (
+    value === null ||
+    value === undefined ||
+    ['string', 'number', 'boolean'].includes(typeof value)
+  )
+    return true;
+  if (typeof value !== 'object' || !Object.isFrozen(value)) return false;
+  if (sealedCompositionData.has(value)) return true;
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null && prototype !== Array.prototype)
+    return false;
+  for (const key of Reflect.ownKeys(value)) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (
+      typeof key !== 'string' ||
+      !descriptor ||
+      !Object.hasOwn(descriptor, 'value') ||
+      !isSealedCompositionData(descriptor.value)
+    )
+      return false;
+  }
+  sealedCompositionData.add(value);
+  return true;
+}
+function certifiedComposition(value: unknown): FrozenExecutionRunComposition | undefined {
+  return value && typeof value === 'object' ? compositionCertificates.get(value) : undefined;
+}
+export const executionRunCompositionSchema = z.unknown().transform((value, context) => {
+  const certified = certifiedComposition(value);
+  if (certified) return certified;
+  const parsed = completeExecutionRunCompositionSchema.safeParse(value);
+  if (!parsed.success) {
+    for (const issue of parsed.error.issues) context.addIssue({ ...issue });
+    return z.NEVER;
+  }
+  if (value && typeof value === 'object' && isSealedCompositionData(value)) {
+    const snapshot = freeze(parsed.data);
+    compositionCertificates.set(value, snapshot);
+    compositionCertificates.set(snapshot, snapshot);
+    return snapshot;
+  }
+  // Generic mutable and shallow-frozen callers retain complete revalidation.
+  return parsed.data;
+});
 export function readExecutionRunComposition(value: unknown): FrozenExecutionRunComposition {
+  const certified = certifiedComposition(value);
+  if (certified) return certified;
   bound(value, EXECUTION_COMPOSITION_LIMITS.snapshotBytes);
-  return freeze(checked(executionRunCompositionSchema, value));
+  const snapshot = freeze(checked(executionRunCompositionSchema, value));
+  compositionCertificates.set(snapshot, snapshot);
+  return snapshot;
 }
 /** Host-only current facts. No model, package install, source-body fetch or authority minting. */
 export function freezeExecutionRunComposition(

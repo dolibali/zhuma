@@ -8,6 +8,7 @@ import { createNativeRunController } from './controller.js';
 import type { NativeRunApi } from './api.js';
 import type { NativeRunTarget } from './native-run-contract.js';
 import { WorkspaceApprovalDialog } from './WorkspaceApprovalDialog.js';
+import { CodeArtsSetupDialog } from './CodeArtsSetupDialog.js';
 import type { WorkspaceApprovalLocation } from './workspace-approvals.js';
 
 type Props = {
@@ -32,6 +33,7 @@ function Workspace({ api, target, onDirtyChange, onClose }: Props) {
   const fixedTarget = useRef(target).current;
   const [controller, setController] = useState<ReturnType<typeof createNativeRunController>>();
   const [approvalLocation, setApprovalLocation] = useState<WorkspaceApprovalLocation>();
+  const [codeArtsOpen, setCodeArtsOpen] = useState(false);
   const navigation = useRef<AbortController>();
   useEffect(() => {
     const lifetime = new AbortController();
@@ -65,6 +67,13 @@ function Workspace({ api, target, onDirtyChange, onClose }: Props) {
         view={state.view}
         busy={state.busy}
         error={state.error}
+        configurationActions={
+          api.codeArtsSetup ? (
+            <Button variant="quiet" onClick={() => setCodeArtsOpen(true)}>
+              配置码道
+            </Button>
+          ) : undefined
+        }
         reviewAction={
           api.review && run?.submission?.roundId ? (
             <NativeReviewLauncher
@@ -121,6 +130,15 @@ function Workspace({ api, target, onDirtyChange, onClose }: Props) {
           /* SDK history is forward-only; no earlier-page affordance. */
         }}
       />
+      {api.codeArtsSetup && codeArtsOpen && (
+        <CodeArtsSetupDialog
+          api={api.codeArtsSetup}
+          close={() => setCodeArtsOpen(false)}
+          changed={async () => {
+            await controller?.refresh();
+          }}
+        />
+      )}
       {api.workspaceApprovals && approvalLocation && (
         <WorkspaceApprovalDialog
           api={api.workspaceApprovals}

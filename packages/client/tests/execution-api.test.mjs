@@ -107,6 +107,16 @@ test('execution RPC uses the peer channel and never sends an actor field', async
   );
   assert.equal(failed.calls[0].endpoint, 'zhuma-exec/ballot');
   assert.equal('reviewerId' in failed.calls[0].payload, false);
+  const cited = apiWith(() => ({ ok: true, value: { disposition: 'applied', node } }));
+  await cited.api.ballot({
+    ...draft,
+    roundId: 'round-1',
+    artifactVersionId: 'artifact-1',
+    action: 'request-changes',
+    comment: '请改第二行',
+    unresolvedCommentIds: ['c-now'],
+  });
+  assert.deepEqual(cited.calls[0].payload.unresolvedCommentIds, ['c-now']);
 });
 
 test('inbox parsing keeps the server actor and rejects a malformed node', async () => {
@@ -118,6 +128,37 @@ test('inbox parsing keeps the server actor and rejects a malformed node', async 
   assert.equal(inbox.actorId, 'chen');
   assert.equal(inbox.items[0].action, 'submit');
   assert.equal(inbox.nodes[0].version, 2);
+  const commented = apiWith(() => ({
+    ok: true,
+    value: {
+      actorId: 'chen',
+      items: [],
+      nodes: [
+        {
+          ...node,
+          comments: [
+            {
+              id: 'c-now',
+              status: 'open',
+              versionId: 'artifact-1',
+              targetId: 'artifact-1',
+              body: '请改第二行',
+            },
+          ],
+        },
+      ],
+    },
+  }));
+  const withComment = await commented.api.inbox();
+  assert.deepEqual(withComment.nodes[0].comments, [
+    {
+      id: 'c-now',
+      status: 'open',
+      versionId: 'artifact-1',
+      targetId: 'artifact-1',
+      body: '请改第二行',
+    },
+  ]);
   const broken = apiWith(() => ({ ok: true, value: { actorId: 'chen', items: [], nodes: [{}] } }));
   await assert.rejects(
     () => broken.api.inbox(),
@@ -236,6 +277,83 @@ test('comment-only reviews use the real ballot action and link-only artifacts st
   });
   assert.equal(calls[0].payload.action, 'comment');
   assert.deepEqual(value.artifacts[0].links, ['https://example.com/design']);
+});
+
+const legacyInboxActions = [
+  'submit',
+  'revise',
+  'continue-handling',
+  'provide-input',
+  'retry-or-take-back',
+  'review',
+  'confirm',
+];
+function legacyInbox(value) {
+  if (!value || typeof value !== 'object' || !Array.isArray(value.items))
+    throw new ExecutionError('validation', '返回的待办不正确。');
+  for (const item of value.items) {
+    if (!legacyInboxActions.includes(item.action))
+      throw new ExecutionError('validation', '返回的待办动作不正确。');
+  }
+  return value.items.map((item) => item.action);
+}
+test('inbox compatibility: a new client falls back when an old service rejects wait opt-in', async () => {
+  const legacy = {
+    actorId: 'chen',
+    items: [
+      { ...item, id: 'human', nodeId: 'human', action: 'submit' },
+      {
+        ...item,
+        id: 'review-1',
+        nodeId: 'parallel',
+        kind: 'review',
+        action: 'review',
+        reason: 'review-assigned',
+      },
+    ],
+    nodes: [
+      { ...node, nodeId: 'human', status: 'ready' },
+      { ...node, nodeId: 'parallel', status: 'ready' },
+    ],
+  };
+  const calls = [];
+  const { api } = apiWith((_endpoint, payload) => {
+    calls.push(structuredClone(payload));
+    if (payload && Object.hasOwn(payload, 'detail'))
+      return { ok: false, error: { code: 'unknown-field', message: 'unrecognized', details: {} } };
+    return { ok: true, value: legacy };
+  });
+  const inbox = await api.inbox();
+  assert.deepEqual(calls, [{ detail: 'waiting' }, {}]);
+  assert.deepEqual(
+    inbox.items.map((entry) => entry.action),
+    ['submit', 'review'],
+  );
+  assert.deepEqual(legacyInbox(legacy), ['submit', 'review']);
+  const mixed = {
+    ...legacy,
+    items: [
+      ...legacy.items,
+      {
+        ...item,
+        id: 'consume',
+        nodeId: 'consume',
+        action: 'wait',
+        reason: 'waiting-on-prerequisites',
+      },
+    ],
+  };
+  assert.throws(() => legacyInbox(mixed), {
+    code: 'validation',
+    message: '返回的待办动作不正确。',
+  });
+  let failures = 0;
+  const refused = apiWith(() => {
+    failures += 1;
+    return { ok: false, error: { code: 'validation', message: 'bad', details: {} } };
+  });
+  await assert.rejects(refused.api.inbox(), { code: 'validation' });
+  assert.equal(failures, 1);
 });
 
 test('the runnable preview uses valid service projections for delivery, review and revision', async () => {

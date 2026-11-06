@@ -4,8 +4,8 @@ import { test, expect, deferred, failure, plannedWorkflows, proposal } from './r
 const button = (page, name) => page.getByRole('button', { name, exact: true });
 const commands = (replay) => replay.requests.filter((r) => r.endpoint === 'command');
 const plans = (replay) => replay.requests.filter((r) => r.endpoint === 'plan');
-async function openTask(page) {
-  await page.goto('/');
+async function openTask(page, query = '') {
+  await page.goto('/' + query);
   await page.getByRole('button', { name: /^订单协作改进/ }).click();
 }
 async function selectPeople(page, label, names) {
@@ -61,19 +61,18 @@ test('创建任务、分工和多人评审配置可保存并在刷新后重开',
 });
 
 test('主题切换保留节点草稿、选择和画布位置，不触发保存或规划', async ({ page, replay }) => {
-  await openTask(page);
+  await openTask(page, '?appearance-probe');
   await page.getByLabel('节点名称', { exact: true }).fill('尚未保存的节点修改');
   await expect(page.locator('.react-flow__node.selected')).toHaveCount(1);
   const transform = await page.locator('.react-flow__viewport').getAttribute('style');
   const before = replay.requests.length;
+  const systemDark = await page.evaluate(() => matchMedia('(prefers-color-scheme: dark)').matches);
   for (const theme of ['dark', 'light', 'system']) {
-    await page.getByLabel('外观', { exact: true }).click();
-    const caption = { light: '浅色', dark: '深色', system: '跟随系统' }[theme];
-    await page.getByRole('option', { name: caption, exact: true }).click();
-    await expect(page.getByLabel('外观', { exact: true })).toHaveAttribute(
-      'title',
-      `外观：${caption}`,
-    );
+    await page.getByLabel('测试外观', { exact: true }).selectOption(theme);
+    await expect(page.getByLabel('测试外观', { exact: true })).toHaveValue(theme);
+    await expect
+      .poll(() => page.locator('body').evaluate((body) => body.hasAttribute('data-ds-dark-theme')))
+      .toBe(theme === 'dark' || (theme === 'system' && systemDark));
     await expect(page.getByLabel('节点名称', { exact: true })).toHaveValue('尚未保存的节点修改');
     await expect(page.locator('.react-flow__node.selected')).toHaveAttribute('data-id', 'node-0');
     await expect(page.locator('.react-flow__viewport')).toHaveAttribute('style', transform);
@@ -299,19 +298,26 @@ test('创建任务长表单支持滚轮和 Tab 到末项，操作区不随焦点
   const dialog = page.getByRole('dialog');
   const body = dialog.locator('.zm-form-body');
   const footer = dialog.locator('footer');
+  const owner = button(page, '选择任务负责人');
+  const lastControl = dialog.getByRole('radio', { name: '从空白开始', exact: true });
+  // Owner is intentionally near the top; the final mode must be the radio group's Tab stop.
+  await lastControl.check();
+  await body.evaluate((el) => {
+    el.scrollTop = 0;
+  });
   const initial = await footer.boundingBox();
   const bounds = await dialog.boundingBox();
   expect(Math.abs(initial.y + initial.height - (bounds.y + bounds.height - 1))).toBeLessThan(2);
   await body.hover({ position: { x: 4, y: 20 } });
   await page.mouse.wheel(0, 1200);
   await expect.poll(() => body.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
-  const owner = button(page, '选择任务负责人');
-  const ownerBounds = await owner.boundingBox();
+  const lastBounds = await lastControl.locator('..').boundingBox();
   const bodyBounds = await body.boundingBox();
-  expect(ownerBounds.y).toBeGreaterThanOrEqual(bodyBounds.y);
-  expect(ownerBounds.y + ownerBounds.height).toBeLessThanOrEqual(initial.y);
+  expect(lastBounds.y).toBeGreaterThanOrEqual(bodyBounds.y);
+  expect(lastBounds.y + lastBounds.height).toBeLessThanOrEqual(initial.y);
   await page.getByLabel('任务目标', { exact: true }).focus();
-  let reached = false;
+  let reachedOwner = false;
+  let reachedLast = false;
   for (let i = 0; i < 45; i++) {
     await page.keyboard.press('Tab');
     const current = await footer.boundingBox();
@@ -320,14 +326,22 @@ test('创建任务长表单支持滚轮和 Tab 到末项，操作区不随焦点
     );
     expect(await dialog.locator('form').evaluate((el) => el.scrollTop)).toBe(0);
     if (await owner.evaluate((el) => document.activeElement === el)) {
-      reached = true;
+      reachedOwner = true;
+    }
+    if (await lastControl.evaluate((el) => document.activeElement === el)) {
+      reachedLast = true;
       break;
     }
   }
-  expect(reached, 'Tab must reach the final owner control').toBe(true);
-  const final = await owner.boundingBox();
+  expect(reachedOwner, 'Tab must still reach the owner control').toBe(true);
+  expect(reachedLast, 'Tab must reach the final planning mode').toBe(true);
+  const final = await lastControl.locator('..').boundingBox();
   expect(final.y).toBeGreaterThanOrEqual(bodyBounds.y);
   expect(final.y + final.height).toBeLessThanOrEqual(initial.y);
+  await owner.focus();
+  const ownerBounds = await owner.boundingBox();
+  expect(ownerBounds.y).toBeGreaterThanOrEqual(bodyBounds.y);
+  expect(ownerBounds.y + ownerBounds.height).toBeLessThanOrEqual(initial.y);
   await page.keyboard.press('Enter');
   await expect(page.getByRole('dialog')).toHaveCount(2);
   await page.keyboard.press('Escape');

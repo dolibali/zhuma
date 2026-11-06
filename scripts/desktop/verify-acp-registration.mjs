@@ -163,6 +163,11 @@ try {
   const health = await ctx.get('dshAcp').health();
   assert.equal(health.providers[0].id, 'codearts');
   assert.equal(health.providers[0].probe.status, 'never');
+  assert.deepEqual(
+    health.liveSessions,
+    [],
+    'Actual original registry projects its empty owned-resource collection',
+  );
   assert.equal(spawns, 0);
   assert.equal(inference, 0);
   const report = {

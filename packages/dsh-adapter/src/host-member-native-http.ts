@@ -20,6 +20,11 @@ const endpoints = [
   'send',
   'stop',
   'lookup',
+  'session-page',
+  'session-follow',
+  'session-status',
+  'session-send',
+  'session-stop',
   'review-options',
   'review-start',
   'review-read',
@@ -100,6 +105,79 @@ export function openHostMemberNativeHttp(
       rpcId = wire.rpcId;
       const input = payload.parse(wire.payload),
         source = current();
+      if (
+        [
+          'session-page',
+          'session-follow',
+          'session-status',
+          'session-send',
+          'session-stop',
+        ].includes(endpoint)
+      ) {
+        const original = local?.source(),
+          backend = local?.backend();
+        if (source || !original || !backend) return reply(failure(), 409);
+        const assertLocal = async () => {
+          signal.throwIfAborted();
+          const selected = await backend.status();
+          if (
+            selected.origin !== null ||
+            selected.connectionId !== input.connectionId ||
+            local?.source() !== original
+          )
+            throw Error('Native history owner changed');
+        };
+        await assertLocal();
+        const query = z.record(z.string(), z.unknown()).parse(input.query);
+        const data = { ...query, actorId: input.actorId, spaceId: input.spaceId };
+        const memberRequest = { headers: Object.fromEntries(request.headers) };
+        if (
+          endpoint === 'session-status' ||
+          endpoint === 'session-send' ||
+          endpoint === 'session-stop'
+        ) {
+          if (!original.chat) return reply(failure(), 409);
+          const operation =
+            endpoint === 'session-status'
+              ? 'status'
+              : endpoint === 'session-send'
+                ? 'send'
+                : 'stop';
+          const value =
+            operation === 'status'
+              ? await original.chat.status(memberRequest, data, signal)
+              : await original.chat[operation](memberRequest, data);
+          await assertLocal();
+          return reply({ ok: true, value });
+        }
+        const conversation = original.conversation;
+        if (!conversation) return reply(failure(), 409);
+        if (endpoint === 'session-page') {
+          const page = await conversation.page(memberRequest, data, signal);
+          await assertLocal();
+          return reply({ ok: true, value: page });
+        }
+        const stream = hostRunStream<
+          import('./host-native-conversation.js').HostNativeConversationFrame
+        >({
+          rpcId,
+          signal,
+          failure,
+          observe: (sink, reading) =>
+            conversation.follow(
+              memberRequest,
+              data,
+              async (frame, authority) => {
+                await assertLocal();
+                await sink(frame, authority);
+              },
+              reading,
+            ),
+        });
+        jobs.add(stream.drained);
+        void stream.drained.finally(() => jobs.delete(stream.drained)).catch(() => undefined);
+        return stream.response;
+      }
       if (endpoint === 'lookup' && !source) {
         const original = local?.source(),
           backend = local?.backend();
@@ -133,9 +211,27 @@ export function openHostMemberNativeHttp(
           local?.source() !== original
         )
           return reply(failure(), 403);
+        const sdkNative = await original.conversation?.available?.(
+          { headers: Object.fromEntries(request.headers) },
+          {
+            actorId: input.actorId,
+            spaceId: scope.spaceId,
+            sessionId,
+            target: conversationTarget(scope),
+            request: {},
+          },
+          signal,
+        );
+        signal.throwIfAborted();
+        if (local?.source() !== original) return reply(failure(), 409);
         return reply({
           ok: true,
-          value: { kind: 'task', target: conversationTarget(scope), sessionId },
+          value: {
+            kind: 'task',
+            target: conversationTarget(scope),
+            sessionId,
+            presentation: sdkNative === true ? 'sdk-native' : 'task-controls',
+          },
         });
       }
       if (!source || input.connectionId !== source.connectionId || input.actorId !== source.actorId)

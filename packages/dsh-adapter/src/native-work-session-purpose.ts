@@ -1,4 +1,5 @@
 import { canonicalPayload } from '@zhuma/agent-core';
+import { assertNotNativeConversationGrant } from './native-work-session-conversation-contract.js';
 import {
   executionReviewScopeSchema,
   type ExecutionReviewScope,
@@ -57,6 +58,7 @@ export function assertNativePurposeOwner(
   grant: NativeWorkGrant,
   purpose?: NativeSessionPurpose,
 ): void {
+  assertNotNativeConversationGrant(grant);
   const owner = grantOwners.get(grant);
   if (owner && owner !== purpose) throw new NativeReviewError('review-authority-denied');
   // Unknown objects are not allowed to erase a known review role by copying

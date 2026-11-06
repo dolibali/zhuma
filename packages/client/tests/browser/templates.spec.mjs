@@ -17,6 +17,10 @@ async function evidence(page, testInfo, name) {
   await page.screenshot({ path: resolve(dir, `${name}-${testInfo.project.name}.png`) });
 }
 async function select(page, label, name) {
+  if (label.startsWith('绑定角色：') || label.startsWith('绑定资源：')) {
+    const action = button(page, label.startsWith('绑定角色：') ? '调整分工' : '调整能力');
+    if (await action.count()) await action.click();
+  }
   await page.getByLabel(label, { exact: true }).click();
   await page.getByRole('option', { name, exact: true }).click();
 }
@@ -338,6 +342,7 @@ test('长目录与小窗保持预览和操作可达，嵌套选择取消保留�
   expect(box.x + box.width).toBeLessThanOrEqual(720);
   expect(box.y + box.height).toBeLessThanOrEqual(600);
   await button(browser, '使用此工作流').click();
+  await button(page, '调整分工').click();
   await page.getByLabel('绑定角色：接口开发', { exact: true }).click();
   await expect(page.locator('.zm-select-popup[data-open]')).toBeVisible();
   await page.keyboard.press('Escape');

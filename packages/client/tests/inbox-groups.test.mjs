@@ -20,9 +20,10 @@ for (const [index, group] of [
   'deliver',
   'revise',
   'review',
-  'attention',
+  'waiting',
   'attention',
   'active',
+  'waiting',
 ].entries())
   test(`inbox groups: service item ${index} belongs to ${group} without deriving items from node status`, () => {
     assert.equal(inboxItemGroup(groupedInbox().items[index]), group);
@@ -42,9 +43,9 @@ test('inbox SSR: service work groups and work-item counts remain distinct from t
   const html = render();
   for (const group of INBOX_GROUPS.filter((group) => group.id !== 'other'))
     assert.ok(html.includes(group.label));
-  assert.ok(html.includes('已载入 6 个工作项'));
-  assert.ok(!html.includes('6 个任务'));
-  assert.equal((html.match(/<article/g) ?? []).length, 6);
+  assert.ok(html.includes('已载入 7 个工作项'));
+  assert.ok(!html.includes('7 个任务'));
+  assert.equal((html.match(/<article/g) ?? []).length, 7);
   assert.ok(!html.includes('只有节点状态的等待事项'));
   assert.equal((html.match(/<button/g) ?? []).length, 5); // refresh, three manual actions, unavailable Agent entry
   assert.ok(html.includes('请核对发票范围后确认交付。'));
@@ -176,7 +177,7 @@ test('inbox SSR: loading/failure never claims an empty inbox; a failed refresh p
   assert.ok(
     !render({ items: [], nodes: [], error: '读取失败' }).includes('现在没有需要你处理的工作。'),
   );
-  assert.ok(render({ error: '读取失败' }).includes('已载入 6 个工作项'));
+  assert.ok(render({ error: '读取失败' }).includes('已载入 7 个工作项'));
   assert.ok(render({ items: [], nodes: [] }).includes('现在没有需要你处理的工作。'));
 });
 
@@ -203,7 +204,9 @@ test('places approved inbox projection is consumed without adding counts or even
   });
   const value = await api.inbox();
   assert.deepEqual(value.places, readInboxPlaces(groupedInbox().places));
-  assert.deepEqual(calls, [{ channel: '/api', endpoint: 'zhuma-exec/inbox', payload: {} }]);
+  assert.deepEqual(calls, [
+    { channel: '/api', endpoint: 'zhuma-exec/inbox', payload: { detail: 'waiting' } },
+  ]);
   assert.equal('inboxCounts' in api, false);
   assert.equal('events' in api, false);
 });

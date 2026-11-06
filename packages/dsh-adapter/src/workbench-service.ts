@@ -6,6 +6,7 @@ import {
   WorkbenchError,
   planningPrompt,
   parsePlanningResult,
+  readPromptConstraints,
   validateLocalPlanningChange,
   previewResourcePackage,
   parseWorkflowTemplate,
@@ -13,7 +14,9 @@ import {
   StoredAssetPackageSchema,
   type StoredAssetPackage,
   type Workbench,
+  type MemberAssetFolderRecord,
   type PlanProposal,
+  type PromptConstraintSnapshot,
 } from '@zhuma/agent-core';
 import type {
   MemberWorkbenchIntent,
@@ -103,6 +106,9 @@ export class WorkbenchService {
   memberAssetRecords(): readonly MemberAssetRecord[] {
     return structuredClone(this.storage.read().memberAssets ?? []);
   }
+  memberAssetFolderRecords(): readonly MemberAssetFolderRecord[] {
+    return structuredClone(this.storage.read().memberAssetFolders ?? []);
+  }
 
   /** Small byte-boundary guard without cloning whole definitions on every chunk. */
   memberAssetVersion(spaceId: string, assetId: string): number | undefined {
@@ -142,8 +148,12 @@ export class WorkbenchService {
   memberAssetCommand<T>(
     signal: AbortSignal,
     authorize: () => void | Promise<void>,
-    apply: (records: readonly MemberAssetRecord[]) => Promise<{
+    apply: (
+      records: readonly MemberAssetRecord[],
+      folders: readonly MemberAssetFolderRecord[],
+    ) => Promise<{
       readonly records?: readonly MemberAssetRecord[];
+      readonly folders?: readonly MemberAssetFolderRecord[];
       readonly value: T;
     }>,
   ): Promise<T> {
@@ -151,15 +161,16 @@ export class WorkbenchService {
       signal.throwIfAborted();
       await authorize();
       const state = this.snapshot();
-      const result = await apply(state.memberAssets ?? []);
+      const result = await apply(state.memberAssets ?? [], state.memberAssetFolders ?? []);
       signal.throwIfAborted();
       await authorize();
       signal.throwIfAborted();
-      if (result.records) {
+      if (result.records || result.folders) {
         const next = WorkbenchSchema.parse({
           ...state,
           revision: state.revision + 1,
-          memberAssets: result.records,
+          ...(result.records ? { memberAssets: result.records } : {}),
+          ...(result.folders ? { memberAssetFolders: result.folders } : {}),
         });
         signal.throwIfAborted();
         await this.storage.write(next);
@@ -321,8 +332,10 @@ export class WorkbenchService {
     model: PlanningModel,
     signal: AbortSignal,
     member?: { scopeKey: string; read: () => Promise<Workbench> },
+    constraints?: PromptConstraintSnapshot,
   ): Promise<PlanProposal> {
     const request = PlanRequestSchema.parse(raw);
+    const frozenConstraints = constraints ? readPromptConstraints(constraints) : undefined;
     signal.throwIfAborted();
     const state = member ? await member.read() : this.snapshot();
     if (member && request.expectedRevision !== state.revision)
@@ -340,9 +353,12 @@ export class WorkbenchService {
     };
     const auditKey = (id: string) => (member ? `member-${fingerprint([member.scopeKey, id])}` : id);
     const previous = this.audits.get(auditKey(request.requestId));
+    const hashMaterial = frozenConstraints
+      ? { request, constraintSnapshotId: frozenConstraints.id }
+      : request;
     const hash = member
-      ? `${fingerprint([member.scopeKey, request])}:${authorizedContext}`
-      : fingerprint(request);
+      ? `${fingerprint([member.scopeKey, hashMaterial])}:${authorizedContext}`
+      : fingerprint(hashMaterial);
     if (previous) {
       if (previous.fingerprint !== hash) {
         if (member && previous.fingerprint.split(':')[0] === hash.split(':')[0])
@@ -385,6 +401,7 @@ export class WorkbenchService {
       request.instruction,
       baseProposal,
       request.adjustment,
+      frozenConstraints,
     );
     const audit: PlanningAudit = {
       id: auditKey(request.requestId),
@@ -433,7 +450,11 @@ export class WorkbenchService {
           await reauthorize();
           return proposal;
         } catch (error) {
-          if (!(error instanceof WorkbenchError) || error.code !== 'invalid-plan' || attempt === 1)
+          if (
+            !(error instanceof WorkbenchError) ||
+            (error.code !== 'invalid-plan' && error.code !== 'constraint-violation') ||
+            attempt === 1
+          )
             throw error;
           input = JSON.stringify({
             original: prompt.input,

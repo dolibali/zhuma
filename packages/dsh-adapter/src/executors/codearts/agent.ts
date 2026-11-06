@@ -20,11 +20,16 @@ import type {
   SetSessionConfigOptionResponse,
   SessionUpdate,
 } from '@agentclientprotocol/sdk';
-import type { CodeArtsSessionEvent } from './http.js';
+import { CodeArtsHttpError, type CodeArtsSessionEvent } from './http.js';
 import { codeArtsPromptText, createCodeArtsMcpPolicy, type CodeArtsMcpPolicy } from './policy.js';
-import { startCodeArtsServer, type CodeArtsServer } from './server.js';
+import { CodeArtsServerError, startCodeArtsServer, type CodeArtsServer } from './server.js';
 import { deferred } from './deferred.js';
 import { describeCodeArtsRoutingCapability } from './routing-metadata.js';
+import {
+  codeArtsOpenDiagnostic,
+  type CodeArtsOpenDiagnostic,
+  type CodeArtsOpenStage,
+} from './diagnostics.js';
 
 type Model = { readonly providerID: string; readonly modelID: string };
 type Binding = {
@@ -60,10 +65,11 @@ const record = (value: unknown): Record<string, unknown> | undefined =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : undefined;
-const failure = (): RequestError =>
+const failure = (diagnostic?: CodeArtsOpenDiagnostic): RequestError =>
   new RequestError(
     -32000,
     'CodeArts operation failed; inspect the current session before continuing',
+    diagnostic === undefined ? undefined : { codeArts: diagnostic },
   );
 const discoveryPrefix = 'zhuma-codearts-metadata-';
 const route = describeCodeArtsRoutingCapability();
@@ -358,15 +364,19 @@ export class CodeArtsAcpAgent implements Agent {
       throw RequestError.invalidParams();
     this.#opening = true;
     let server: CodeArtsServer | undefined;
+    let stage: CodeArtsOpenStage = 'realpath';
     try {
       const cwd = await realpath(params.cwd);
+      stage = 'policy';
       const policy = createCodeArtsMcpPolicy(params.mcpServers ?? []);
+      stage = 'start';
       server = await this.#start({
         command: this.#command,
         directory: cwd,
         policy,
         signal: this.#signal,
       });
+      stage = id ? 'resume-session' : 'create-session';
       const session = id
         ? await server.client.resumeSession(id, server.signal)
         : await server.client.createSession({
@@ -376,15 +386,28 @@ export class CodeArtsAcpAgent implements Agent {
           });
       const binding: Binding = { id: session.id, cwd, policy, server };
       if (id) {
+        stage = 'history';
         const history = await server.client.messages(id, server.signal);
         for (const row of history) this.#rememberModel(binding, record(record(row)?.info), true);
       }
       this.#binding = binding;
       return binding;
-    } catch {
+    } catch (error) {
+      const diagnostic =
+        error instanceof CodeArtsServerError
+          ? codeArtsOpenDiagnostic(
+              error.stage,
+              error.diagnostic?.code,
+              error.diagnostic?.httpStatus,
+            )
+          : codeArtsOpenDiagnostic(
+              stage,
+              error instanceof CodeArtsHttpError ? error.code : undefined,
+              error instanceof CodeArtsHttpError ? error.httpStatus : undefined,
+            );
       this.#poisoned = true;
       await server?.close();
-      throw failure();
+      throw failure(diagnostic);
     } finally {
       this.#opening = false;
     }

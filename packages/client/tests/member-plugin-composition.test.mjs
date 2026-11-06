@@ -58,8 +58,15 @@ async function checkComposition({
   initialPanel = null,
   restored = false,
   missingGuard = false,
+  officialLauncherOrder,
 } = {}) {
   const core = createSlotCore();
+  const officialLauncher = () => null;
+  let disposeOfficialLauncher;
+  const registerOfficialLauncher = () => {
+    disposeOfficialLauncher = core.register({ name: 'settings.launcher' }, officialLauncher);
+  };
+  if (officialLauncherOrder === 'before') registerOfficialLauncher();
   const result = await build({
     entryPoints: [fileURLToPath(new URL('../src/workbench/plugin.tsx', import.meta.url))],
     bundle: true,
@@ -184,12 +191,14 @@ async function checkComposition({
   try {
     module.exports.apply(ctx);
   } catch (error) {
+    if (officialLauncherOrder) throw error;
     assert.equal(entries.length, 0);
     assert.equal(reads.length, 0);
     assert.equal(effects, 0);
     assert.equal(rpcCalls, 0);
     throw error;
   }
+  if (officialLauncherOrder === 'after') registerOfficialLauncher();
   await new Promise((resolve) => setImmediate(resolve));
   const launchers = entries.filter(({ options }) => options.name === 'settings.launcher');
   const memberMode = boot?.deploymentMode === 'multi-member';
@@ -216,7 +225,9 @@ async function checkComposition({
     );
   }
   assert.equal(launchers.length, 1);
+  assert.equal(core.entries('settings.launcher').length, officialLauncherOrder ? 2 : 1);
   assert.equal(core.entriesOfSlot('settings.launcher').length, 1);
+  assert.equal(core.entriesOfSlot('settings.launcher')[0].component, launchers[0].component);
   assert.equal(core.entriesOfSlot('sidebar.footer.action').length, 0);
   assert.equal(
     entries.some(({ options }) => options.name === 'sidebar.settings'),
@@ -252,7 +263,11 @@ async function checkComposition({
   assert.deepEqual(reads, Array(restored ? 2 : 1).fill('/zhuma-id/session'));
   if (memberMode && panel.activePanelId === 'zhuma-workbench') {
     const html = require('react-dom/server').renderToStaticMarkup(element);
-    assert.ok(html.includes(restored ? '正在连接工作台' : '登录工作台'));
+    assert.ok(
+      html.includes(
+        boot.localSetup ? '正在检查工作台' : restored ? '正在连接工作台' : '登录工作台',
+      ),
+    );
     if (restored) {
       assert.equal(html.includes('aria-label="工作内容"'), false);
     }
@@ -271,7 +286,26 @@ async function checkComposition({
   assert.equal(listeners.size, 0);
   assert.ok(entries.every(({ disposed }) => disposed));
   assert.equal(core.entriesOfSlot('sidebar.footer.action').length, 0);
-  assert.equal(core.entriesOfSlot('settings.launcher').length, 0);
+  assert.equal(core.entriesOfSlot('settings.launcher').length, officialLauncherOrder ? 1 : 0);
+  if (officialLauncherOrder) {
+    assert.equal(core.entriesOfSlot('settings.launcher')[0].component, officialLauncher);
+    disposeOfficialLauncher();
+    assert.equal(core.entries('settings.launcher').length, 0);
+  }
+}
+
+for (const officialLauncherOrder of ['before', 'after']) {
+  for (const deploymentMode of ['legacy-single-user', 'multi-member']) {
+    test(`member plugin composition contract: official default launcher registered ${officialLauncherOrder} ${deploymentMode} stays available after product unload`, () =>
+      checkComposition({
+        boot: {
+          version: 1,
+          deploymentMode,
+          ...(deploymentMode === 'multi-member' ? { localSetup: true } : {}),
+        },
+        officialLauncherOrder,
+      }));
+  }
 }
 
 test('member plugin composition contract: account and settings share the public launcher and owned session', () =>

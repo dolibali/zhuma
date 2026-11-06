@@ -22,6 +22,7 @@ import {
 import {
   MemberWorkbenchCommandSchema,
   MemberWorkbenchPlanSchema,
+  MemberPlanningModelSelectSchema,
   MemberWorkbenchScopeSchema,
   type MemberWorkbenchCatalog,
   type MemberWorkbenchCommand,
@@ -31,6 +32,7 @@ import {
 } from './member-workbench-dto.js';
 import { WorkbenchService } from './workbench-service.js';
 import { defaultMemberTemplateSource, ownedMemberTemplates } from './member-template-catalog.js';
+import { canUpgradeBuiltinAsset } from './member-builtin-asset-upgrade.js';
 import type { MemberAssetSourceSnapshot } from './member-asset-source-contract.js';
 import { memberAssetPublishedCatalog, memberAssetFixedFiles } from './member-asset-service.js';
 import {
@@ -546,9 +548,14 @@ export class MemberWorkbenchService {
       if (!previous) next.participants.push(structuredClone(participant));
     }
     for (const asset of scope.catalog.assets) {
-      const previous = next.assets.find((a) => a.id === asset.id);
-      if (previous && JSON.stringify(previous) !== JSON.stringify(asset))
-        fail('resource-conflict', '授权资源与已有定义冲突。');
+      const index = next.assets.findIndex((a) => a.id === asset.id);
+      const previous = next.assets[index];
+      if (previous && canonicalPayload(previous) !== canonicalPayload(asset)) {
+        if (!canUpgradeBuiltinAsset(previous, asset))
+          fail('resource-conflict', '授权资源与已有定义冲突。');
+        // Refresh only the live exact legacy builtin. Frozen plans/receipts are untouched.
+        next.assets[index] = structuredClone(asset);
+      }
       if (!previous) next.assets.push(structuredClone(asset));
     }
     return next;
@@ -585,8 +592,12 @@ export class MemberWorkbenchService {
       fail('conflict', '目录读取期间内容已变化，请刷新。');
     const space = fresh.directory.space(spaceId);
     if (!space) fail('not-found', '空间不可用。');
-    const model = this.options.model?.();
-    const { memberAssets: _privateAssetFacts, ...visibleState } = state;
+    const model = this.planningModelFor(fresh);
+    const {
+      memberAssets: _privateAssetFacts,
+      memberAssetFolders: _privateFolders,
+      ...visibleState
+    } = state;
     return structuredClone({
       actorId: scope.actorId,
       spaceId,
@@ -995,7 +1006,7 @@ export class MemberWorkbenchService {
       );
     };
     await read();
-    const model = this.options.model?.();
+    const model = this.planningModelFor(initial);
     if (!model) fail('model-unavailable', '请先配置可用模型。');
     const proposal = await this.workbench.plan(request, model, signal, {
       scopeKey: `${initial.actorId}/${spaceId}`,
@@ -1004,5 +1015,44 @@ export class MemberWorkbenchService {
     await read();
     signal.throwIfAborted();
     return { actorId: initial.actorId, spaceId, proposal };
+  }
+
+  private async planningSource(spaceId: string, signal: AbortSignal) {
+    const initial = await this.scope(spaceId);
+    signal.throwIfAborted();
+    const source = this.options.planningModels;
+    if (!source) fail('model-unavailable', '规划模型目录暂不可用。');
+    return { initial, source };
+  }
+
+  /** Member choice when the chooser is mounted; otherwise the injected shared model. */
+  private planningModelFor(scope: { actorId: string; spaceId: string }) {
+    const source = this.options.planningModels;
+    if (source) return source.modelFor(scope);
+    return this.options.model?.();
+  }
+
+  async planningModels(raw: unknown, signal: AbortSignal) {
+    const { spaceId } = MemberWorkbenchScopeSchema.parse(raw);
+    const { initial, source } = await this.planningSource(spaceId, signal);
+    const catalog = await source.catalog(signal, {
+      actorId: initial.actorId,
+      spaceId,
+    });
+    await this.scope(spaceId, initial.actorId);
+    signal.throwIfAborted();
+    return { actorId: initial.actorId, spaceId, ...catalog };
+  }
+
+  async selectPlanningModel(raw: unknown, signal: AbortSignal) {
+    const { spaceId, provider, model } = MemberPlanningModelSelectSchema.parse(raw);
+    const { initial, source } = await this.planningSource(spaceId, signal);
+    const scope = { actorId: initial.actorId, spaceId };
+    const catalog = await source.selectForMember(scope, { provider, model }, signal, async () => {
+      await this.scope(spaceId, initial.actorId);
+    });
+    await this.scope(spaceId, initial.actorId);
+    signal.throwIfAborted();
+    return { actorId: initial.actorId, spaceId, ...catalog };
   }
 }

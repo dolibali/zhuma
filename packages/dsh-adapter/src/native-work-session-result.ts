@@ -10,6 +10,7 @@ import {
   executionRunCompositionRequest,
 } from './execution-run-composition.js';
 import type { NativeWorkSessionService } from './native-work-session.js';
+import type { NativeConversationPrefix } from './native-work-session-conversation-contract.js';
 import type { NativeDshComposition } from './native-work-session-dsh.js';
 import type {
   NativeSessionBinding,
@@ -218,7 +219,8 @@ type Qualified =
 interface IssuedResult {
   readonly source: NativeFixedResultSource | NativeFixedResultPublicationsSource;
   readonly digest: string;
-  readonly drain: NativeMigrationDrain;
+  readonly drain?: NativeMigrationDrain;
+  readonly prefix?: NativeConversationPrefix;
   readonly signal: AbortSignal;
   readonly manifest?: Manifest;
 }
@@ -334,9 +336,9 @@ class NativeResultOwner {
     private readonly execution: Pick<ExecutionService, 'readRunComposition'>,
     private readonly publications?: NativeOutputFileIssuer,
   ) {}
-  private check(grant: NativeWorkGrant): void {
+  private check(grant: NativeWorkGrant, sealedRead = false): void {
     if (this.sessions.isReviewPurpose(grant)) throw new NativeResultError('result-unavailable');
-    this.authority.assertGrant(grant, 'send');
+    this.authority.assertGrant(grant, sealedRead ? 'history' : 'send');
     if (
       this.lifetime.signal.aborted ||
       owners.get(this.sessions) !== this ||
@@ -1007,13 +1009,14 @@ class NativeResultOwner {
   }
   private binding(
     grant: NativeWorkGrant,
+    sealedRead = false,
   ): NativeSessionBinding & { readonly resultProtocol: 1 | 2 } {
-    this.check(grant);
+    this.check(grant, sealedRead);
     const binding = this.sessions.open(grant)?.binding;
     if (!binding || canonicalPayload(binding.scope) !== address(grant))
       throw new NativeResultError('result-unavailable');
     const snapshot = readExecutionRunComposition(this.execution.readRunComposition(grant.scope));
-    this.check(grant);
+    this.check(grant, sealedRead);
     const descriptor =
       'resultIntentTool' in snapshot.payload
         ? canonicalPayload(snapshot.payload.resultIntentTool)
@@ -1057,9 +1060,10 @@ class NativeResultOwner {
     grant: NativeWorkGrant,
     evidence: readonly NativePublicationEvidence[],
     signal: AbortSignal,
+    sealedRead = false,
   ): Promise<Manifest> {
     if (!this.publications) throw new NativeResultError('result-unavailable');
-    this.check(grant);
+    this.check(grant, sealedRead);
     const leases = await Promise.all(
       evidence.map((item) =>
         this.publications!.readCompletedPublication(
@@ -1090,7 +1094,7 @@ class NativeResultOwner {
     const fingerprint = canonicalPayload(entries);
     const combined = AbortSignal.any([signal, ...leases.map((lease) => lease.signal)]);
     const check = (): undefined => {
-      this.check(grant);
+      this.check(grant, sealedRead);
       if (combined.aborted) throw new NativeResultError('cancelled');
       for (const lease of leases) lease.check();
       if (canonicalPayload(entries) !== fingerprint) throw new NativeResultError('result-rejected');
@@ -1178,6 +1182,7 @@ class NativeResultOwner {
     binding: NativeSessionBinding,
     intent: NativeWorkResultIntent,
     signal: AbortSignal,
+    sealedRead = false,
   ): Promise<Qualified | undefined> {
     if (intent.protocolVersion === 1) {
       const fixed = qualifyNativeFixedResult(snapshot, binding, intent);
@@ -1188,7 +1193,7 @@ class NativeResultOwner {
     ).expertVersionId;
     const fixed = qualifyNativeFixedPublicationsResult(snapshot, binding, intent, expert);
     if (!fixed) return undefined;
-    const manifest = await this.manifest(grant, fixed.evidence, signal);
+    const manifest = await this.manifest(grant, fixed.evidence, signal, sealedRead);
     if (manifest.digest !== intent.manifestDigest) throw new NativeResultError('result-rejected');
     if (!validateDeliveryContent(materializedContent(fixed.content, manifest.entries)).ok)
       throw new NativeResultError('result-rejected');
@@ -1323,6 +1328,12 @@ class NativeResultOwner {
     grant: NativeWorkGrant,
     signal: AbortSignal,
   ): Promise<NativeFixedResultPreparation> {
+    // Only an already sealed original prefix can use history authority. This
+    // branch never declares/seals a result or retires/flushes a newer chat.
+    if (!this.sessions.isReviewPurpose(grant)) {
+      const prefix = this.sessions.conversationPrefix(grant);
+      if (prefix) return this.prepareSealedPrefix(grant, prefix, signal);
+    }
     this.check(grant);
     if (signal.aborted) throw new NativeResultError('cancelled');
     const key = address(grant);
@@ -1373,6 +1384,59 @@ class NativeResultOwner {
       clearTimeout(timer);
       signal.removeEventListener('abort', stop);
     }
+  }
+
+  private async prepareSealedPrefix(
+    grant: NativeWorkGrant,
+    prefix: NativeConversationPrefix,
+    signal: AbortSignal,
+  ): Promise<NativeFixedResultPreparation> {
+    this.check(grant, true);
+    if (signal.aborted) throw new NativeResultError('cancelled');
+    const binding = this.binding(grant, true),
+      intent = binding.resultIntent;
+    if (!intent?.cut || intent.cut.asOfSeq !== prefix.asOfSeq)
+      return { status: 'pending', reason: 'not-declared' };
+    const combined = AbortSignal.any([signal, grant.signal, this.lifetime.signal]);
+    const snapshot = await this.sessions.readOriginalPrefix(grant, combined);
+    this.check(grant, true);
+    const fixed = await this.qualify(grant, snapshot, binding, intent, combined, true);
+    if (!fixed || canonicalPayload(fixed.cut) !== canonicalPayload(intent.cut))
+      throw new NativeResultError('result-rejected');
+    snapshot.check();
+    const base = {
+      scope: structuredClone(binding.scope),
+      nativeSessionId: binding.nativeSessionId,
+      nativeAgentId: binding.nativeAgentId,
+      configurationId: binding.selection.configurationId,
+      intentId: intent.intentId,
+      callId: intent.callId,
+      cut: intent.cut,
+    };
+    const source: NativeFixedResultSource | NativeFixedResultPublicationsSource =
+      intent.protocolVersion === 1
+        ? { ...base, toolVersion: NATIVE_RESULT_TOOL_VERSION }
+        : {
+            ...base,
+            toolVersion: NATIVE_RESULT_PUBLICATIONS_TOOL_VERSION,
+            manifestDigest: intent.manifestDigest,
+            expertVersionId: executionRunCompositionRequest(
+              this.execution.readRunComposition(grant.scope),
+            ).expertVersionId,
+          };
+    const ref = Object.freeze({}) as NativeFixedResultRef;
+    this.issued.set(ref, {
+      source,
+      digest: intent.digest,
+      prefix: structuredClone(prefix),
+      signal: AbortSignal.any([
+        combined,
+        ...(fixed.protocolVersion === 2 ? [fixed.manifest.signal] : []),
+      ]),
+      ...(fixed.protocolVersion === 2 ? { manifest: fixed.manifest } : {}),
+    });
+    this.assertFixedResult(grant, ref);
+    return { status: 'ready', ref };
   }
 
   private async collect(
@@ -1493,11 +1557,11 @@ class NativeResultOwner {
   }
 
   assertFixedResult(grant: NativeWorkGrant, ref: NativeFixedResultRef): undefined {
-    this.check(grant);
     const issued = this.issued.get(ref);
     if (!issued) throw new NativeResultError('result-unavailable');
+    this.check(grant, issued.prefix !== undefined);
     if (issued.signal.aborted) throw new NativeResultError('cancelled');
-    const binding = this.binding(grant);
+    const binding = this.binding(grant, issued.prefix !== undefined);
     if (
       canonicalPayload(binding.scope) !== canonicalPayload(issued.source.scope) ||
       binding.nativeSessionId !== issued.source.nativeSessionId ||
@@ -1521,7 +1585,16 @@ class NativeResultOwner {
       issued.manifest.check();
     } else if (binding.resultIntent.protocolVersion !== 1 || issued.manifest)
       throw new NativeResultError('result-rejected');
-    issued.drain.assertCurrent();
+    if (issued.prefix) {
+      if (
+        canonicalPayload(this.sessions.conversationPrefix(grant)) !==
+        canonicalPayload(issued.prefix)
+      )
+        throw new NativeResultError('result-rejected');
+    } else {
+      if (!issued.drain) throw new NativeResultError('result-rejected');
+      issued.drain.assertCurrent();
+    }
     return undefined;
   }
 
@@ -1539,10 +1612,19 @@ class NativeResultOwner {
     try {
       const issued = this.issued.get(ref)!;
       const combined = AbortSignal.any([signal, issued.signal]);
-      const snapshot = await this.sessions.readResultSnapshot(grant, combined);
+      const snapshot = issued.prefix
+        ? await this.sessions.readOriginalPrefix(grant, combined)
+        : await this.sessions.readResultSnapshot(grant, combined);
       this.assertFixedResult(grant, ref);
-      const binding = this.binding(grant);
-      const fixed = await this.qualify(grant, snapshot, binding, binding.resultIntent!, combined);
+      const binding = this.binding(grant, issued.prefix !== undefined);
+      const fixed = await this.qualify(
+        grant,
+        snapshot,
+        binding,
+        binding.resultIntent!,
+        combined,
+        issued.prefix !== undefined,
+      );
       if (
         !fixed ||
         (fixed.protocolVersion === 1

@@ -20,7 +20,7 @@ const origin = () => ({
   sourceVersion: '1.0.0',
 });
 
-test('member asset sources: four genuine built-ins retain source commit/content pin, never owner or publication UUID', async () => {
+test('member asset sources: five genuine built-ins retain source commit/content pin, never owner or publication UUID', async () => {
   const base = new URL('../../../resources/workflows/engineering-starter/', import.meta.url);
   const manifest = JSON.parse(await readFile(new URL('catalog.json', base), 'utf8'));
   const assets = await Promise.all(
@@ -36,7 +36,7 @@ test('member asset sources: four genuine built-ins retain source commit/content 
   const f = setup({ service: { catalog: async () => ({ experts: [], assets }) } });
   const view = await f.service().assetSources({ spaceId: 'north' }, signal());
   assert.equal(view.actorId, 'ann');
-  assert.equal(view.items.length, 4);
+  assert.equal(view.items.length, 5);
   for (const item of view.items) {
     assert.equal(item.summary.source.kind, 'builtin');
     assert.equal(item.summary.source.sourceCommit, ENGINEERING_WORKFLOW_SOURCE);

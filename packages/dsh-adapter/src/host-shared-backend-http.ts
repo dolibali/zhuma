@@ -9,6 +9,7 @@ import {
   SHARED_BACKEND_BODY_BYTE_LIMIT,
 } from './host-shared-backend.js';
 import { readWorkbenchBody, WorkbenchBodyError } from './workbench-http.js';
+import { MEMBER_ASSET_IMPORT_LIMITS } from '@zhuma/agent-core';
 
 /** Exact routes retain the ORIGINAL local Connection owner policy.
  * They are intentionally never registered as public member Web routes. */
@@ -87,7 +88,80 @@ export function mountHostSharedBackend(
           },
         });
       }
-      for (const endpoint of ['file', 'upload-file'] as const) {
+      // Only these two original static-import operations use the 8MiB local
+      // owner Fetch lane. They never enter the generic Gateway JSON carrier.
+      for (const endpoint of ['asset-preview-import', 'asset-import-drafts'] as const) {
+        child.connection.fetch.register({
+          path: `/api/zhuma-backend/${endpoint}`,
+          methods: ['POST'],
+          requestBody: 'streaming',
+          async fetch(request) {
+            const rejected = child.connection.requestRejection({ headers: request.headers });
+            if (rejected) return new Response(null, { status: rejected });
+            const admitted = child.connection.admit({ headers: request.headers });
+            if ('rejection' in admitted || admitted.peer.principal.kind !== 'owner')
+              return new Response(null, { status: 403 });
+            if (request.headers.get('content-type')?.split(';')[0] !== 'application/json')
+              return new Response(null, { status: 415 });
+            try {
+              const connectionId = z
+                .uuid()
+                .parse(request.headers.get('x-zhuma-backend-connection'));
+              const envelope = clientRequestSchema.parse(
+                await readWorkbenchBody(request, {
+                  bodyBytes: MEMBER_ASSET_IMPORT_LIMITS.requestBytes,
+                  bodyTimeoutMs: 10000,
+                }),
+              );
+              if (envelope.method !== `zhuma-member/${endpoint}`)
+                return new Response(null, { status: 400 });
+              const currentRejection = child.connection.requestRejection({
+                headers: request.headers,
+              });
+              if (currentRejection) return new Response(null, { status: currentRejection });
+              const currentAdmission = child.connection.admit({ headers: request.headers });
+              if (
+                'rejection' in currentAdmission ||
+                currentAdmission.peer.principal.kind !== 'owner'
+              )
+                return new Response(null, { status: 403 });
+              const value = await owner.request(
+                {
+                  connectionId,
+                  operation: `member.${endpoint}`,
+                  rpcId: envelope.rpcId,
+                  payload: envelope.payload,
+                },
+                request.signal,
+              );
+              request.signal.throwIfAborted();
+              return Response.json(value.body, {
+                status: value.status,
+                headers: {
+                  'cache-control': 'no-store',
+                  'x-zhuma-backend-connection': value.connectionId,
+                },
+              });
+            } catch (error) {
+              return new Response(null, {
+                status:
+                  error instanceof WorkbenchBodyError
+                    ? error.status
+                    : error instanceof z.ZodError
+                      ? 400
+                      : 409,
+                headers: { 'cache-control': 'no-store' },
+              });
+            }
+          },
+        });
+      }
+      for (const endpoint of [
+        'file',
+        'upload-file',
+        'asset-file-read',
+        'asset-file-upload',
+      ] as const) {
         child.connection.fetch.register({
           path: `/api/zhuma-backend/${endpoint}`,
           methods: ['POST'],

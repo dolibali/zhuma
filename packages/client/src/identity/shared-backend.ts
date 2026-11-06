@@ -1,4 +1,5 @@
 import type { ClientConnectionRpc } from '@deepseek-ai/dsh-client-connection/client';
+import { createIdentityApi, IdentityApiError } from './api.js';
 
 export interface SharedBackendStatus {
   readonly origin: string | null;
@@ -9,6 +10,8 @@ export interface SharedBackendStatus {
 export interface SharedBackendSnapshot {
   readonly phase: 'loading' | 'ready' | 'error';
   readonly selection: SharedBackendStatus | undefined;
+  readonly verification?:
+    'checking' | 'reachable' | 'login-required' | 'unavailable' | 'invalid-response';
 }
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const object = (raw: unknown): raw is Record<string, unknown> =>
@@ -60,6 +63,18 @@ const targets = {
   '/api/zhuma-member/snapshot': ['POST', 'member.snapshot'],
   '/api/zhuma-member/command': ['POST', 'member.command'],
   '/api/zhuma-member/plan': ['POST', 'member.plan'],
+  '/api/zhuma-member/planning-models': ['POST', 'member.planning-models'],
+  '/api/zhuma-member/select-planning-model': ['POST', 'member.select-planning-model'],
+  '/api/zhuma-member/asset-folder-list': ['POST', 'member.asset-folder-list'],
+  '/api/zhuma-member/asset-folder-create': ['POST', 'member.asset-folder-create'],
+  '/api/zhuma-member/asset-list': ['POST', 'member.asset-list'],
+  '/api/zhuma-member/asset-read': ['POST', 'member.asset-read'],
+  '/api/zhuma-member/asset-reference': ['POST', 'member.asset-reference'],
+  '/api/zhuma-member/asset-command': ['POST', 'member.asset-command'],
+  '/api/zhuma-member/asset-sources': ['POST', 'member.asset-sources'],
+  '/api/zhuma-member/asset-source': ['POST', 'member.asset-source'],
+  '/api/zhuma-member/asset-catalog': ['POST', 'member.asset-catalog'],
+  '/api/zhuma-member/asset-file-text': ['POST', 'member.asset-file-text'],
   '/api/zhuma-member/local-run-options': ['POST', 'execution.local-run-options'],
   '/api/zhuma-member/local-review-options': ['POST', 'execution.local-review-options'],
   '/api/zhuma-knowledge/libraries': ['POST', 'knowledge.libraries'],
@@ -84,6 +99,7 @@ const targets = {
   '/api/zhuma-exec/review-outcome': ['POST', 'execution.review-outcome'],
   '/api/zhuma-exec/upstream-content': ['POST', 'execution.upstream-content'],
   '/api/zhuma-exec/draft': ['POST', 'execution.draft'],
+  '/api/zhuma-efficiency/export': ['POST', 'efficiency.export'],
 } as const;
 function target(path: string, method: string): readonly [string, string] {
   if (path === '/zhuma-id/teams')
@@ -155,7 +171,11 @@ export function createSharedBackendClient(
       changed =
         snapshot.selection !== undefined &&
         snapshot.selection.connectionId !== selection.connectionId;
-    publish({ phase: 'ready', selection });
+    publish({
+      phase: 'ready',
+      selection,
+      ...(!changed && snapshot.verification ? { verification: snapshot.verification } : {}),
+    });
     if (changed) onConnectionChange();
   }
   function refresh(): Promise<void> {
@@ -195,6 +215,96 @@ export function createSharedBackendClient(
     const url = new URL(input, 'http://zhuma.invalid'),
       method = init?.method ?? 'GET';
     if (!['GET', 'POST'].includes(method)) throw new TypeError('不支持的共享服务方法。');
+    if (
+      url.pathname === '/api/zhuma-member/asset-preview-import' ||
+      url.pathname === '/api/zhuma-member/asset-import-drafts'
+    ) {
+      if (
+        method !== 'POST' ||
+        url.search ||
+        url.hash ||
+        !selection.connectionId ||
+        typeof init?.body !== 'string' ||
+        new Headers(init.headers).get('content-type')?.split(';')[0] !== 'application/json'
+      )
+        throw new TypeError('导入请求无效。');
+      const endpoint = url.pathname.split('/').at(-1);
+      const response = await localFetch(`/api/zhuma-backend/${endpoint}`, {
+        method: 'POST',
+        credentials: 'same-origin',
+        cache: 'no-store',
+        redirect: 'error',
+        headers: {
+          'content-type': 'application/json',
+          'x-zhuma-backend-connection': selection.connectionId,
+        },
+        body: init.body,
+        signal: AbortSignal.any([lifetime.signal, ...(init.signal ? [init.signal] : [])]),
+      });
+      try {
+        current(attempt, init.signal ?? undefined);
+        if (
+          response.ok &&
+          response.headers.get('x-zhuma-backend-connection') !== selection.connectionId
+        )
+          throw new TypeError('导入连接已发生变化，请重试。');
+        return response;
+      } catch (error) {
+        await response.body?.cancel();
+        throw error;
+      }
+    }
+    if (
+      url.pathname === '/api/zhuma-member/asset-file-upload' ||
+      url.pathname === '/api/zhuma-member/asset-file-read'
+    ) {
+      if (method !== 'POST' || url.search || url.hash || !selection.connectionId)
+        throw new TypeError('文件请求无效。');
+      const upload = url.pathname.endsWith('upload'),
+        original = new Headers(init?.headers),
+        headers = new Headers();
+      for (const name of upload
+        ? [
+            'content-type',
+            'x-zhuma-space-id',
+            'x-zhuma-asset-id',
+            'x-zhuma-expected-version',
+            'x-zhuma-idempotency-key',
+            'x-zhuma-file-name',
+            'x-zhuma-file-type',
+            'x-zhuma-file-size',
+            'x-zhuma-file-sha256',
+          ]
+        : ['content-type']) {
+        const value = original.get(name);
+        if (value !== null) headers.set(name, value);
+      }
+      headers.set('x-zhuma-backend-connection', selection.connectionId);
+      const response = await localFetch(
+        `/api/zhuma-backend/${upload ? 'asset-file-upload' : 'asset-file-read'}`,
+        {
+          method: 'POST',
+          credentials: 'same-origin',
+          cache: 'no-store',
+          redirect: 'error',
+          headers,
+          signal: AbortSignal.any([lifetime.signal, ...(init?.signal ? [init.signal] : [])]),
+          ...(init?.body ? { body: init.body } : {}),
+        },
+      );
+      try {
+        current(attempt, init?.signal ?? undefined);
+        if (
+          response.ok &&
+          response.headers.get('x-zhuma-backend-connection') !== selection.connectionId
+        )
+          throw new TypeError('文件连接已发生变化，请重试。');
+        return response;
+      } catch (error) {
+        await response.body?.cancel();
+        throw error;
+      }
+    }
     if (url.pathname === '/api/zhuma-exec/file' || url.pathname === '/api/zhuma-exec/upload-file') {
       const reading = url.pathname === '/api/zhuma-exec/file';
       if (
@@ -303,6 +413,41 @@ export function createSharedBackendClient(
   return {
     fetcher,
     refresh,
+    async check(signal: AbortSignal) {
+      if (snapshot.phase !== 'ready' || !snapshot.selection)
+        throw new TypeError('请先重新读取服务设置。');
+      const attempt = sequence;
+      publish({ ...snapshot, verification: 'checking' });
+      try {
+        // Use the original read-only member endpoint and its strict public codec.
+        // Saving an address or reading local metadata never proves reachability.
+        await createIdentityApi(async (input, init) => {
+          const response = await fetcher(input, init);
+          if (
+            response.status === 502 &&
+            (await response
+              .clone()
+              .json()
+              .catch(() => undefined)) === null
+          )
+            throw new IdentityApiError('invalid-response');
+          return response;
+        }).session(signal);
+        current(attempt, signal);
+        publish({ ...snapshot, verification: 'reachable' });
+      } catch (error) {
+        current(attempt, signal);
+        publish({
+          ...snapshot,
+          verification:
+            error instanceof IdentityApiError && error.code === 'unauthenticated'
+              ? 'login-required'
+              : error instanceof IdentityApiError && error.code === 'invalid-response'
+                ? 'invalid-response'
+                : 'unavailable',
+        });
+      }
+    },
     getSnapshot: () => snapshot,
     subscribe(listener: () => void) {
       listeners.add(listener);

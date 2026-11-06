@@ -142,6 +142,9 @@ export class MemberLocalExecutionClient {
         const headers = new Headers(authorization);
         headers.set(REMOTE_RUN_PERMIT_HEADER, secret);
         headers.set('content-type', 'application/json');
+        // The SDK may retire a finished binary response's socket asynchronously.
+        // A following signed check must not reuse that transport or retry its proof.
+        headers.set('connection', 'close');
         const response = await fetch(`${this.origin}/api/${method}`, {
           method: 'POST',
           headers,

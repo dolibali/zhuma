@@ -12,6 +12,7 @@ export * from './workbench.js';
 export * from './asset-package.js';
 export * from './planning.js';
 export * from './planning-changes.js';
+export * from './prompt-constraints.js';
 export { createNodeHandoffs } from './applied-handoff.js';
 
 export type {
@@ -68,6 +69,8 @@ export type {
   ReviewSettlement,
   ReviewSettlementCurrent,
 } from './review.js';
+export type { FixedDeliveryPreview, BoundReviewComment } from './delivery-review.js';
+export { previewFixedDelivery, bindVersionedReviewComment } from './delivery-review.js';
 export {
   REVIEW_ACTIONS,
   aggregateReview,
