@@ -12,13 +12,14 @@ import { z } from 'zod';
 import { invokeUserMcpTools, openUserMcp, userMcpExplicitGrant } from '../dist/user-mcp.js';
 
 const fixture = fileURLToPath(new URL('./fixtures/user-mcp-stdio-server.mjs', import.meta.url));
-const summaryNodes = Number(
-  /const SUMMARY_NODES = (\d+);/.exec(
-    readFileSync(new URL('../src/user-mcp.ts', import.meta.url), 'utf8'),
-  )?.[1],
-);
+const userMcpSource = readFileSync(new URL('../src/user-mcp.ts', import.meta.url), 'utf8');
+const summaryNodes = Number(/const SUMMARY_NODES = (\d+);/.exec(userMcpSource)?.[1]);
+const summaryDepth = Number(/const SUMMARY_DEPTH = (\d+);/.exec(userMcpSource)?.[1]);
 if (!Number.isInteger(summaryNodes) || summaryNodes < 1) {
   throw new Error('SUMMARY_NODES 未能从 user-mcp.ts 读出');
+}
+if (!Number.isInteger(summaryDepth) || summaryDepth < 2) {
+  throw new Error('SUMMARY_DEPTH 未能从 user-mcp.ts 读出');
 }
 
 function option(overrides = {}) {
@@ -501,6 +502,167 @@ test(
       }
       await refused.session.close();
       assert.equal(await readFile(callsFile, 'utf8'), calls);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  '深度边界上的大数组、重复引用和循环在节点预算用尽后停止读取',
+  { timeout: 30_000 },
+  async () => {
+    const width = 10_000;
+    const depthTail = 'synthetic-depth-tail';
+    const cycleTail = 'synthetic-cycle-tail';
+    const nestedSecret = 'synthetic-cycle-secret';
+    // 根对象加从第 1 层到数组本身：数组位于 SUMMARY_DEPTH，子元素在更深一层。
+    const depthArrayNodes = summaryDepth + 1;
+    const depthElementReads = summaryNodes - depthArrayNodes;
+    // 根、叶子、敏感占位、note、循环对象、自引用、再次引用叶子、副本数组。
+    const cycleNodesBeforeCopies = 8;
+    const cycleElementReads = summaryNodes - cycleNodesBeforeCopies;
+    assert.equal(depthElementReads > 0 && depthElementReads < width, true);
+    assert.equal(cycleElementReads > 0 && cycleElementReads < width, true);
+
+    function countedArray(onIndex) {
+      const batch = [];
+      for (let index = 0; index < width; index += 1) {
+        Object.defineProperty(batch, index, {
+          enumerable: true,
+          get() {
+            return onIndex(index);
+          },
+        });
+      }
+      return batch;
+    }
+
+    const depthReads = { elements: 0, maxIndex: -1, tail: 0, inner: 0 };
+    const depthBatch = countedArray((index) => {
+      depthReads.elements += 1;
+      depthReads.maxIndex = index;
+      if (index === width - 1) depthReads.tail += 1;
+      const item = {};
+      Object.defineProperty(item, 'nested', {
+        enumerable: true,
+        get() {
+          depthReads.inner += 1;
+          return depthTail;
+        },
+      });
+      return item;
+    });
+    const depthParent = {};
+    Object.defineProperty(depthParent, 'down', { enumerable: true, value: depthBatch });
+    Object.defineProperty(depthParent, 'tail', {
+      enumerable: true,
+      get() {
+        depthReads.tail += 1;
+        return depthTail;
+      },
+    });
+    let depthValue = depthParent;
+    for (let level = summaryDepth - 1; level > 1; level -= 1) {
+      depthValue = { down: depthValue };
+    }
+    const depthArgs = { payload: depthValue };
+
+    const cycleReads = {
+      elements: 0,
+      maxIndex: -1,
+      tail: 0,
+      secret: 0,
+      note: 0,
+      self: 0,
+      again: 0,
+    };
+    const leaf = {};
+    Object.defineProperty(leaf, 'apiKey', {
+      enumerable: true,
+      get() {
+        cycleReads.secret += 1;
+        return nestedSecret;
+      },
+    });
+    Object.defineProperty(leaf, 'note', {
+      enumerable: true,
+      get() {
+        cycleReads.note += 1;
+        return 'leaf-note';
+      },
+    });
+    const cycle = {};
+    Object.defineProperty(cycle, 'self', {
+      enumerable: true,
+      get() {
+        cycleReads.self += 1;
+        return cycle;
+      },
+    });
+    Object.defineProperty(cycle, 'again', {
+      enumerable: true,
+      get() {
+        cycleReads.again += 1;
+        return leaf;
+      },
+    });
+    const copies = countedArray((index) => {
+      cycleReads.elements += 1;
+      cycleReads.maxIndex = index;
+      if (index === width - 1) cycleReads.tail += 1;
+      return index % 2 === 0 ? cycle : leaf;
+    });
+    Object.defineProperty(cycle, 'copies', { enumerable: true, value: copies });
+    Object.defineProperty(cycle, 'tail', {
+      enumerable: true,
+      get() {
+        cycleReads.tail += 1;
+        return cycleTail;
+      },
+    });
+    const cycleArgs = { leaf, cycle };
+
+    const root = await mkdtemp(join(tmpdir(), 'zhuma-user-mcp-'));
+    try {
+      const refused = await openUserMcp({
+        option: option({ args: [fixture] }),
+        selection: selection({ toolsAuthorized: false, explicitToolGrant: false }),
+      });
+      assert.equal(refused.ok, true);
+      const depthResult = await refused.session.call('echo', depthArgs);
+      const cycleResult = await refused.session.call('echo', cycleArgs);
+      assert.equal(depthResult.ok, false);
+      assert.equal(depthResult.code, 'mcp-not-authorized');
+      assert.equal(cycleResult.ok, false);
+      assert.equal(cycleResult.code, 'mcp-not-authorized');
+      const records = readMcpCalls(refused.session.log);
+      assert.equal(records.length, 2);
+      const depthSummary = records[0].argsSummary;
+      const cycleSummary = records[1].argsSummary;
+
+      assert.equal(depthReads.elements, depthElementReads);
+      assert.equal(depthReads.maxIndex, depthElementReads - 1);
+      assert.equal(depthReads.tail, 0);
+      assert.equal(depthReads.inner, 0);
+      assert.equal(depthSummary.includes(depthTail), false);
+      assert.equal(depthSummary.includes('[truncated]'), true);
+      assert.equal(depthSummary.length <= 240, true);
+
+      assert.equal(cycleReads.elements, cycleElementReads);
+      assert.equal(cycleReads.maxIndex, cycleElementReads - 1);
+      assert.equal(cycleReads.tail, 0);
+      assert.equal(cycleReads.secret, 0);
+      assert.equal(cycleReads.note, 1);
+      assert.equal(cycleReads.self, 1);
+      assert.equal(cycleReads.again, 1);
+      assert.equal(cycleSummary.includes(nestedSecret), false);
+      assert.equal(cycleSummary.includes(cycleTail), false);
+      assert.equal(cycleSummary.includes('[redacted]'), true);
+      assert.equal(cycleSummary.includes('leaf-note'), true);
+      assert.equal(cycleSummary.includes('[truncated]'), true);
+      assert.equal(cycleSummary.length <= 240, true);
+      await refused.session.close();
     } finally {
       await rm(root, { recursive: true, force: true });
     }

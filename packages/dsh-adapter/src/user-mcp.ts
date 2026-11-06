@@ -355,10 +355,12 @@ function boundedText(value: string): string {
 
 /**
  * 按键名递归遮住敏感值。
- * 每个实际访问的值（含字符串、数值、布尔和 null）都消耗一个节点。
+ * 只要还有预算，每个实际访问的值都先消耗一个节点，再判断深度或是否已经见过。
+ * 这包括字符串、数值、布尔、null、超深度的值和重复引用。
+ * 预算已经用尽时直接停下，不再读取下一个数组元素或对象字段。
  * 敏感键只记 [redacted]，不读取原值。
- * 字符串在放进摘要前截断。对象按字段逐个看，预算用尽即停，不先复制全部键值。
- * 超深度、超节点或循环时停下，不再原样写下剩余内容。
+ * 字符串在放进摘要前截断。对象按字段逐个看，不先复制全部键值。
+ * 超深度、超节点或循环时记下截断，不再原样写下剩余内容。
  */
 function redactArgs(
   value: unknown,
@@ -366,19 +368,16 @@ function redactArgs(
   budget: { nodes: number },
   seen: WeakSet<object>,
 ): unknown {
-  if (budget.nodes <= 0 || depth > SUMMARY_DEPTH) return '[truncated]';
-  if (value === null) {
-    budget.nodes -= 1;
-    return null;
-  }
+  if (budget.nodes <= 0) return '[truncated]';
+  budget.nodes -= 1;
+  if (depth > SUMMARY_DEPTH) return '[truncated]';
+  if (value === null) return null;
   if (typeof value !== 'object') {
-    budget.nodes -= 1;
     if (typeof value === 'string') return boundedText(value);
     if (typeof value === 'number' || typeof value === 'boolean') return value;
     return '[unserializable]';
   }
   if (seen.has(value)) return '[truncated]';
-  budget.nodes -= 1;
   seen.add(value);
   if (Array.isArray(value)) {
     const items: unknown[] = [];
