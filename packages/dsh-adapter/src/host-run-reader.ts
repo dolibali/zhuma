@@ -505,7 +505,7 @@ export function createHostRunReader(
       const { after, limit, ...locator } = parsed.data;
       const opened = await authorities.open(request, locator, 'read');
       try {
-        const page = await native.history(opened.grant, after, undefined, wait);
+        const page = await native.conversationHistory(opened.grant, after, limit, wait);
         const events = page.events.slice(0, limit);
         opened.grant.assertCurrent('history');
         return {

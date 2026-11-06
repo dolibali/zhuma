@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { spawnSync } from 'node:child_process';
 import { createHostRunReader } from '../dist/host-run-reader.js';
+import { publicNativeHistoryPage } from '../dist/native-work-session-history-view.js';
 import { available, command, records } from './execution-run-fixture.mjs';
 import { beginExecutionRun } from '../dist/execution-run-state.js';
 
@@ -49,10 +50,13 @@ function fixture() {
       counters.nativeOpen++;
       return undefined;
     },
-    async history(actual, after, limit, wait) {
+    async history() {
+      assert.fail('UI history must use the presentation port');
+    },
+    async conversationHistory(actual, after, limit, wait) {
       assert.equal(actual, grant);
       assert.equal(after, -1);
-      assert.equal(limit, undefined);
+      assert.ok(Number.isSafeInteger(limit) && limit >= 1 && limit <= 100);
       wait?.throwIfAborted();
       counters.history++;
       return {
@@ -269,6 +273,80 @@ test('Host Run reader contract: history validates its cursor and limit before op
   assert.equal(f.counters.disposed, 1);
 });
 
+test('Host Run UI history contract: use the bounded presentation port and advance only its original contiguous prefix', async () => {
+  const f = fixture();
+  const message = (seq, text) => ({
+    seq,
+    time: seq,
+    type: 'assistant/message',
+    data: {
+      message: {
+        id: `message-${seq}`,
+        role: 'assistant',
+        source: { kind: 'model' },
+        content: [{ type: 'text', text }],
+      },
+    },
+  });
+  const original = [
+    {
+      seq: 2,
+      time: 2,
+      type: 'tool/call',
+      data: { name: 'list_files', arguments: 'INTERNAL'.repeat(100_000) },
+    },
+    message(5, 'a'.repeat(170_000)),
+    message(9, 'b'.repeat(170_000)),
+    { seq: 13, time: 13, type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } },
+  ];
+  const before = structuredClone(original);
+  assert.ok(Buffer.byteLength(JSON.stringify(original)) > 262_144);
+  f.native.history = async () => {
+    throw Object.assign(new Error('Internal history capacity is unchanged'), { code: 'capacity' });
+  };
+  const wait = new AbortController();
+  const reads = [];
+  f.native.conversationHistory = async (grant, after, limit, signal) => {
+    assert.equal(grant, f.grant);
+    assert.equal(signal, wait.signal);
+    assert.equal(limit, 3);
+    reads.push(after);
+    return {
+      binding: { nativeSessionId: 'native-session', privateCanary: 'INTERNAL' },
+      events: publicNativeHistoryPage(
+        original.filter((event) => event.seq > after).slice(0, limit),
+      ),
+    };
+  };
+  const first = await f.reader.history(f.request, { ...f.locator, limit: 3 }, wait.signal);
+  assert.equal(first.ok, true);
+  assert.deepEqual(
+    first.value.events.map((event) => event.seq),
+    [2, 5],
+  );
+  assert.equal(first.value.nextAfter, 5);
+  const second = await f.reader.history(
+    f.request,
+    { ...f.locator, after: first.value.nextAfter, limit: 3 },
+    wait.signal,
+  );
+  assert.deepEqual(
+    second.value.events.map((event) => event.seq),
+    [9, 13],
+  );
+  assert.equal(second.value.nextAfter, 13);
+  assert.deepEqual(reads, [-1, 5]);
+  for (const result of [first, second]) {
+    assert.ok(Buffer.byteLength(JSON.stringify(result.value.events)) <= 262_144);
+    assert.equal(JSON.stringify(result).includes('INTERNAL'), false);
+    assert.equal('binding' in result.value, false);
+  }
+  assert.deepEqual(original, before);
+  assert.equal(f.counters.opened, 2);
+  assert.equal(f.counters.disposed, 2);
+  assert.ok(f.checks.includes('history'));
+});
+
 test('Host Run reader contract: a missing or different native mapping cannot replace the recorded session', async () => {
   const f = fixture();
   f.run.attempt.sessionId = 'recorded-session';
@@ -299,7 +377,7 @@ test('Host Run reader contract: cancellation and late authorization failure rele
   assert.equal(f.counters.nativeOpen, 0);
   assert.equal(f.counters.disposed, 1);
   f.authorities.open = originalOpen;
-  f.native.history = async () => {
+  f.native.conversationHistory = async () => {
     f.revoked.abort();
     return { binding: { nativeSessionId: 'native' }, events: [] };
   };
