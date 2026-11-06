@@ -25,6 +25,78 @@ async function hostFor(t, options) {
   t.after(() => host.close());
   return { ...host, root };
 }
+
+test('composition snapshot: Host node copies share only immutable fixed leaves and cannot edit live attempts', async (t) => {
+  const h = await hostFor(t);
+  checked(await h.service.enableRunWriter());
+  checked(await h.service.beginRun(h.request, h.begin()));
+  const first = h.service.readRunNode(h.locate());
+  const next = h.service.readRunNode(h.locate());
+  assert.notEqual(first, next);
+  assert.notEqual(first.nativeExecution.runs, next.nativeExecution.runs);
+  assert.notEqual(first.nativeExecution.runs[0].attempt, next.nativeExecution.runs[0].attempt);
+  const leaf = first.nativeExecution.runs[0].composition;
+  assert.equal(leaf, next.nativeExecution.runs[0].composition);
+  assert(Object.isFrozen(leaf.payload.resources ?? leaf.payload));
+  assert.throws(() => {
+    leaf.payload.scope.actorId = 'outside';
+  }, TypeError);
+  first.nativeExecution.runs[0].attempt.id = 'caller-edited';
+  assert.equal(h.service.readRunNode(h.locate()).nativeExecution.runs[0].attempt.id, 'run-1');
+});
+
+test('composition snapshot: a certified leaf never bypasses a fresh Run scope, configuration or current-attempt binding', async (t) => {
+  const h = await hostFor(t);
+  checked(await h.service.enableRunWriter());
+  checked(await h.service.beginRun(h.request, h.begin()));
+  const table = h.domain.table('nodes');
+  const [key, original] = [...table.entries()].find(([, node]) => node.nodeId === 'produce');
+  const leaf = h.service.readRunNode(h.locate()).nativeExecution.runs[0].composition;
+  for (const change of [
+    (node) => {
+      node.nativeExecution.runs[0].actorId = 'outside';
+    },
+    (node) => {
+      node.nativeExecution.runs[0].segmentId = 'other-segment';
+    },
+    (node) => {
+      node.nativeExecution.runs[0].selection.configurationId = 'other-configuration';
+      node.nativeExecution.runs[0].attempt.configSnapshotId = 'other-configuration';
+    },
+    (node) => {
+      node.nativeExecution.currentRunId = 'other-run';
+    },
+  ]) {
+    const changed = structuredClone(original);
+    changed.nativeExecution.runs[0].composition = leaf;
+    change(changed);
+    await table.put(key, changed);
+    assert.throws(() => h.service.readRunNode(h.locate()), { code: 'run-state-invalid' });
+  }
+  await table.put(key, original);
+  assert.equal(h.service.readRunNode(h.locate()).nativeExecution.runs[0].attempt.id, 'run-1');
+});
+
+test('composition snapshot: mutable generic nodes retain independent mutable copies and changed leaves are revalidated', async (t) => {
+  const h = await hostFor(t);
+  checked(await h.service.enableRunWriter());
+  checked(await h.service.beginRun(h.request, h.begin()));
+  const mutable = structuredClone(h.service.readRunNode(h.locate()));
+  h.service.storage.readNode = () => mutable;
+  const first = h.service.readRunNode(h.locate());
+  const next = h.service.readRunNode(h.locate());
+  assert.notEqual(
+    first.nativeExecution.runs[0].composition,
+    next.nativeExecution.runs[0].composition,
+  );
+  first.nativeExecution.runs[0].composition.payload.context += 'caller-only';
+  assert.notEqual(
+    first.nativeExecution.runs[0].composition.payload.context,
+    next.nativeExecution.runs[0].composition.payload.context,
+  );
+  mutable.nativeExecution.runs[0].composition.payload.context += 'corrupt-input';
+  assert.throws(() => h.service.readRunNode(h.locate()), { code: 'run-state-invalid' });
+});
 function committed(promise) {
   return promise.then((result) => {
     if (!result.ok) throw Object.assign(Error(result.error.message), { code: result.error.code });

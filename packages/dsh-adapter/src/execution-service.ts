@@ -1856,8 +1856,22 @@ export class ExecutionService {
       node.nodeId !== parsed.nodeId
     )
       throw new ExecutionRunError('run-state-invalid');
-    readExecutionRunState(node);
-    return structuredClone(node);
+    const state = readExecutionRunState(node);
+    const copy = structuredClone(node);
+    if (state && this.isSealedRunData(node)) {
+      // The node/attempt/segment/resource data remain a new mutable copy. Only
+      // validated, deeply immutable historical composition leaves may be shared;
+      // the Run reader still checks every scope/config/attempt binding afresh.
+      const author = (
+        copy as ExecutionNodeRecord & {
+          nativeExecution?: { runs?: { composition?: FrozenExecutionRunComposition }[] };
+        }
+      ).nativeExecution;
+      for (const [index, run] of state.runs.entries())
+        if (run.composition && author?.runs?.[index])
+          author.runs[index]!.composition = readExecutionRunComposition(run.composition);
+    }
+    return copy;
   }
 
   readRunGlobal(): unknown {
