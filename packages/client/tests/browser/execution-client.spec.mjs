@@ -164,13 +164,14 @@ test('review unmount and return to the same item cannot revive an old receipt', 
 }) => {
   await setup(page, 'review');
   await hold(page);
-  await page.getByLabel('评审意见').fill('旧意见');
+  const input = page.getByRole('textbox', { name: '评审意见', exact: true });
+  await input.fill('旧意见');
   await button(page, '通过').click();
   await button(page, '卸载执行页').click();
   await button(page, '重新打开执行页').click();
-  await page.getByLabel('评审意见').fill('重新打开后的意见');
+  await input.fill('重新打开后的意见');
   await finish(page);
-  await expect(page.getByLabel('评审意见')).toHaveValue('重新打开后的意见');
+  await expect(input).toHaveValue('重新打开后的意见');
   expect(await probe(page, () => window.executionProbe.events.length)).toBe(0);
 });
 
