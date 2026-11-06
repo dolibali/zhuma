@@ -22,6 +22,15 @@ import { describeTeamAssetFileTool } from './team-asset-file-tool.js';
 import type { RemoteTeamAssetFileReadGrant } from './remote-team-asset-file-authority.js';
 import { z } from 'zod';
 import {
+  efficiencyDocument,
+  efficiencyExportSchema,
+  efficiencyTaskIds,
+  noteExecutionFact,
+  notePlanIfTerminal,
+  noteTaskStarted,
+  type EfficiencyPlanNode,
+} from './efficiency-log.js';
+import {
   canonicalPayload,
   remoteWorkflowRefSchema,
   remoteWorkflowIntentSchema,
@@ -57,6 +66,7 @@ import {
   unlockDownstream,
   unlockKey,
   castBallot,
+  bindVersionedReviewComment,
   WorkbenchError,
   WorkTaskSchema,
   type ArtifactFileRef,
@@ -86,6 +96,7 @@ import {
   type UpstreamInputView,
 } from './upstream-inputs.js';
 import type { MemberRequest } from './member-session.js';
+import type { NativeReleasedConversationAuthoritySource } from './native-released-conversation-authority.js';
 import type { MemberWorkbenchDirectory } from './member-workbench-dto.js';
 import {
   taskProgressQuerySchema,
@@ -556,6 +567,20 @@ export interface ExecutionRunHostPorts
   assertWorkspace(...args: Parameters<ExecutionRunAuthoritySource['assertWorkspace']>): undefined;
 }
 
+/** Runtime ports only. Identity, directory, node, controller and workspace
+ * gates are always taken from this ExecutionService's installed Host.
+ */
+export type NativeReleasedConversationRuntimePorts = Pick<
+  NativeReleasedConversationAuthoritySource,
+  | 'backend'
+  | 'openEpoch'
+  | 'assertEpoch'
+  | 'retireEpoch'
+  | 'whenEpochSettled'
+  | 'openReadEpoch'
+  | 'assertReadEpoch'
+>;
+
 type NativeResultPort = {
   readonly issuer: NativeFixedResultIssuer | NativeFixedResultPublicationsIssuer;
   readonly prepare: NativeFixedResultIssuer['prepareFixedResult'];
@@ -615,7 +640,12 @@ export const executionMemberRequestSchemas = Object.freeze({
   draftRead: draftReadSchema,
   draftWrite: draftWriteSchema,
 });
-const inboxSchema = z.strictObject({ spaceId: id.optional() });
+/** Opt-in for non-executable wait rows. Absent requests keep the original inbox. */
+const INBOX_WAITING_DETAIL = 'waiting' as const;
+const inboxSchema = z.strictObject({
+  spaceId: id.optional(),
+  detail: z.literal(INBOX_WAITING_DETAIL).optional(),
+});
 const startableSchema = z.strictObject({ spaceId: id.optional() });
 const eventsSchema = z.strictObject({
   taskId: id,
@@ -868,6 +898,21 @@ function draftKeyLimit(
   return undefined;
 }
 
+/** Stable id for the comment created by one ballot idempotency key. */
+function reviewCommentId(idempotencyKey: string): string {
+  return `c-${createHash('sha256').update(idempotencyKey).digest('hex').slice(0, 32)}`;
+}
+
+/** Keep caller citations, and add the comment this return just pinned to the version. */
+function withVersionCitation(
+  requested: readonly string[] | undefined,
+  citedId: string | undefined,
+): readonly string[] | undefined {
+  if (citedId === undefined) return requested;
+  if (requested?.some((id) => id.trim() === citedId)) return requested;
+  return [...(requested ?? []), citedId];
+}
+
 function parseBody<T>(schema: z.ZodType<T>, body: unknown): ExecutionResult<T> {
   const parsed = schema.safeParse(body);
   if (parsed.success) return { ok: true, value: parsed.data };
@@ -1029,13 +1074,14 @@ function withExecutionEvent(
 ): ExecutionNodeRecord | undefined {
   const log: readonly NodeEvent[] = Array.isArray(record.events) ? record.events : [];
   const sequence = log.reduce((max, item) => Math.max(max, item.sequence), 0) + 1;
+  const occurredAt = new Date().toISOString();
   const appended = recordCommandEvent({
     decisionStatus: 'applied',
     log,
     event: {
       eventId: `evt:${record.nodeId}:${sequence}`,
       sequence,
-      occurredAt: new Date().toISOString(),
+      occurredAt,
       actorId,
       object: { type: 'node', id: record.nodeId },
       type,
@@ -1161,6 +1207,10 @@ function samePlan(record: ExecutionNodeRecord, taskId: string, planId: string, r
   return record.taskId === taskId && record.planId === planId && record.revision === revision;
 }
 
+function eventCount(record: ExecutionNodeRecord | undefined): number {
+  return record && Array.isArray(record.events) ? record.events.length : 0;
+}
+
 function rejectionDetails(
   code: string,
   current: ExecutionNodeRecord,
@@ -1175,6 +1225,12 @@ function rejectionDetails(
 
 /** Serializes durable execution commands. One user command writes one node record. */
 export class ExecutionService {
+  private validatedWorkspaceRuns = new WeakMap<
+    ExecutionNodeRecord,
+    readonly WorkspaceApprovalRun[]
+  >();
+  private runValidationSources: readonly unknown[] | undefined;
+  private readonly sealedRunData = new WeakSet<object>();
   private reviewReadAuthorities: ExecutionReviewReadAuthorities | undefined;
   private reviewDriveAuthorities: ExecutionReviewDriveAuthorities | undefined;
   private writes: Promise<unknown> = Promise.resolve();
@@ -1287,6 +1343,13 @@ export class ExecutionService {
           this.assertRunStoreCompatibility();
           if (hasState) requireWorkspaceApprovalWriter(this.readRunGlobal());
         },
+        readSnapshot: () => {
+          const state = table.read();
+          const runs: WorkspaceApprovalRun[] = [];
+          this.assertRunStoreCompatibility(runs);
+          if (state !== undefined) requireWorkspaceApprovalWriter(this.readRunGlobal());
+          return { state, runs };
+        },
         enableWriter: () => {
           if (!this.storage.writeGlobal)
             throw new WorkspaceApprovalError('workspace-approval-unavailable');
@@ -1343,19 +1406,9 @@ export class ExecutionService {
           };
         },
         runs: () => {
-          const found: WorkspaceApprovalRun[] = [];
-          for (const node of this.storage.listNodes())
-            for (const run of readExecutionRunState(node)?.runs ?? []) {
-              if (run.workspace.kind !== 'local') continue;
-              found.push({
-                scope: executionRunScope(node, run),
-                workspace: run.workspace,
-                resources: run.resources,
-                ...(run.attempt.sessionId ? { nativeSessionId: run.attempt.sessionId } : {}),
-                ...(run.attempt.executorRunId ? { nativeAgentId: run.attempt.executorRunId } : {}),
-              });
-            }
-          return found;
+          const runs: WorkspaceApprovalRun[] = [];
+          this.readRunStates(this.storage.listNodes(), runs);
+          return runs;
         },
         assertDrained: (run) => {
           const host = currentHost();
@@ -1425,6 +1478,180 @@ export class ExecutionService {
     this.runHost = host;
     this.runAuthorities = authorities;
     return authorities;
+  }
+
+  /** Host-only composition seam. This creates callbacks, not another manager
+   * or task store. A holds/closes the authority manager with the same Host.
+   */
+  createNativeReleasedConversationAuthoritySource(
+    runtime: NativeReleasedConversationRuntimePorts,
+  ): NativeReleasedConversationAuthoritySource {
+    const host = this.requireRunHost(),
+      hostSignal = host.signal;
+    const hostMethods = {
+      memberLease: host.memberLease,
+      assertProjectSpace: host.assertProjectSpace,
+      assertWorkspace: host.assertWorkspace,
+      onChange: host.onChange,
+    };
+    if (Object.values(hostMethods).some((method) => typeof method !== 'function'))
+      throw new ExecutionRunError('run-authority-unavailable');
+    const {
+      backend,
+      openEpoch,
+      assertEpoch,
+      retireEpoch,
+      whenEpochSettled,
+      openReadEpoch,
+      assertReadEpoch,
+    } = runtime ?? {};
+    if (
+      [backend, openEpoch, assertEpoch, retireEpoch, whenEpochSettled].some(
+        (method) => typeof method !== 'function',
+      ) ||
+      (openReadEpoch !== undefined && typeof openReadEpoch !== 'function') ||
+      (assertReadEpoch !== undefined && typeof assertReadEpoch !== 'function')
+    )
+      throw new ExecutionRunError('run-authority-unavailable');
+    const runtimeMethods = {
+      backend,
+      openEpoch,
+      assertEpoch,
+      retireEpoch,
+      whenEpochSettled,
+      openReadEpoch,
+      assertReadEpoch,
+    };
+    const signal = AbortSignal.any([hostSignal, this.runLifetime.signal]);
+    const active = () => {
+      if (
+        this.requireRunHost() !== host ||
+        host.signal !== hostSignal ||
+        signal.aborted ||
+        Object.entries(hostMethods).some(([name, method]) => Reflect.get(host, name) !== method) ||
+        Object.entries(runtimeMethods).some(
+          ([name, method]) => Reflect.get(runtime, name) !== method,
+        )
+      )
+        throw new ExecutionRunError('run-authority-unavailable');
+    };
+    const readLocal: NativeReleasedConversationAuthoritySource['readNode'] = (locator) => {
+      active();
+      const node = this.readRunNode(locator);
+      if (
+        node &&
+        readExecutionRunState(node)?.runs.find((run) => run.attempt.id === locator.runId)?.remote
+      )
+        throw new ExecutionRunError('run-authority-denied');
+      active();
+      return node;
+    };
+    const beforeEpoch = (input: Parameters<typeof openEpoch>[0]) => {
+      active();
+      synchronousRunAssertion(input.assertCurrent());
+      const node = readLocal(input.origin);
+      const run =
+        node &&
+        readExecutionRunState(node)?.runs.find((item) => item.attempt.id === input.origin.runId);
+      if (
+        !node ||
+        !run ||
+        canonicalPayload(executionRunScope(node, run)) !== canonicalPayload(input.origin)
+      )
+        throw new ExecutionRunError('run-authority-denied');
+      active();
+    };
+    active();
+    return Object.freeze({
+      signal,
+      writerState: () => {
+        active();
+        return this.readRunGlobal();
+      },
+      memberLease: (request: MemberRequest) => {
+        active();
+        return hostMethods.memberLease.call(host, request);
+      },
+      readNode: readLocal,
+      assertNodeAccess: (
+        memberId: string,
+        spaceId: string,
+        node: ExecutionNodeRecord,
+        action: 'history',
+      ) => {
+        active();
+        if (action !== 'history') throw new ExecutionRunError('run-authority-denied');
+        this.assertRunNodeAccess(host, memberId, spaceId, node);
+        active();
+        return undefined;
+      },
+      assertController: (memberId: string, node: ExecutionNodeRecord) => {
+        active();
+        this.assertRunController(memberId, node);
+        active();
+        return undefined;
+      },
+      assertWorkspace: (...args: Parameters<ExecutionRunAuthoritySource['assertWorkspace']>) => {
+        active();
+        synchronousRunAssertion(hostMethods.assertWorkspace.call(host, ...args));
+        active();
+        return undefined;
+      },
+      onChange: (listener: () => void) => {
+        active();
+        const stop = hostMethods.onChange.call(host, listener);
+        if (typeof stop !== 'function') {
+          void Promise.resolve(stop).catch(() => undefined);
+          throw new ExecutionRunError('run-authority-unavailable');
+        }
+        this.runChanges.add(listener);
+        let stopped = false;
+        return () => {
+          if (stopped) return;
+          stopped = true;
+          this.runChanges.delete(listener);
+          stop();
+        };
+      },
+      backend: () => {
+        active();
+        const value = backend.call(runtime);
+        active();
+        return value;
+      },
+      openEpoch: (input: Parameters<typeof openEpoch>[0]) => {
+        beforeEpoch(input);
+        return openEpoch.call(runtime, input);
+      },
+      assertEpoch: (...args: Parameters<typeof assertEpoch>) => {
+        active();
+        synchronousRunAssertion(assertEpoch.call(runtime, ...args));
+        active();
+        return undefined;
+      },
+      // Cleanup remains bound to the original native owner after revocation.
+      retireEpoch: (epoch: Parameters<typeof retireEpoch>[0]) => retireEpoch.call(runtime, epoch),
+      whenEpochSettled: (epoch: Parameters<typeof whenEpochSettled>[0]) =>
+        whenEpochSettled.call(runtime, epoch),
+      ...(openReadEpoch
+        ? {
+            openReadEpoch: (input: Parameters<typeof openReadEpoch>[0]) => {
+              beforeEpoch(input);
+              return openReadEpoch.call(runtime, input);
+            },
+          }
+        : {}),
+      ...(assertReadEpoch
+        ? {
+            assertReadEpoch: (epoch: Parameters<typeof assertReadEpoch>[0]) => {
+              active();
+              synchronousRunAssertion(assertReadEpoch.call(runtime, epoch));
+              active();
+              return undefined;
+            },
+          }
+        : {}),
+    });
   }
 
   startWorkflowExecution(
@@ -1629,8 +1856,22 @@ export class ExecutionService {
       node.nodeId !== parsed.nodeId
     )
       throw new ExecutionRunError('run-state-invalid');
-    readExecutionRunState(node);
-    return structuredClone(node);
+    const state = readExecutionRunState(node);
+    const copy = structuredClone(node);
+    if (state && this.isSealedRunData(node)) {
+      // The node/attempt/segment/resource data remain a new mutable copy. Only
+      // validated, deeply immutable historical composition leaves may be shared;
+      // the Run reader still checks every scope/config/attempt binding afresh.
+      const author = (
+        copy as ExecutionNodeRecord & {
+          nativeExecution?: { runs?: { composition?: FrozenExecutionRunComposition }[] };
+        }
+      ).nativeExecution;
+      for (const [index, run] of state.runs.entries())
+        if (run.composition && author?.runs?.[index])
+          author.runs[index]!.composition = readExecutionRunComposition(run.composition);
+    }
+    return copy;
   }
 
   readRunGlobal(): unknown {
@@ -5171,13 +5412,74 @@ export class ExecutionService {
     return { ok: true, value: structuredClone(decision) };
   }
 
-  private assertRunStoreCompatibility(): void {
+  private readRunStates(
+    nodes: readonly ExecutionNodeRecord[],
+    workspaceRuns?: WorkspaceApprovalRun[],
+  ): void {
+    const sources = [this.storage.listNodes, this.storage.readNode, this.storage.readGlobal];
+    if (!this.runValidationSources?.every((source, index) => source === sources[index])) {
+      this.validatedWorkspaceRuns = new WeakMap();
+      this.runValidationSources = sources;
+    }
+    for (const node of nodes) {
+      const cached = this.validatedWorkspaceRuns.get(node);
+      if (cached) {
+        if (workspaceRuns) workspaceRuns.push(...structuredClone(cached));
+        continue;
+      }
+      const state = readExecutionRunState(node);
+      const metadata: WorkspaceApprovalRun[] = [];
+      for (const run of state?.runs ?? []) {
+        if (run.workspace.kind !== 'local') continue;
+        metadata.push({
+          scope: executionRunScope(node, run),
+          workspace: run.workspace,
+          resources: run.resources,
+          ...(run.attempt.sessionId ? { nativeSessionId: run.attempt.sessionId } : {}),
+          ...(run.attempt.executorRunId ? { nativeAgentId: run.attempt.executorRunId } : {}),
+        });
+      }
+      // No authority or parsed RunState is retained. Only a completely sealed
+      // data graph can certify that this already-validated row is unchanged.
+      // Generic mutable and shallow-frozen sources are fully checked every time.
+      if (this.isSealedRunData(node)) this.validatedWorkspaceRuns.set(node, metadata);
+      if (workspaceRuns) workspaceRuns.push(...structuredClone(metadata));
+    }
+  }
+
+  private isSealedRunData(value: unknown): boolean {
+    if (
+      value === null ||
+      value === undefined ||
+      ['string', 'number', 'boolean'].includes(typeof value)
+    )
+      return true;
+    if (typeof value !== 'object' || !Object.isFrozen(value)) return false;
+    if (this.sealedRunData.has(value)) return true;
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null && prototype !== Array.prototype)
+      return false;
+    for (const key of Reflect.ownKeys(value)) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (
+        typeof key !== 'string' ||
+        !descriptor ||
+        !Object.hasOwn(descriptor, 'value') ||
+        !this.isSealedRunData(descriptor.value)
+      )
+        return false;
+    }
+    this.sealedRunData.add(value);
+    return true;
+  }
+
+  private assertRunStoreCompatibility(workspaceRuns?: WorkspaceApprovalRun[]): void {
     const nodes = this.storage.listNodes();
     assertExecutionRunStoreCompatibility(
       this.storage.readGlobal ? this.storage.readGlobal() : { schemaVersion: 1 },
       nodes,
     );
-    for (const node of nodes) readExecutionRunState(node);
+    this.readRunStates(nodes, workspaceRuns);
   }
 
   /** Every old writer passes here in the original queue. Never drop native metadata. */
@@ -5330,6 +5632,59 @@ export class ExecutionService {
             return published ? [published] : [];
           }),
         },
+      };
+    });
+  }
+
+  /**
+   * 已落盘的效率事实。未知历时保持空值。
+   * 可见性和收件箱相同：当前成员目录、任务参与关系，以及任务所属空间。
+   * 指定了无权任务时与不存在同一份 not-found。目录故障是 unavailable，不返回部分指标。
+   */
+  exportEfficiency(caller: ExecutionCaller, body: unknown) {
+    return this.enqueue(async () => {
+      const actor = this.listActor(caller, body);
+      if (!actor.ok) return actor;
+      const parsed = parseBody(efficiencyExportSchema, body);
+      if (!parsed.ok) return parsed;
+      if (!this.projectSpaceDirectory()) return fail('not-found');
+      const opened = this.checkListActor(caller, body, actor.value);
+      if (!opened.ok) return opened;
+      for (const task of this.workbench.readWorkbench().tasks) {
+        const space = await this.gateSpaceScoped(task.id, actor.value.spaceIds, undefined);
+        if (space !== 'missing' && !space.ok && space.error.code === 'unavailable') return space;
+      }
+      const requested = parsed.value.taskId;
+      const candidates =
+        requested !== undefined
+          ? [requested]
+          : [
+              ...new Set([
+                ...efficiencyTaskIds(),
+                ...this.storage
+                  .listNodes()
+                  .flatMap((record) => (intactNode(record) ? [record.taskId] : [])),
+              ]),
+            ];
+      const taskIds = new Set<string>();
+      for (const taskId of candidates) {
+        const visible = await this.efficiencyTaskVisible(
+          taskId,
+          actor.value.actorId,
+          actor.value.spaceIds,
+        );
+        if (typeof visible !== 'string') return visible;
+        const current = this.checkListActor(caller, body, actor.value);
+        if (!current.ok) return current;
+        if (visible === 'allow') taskIds.add(taskId);
+        else if (requested !== undefined) return fail('not-found');
+      }
+      const finished = this.checkListActor(caller, body, actor.value);
+      if (!finished.ok) return finished;
+      this.projectEfficiencyFacts(taskIds);
+      return {
+        ok: true as const,
+        value: efficiencyDocument({ format: parsed.value.format, taskIds: [...taskIds] }),
       };
     });
   }
@@ -6532,22 +6887,54 @@ export class ExecutionService {
         body,
         ballotSchema,
         (actorId, request, record) => {
+          const ballot = {
+            reviewerId: actorId,
+            roundId: request.roundId,
+            artifactVersionId: request.artifactVersionId,
+            action: request.action,
+            ...(request.comment === undefined ? {} : { comment: request.comment }),
+            ...(request.unresolvedCommentIds === undefined
+              ? {}
+              : { unresolvedCommentIds: request.unresolvedCommentIds }),
+          };
+          if (record.receipts.some((item) => item.idempotencyKey === request.idempotencyKey)) {
+            // Legacy receipts predate the generated version-comment citation. Only a full
+            // replay of the original request may return before the current binding path.
+            const replay = castBallot({
+              record,
+              actorId,
+              idempotencyKey: request.idempotencyKey,
+              expectedVersion: request.expectedVersion,
+              ballot,
+              comments: record.comments,
+              receiptComments: [],
+            });
+            if (replay.ok && replay.disposition === 'replayed')
+              return { result: replay, settle: true };
+          }
+          const bound = bindVersionedReviewComment({
+            existing: record.comments,
+            id: reviewCommentId(request.idempotencyKey),
+            artifactVersionId: request.artifactVersionId,
+            action: request.action,
+            authorId: actorId,
+            ...(request.comment === undefined ? {} : { comment: request.comment }),
+          });
+          const unresolvedCommentIds = withVersionCitation(
+            request.unresolvedCommentIds,
+            bound.citedId,
+          );
           const result = castBallot({
             record,
             actorId,
             idempotencyKey: request.idempotencyKey,
             expectedVersion: request.expectedVersion,
             ballot: {
-              reviewerId: actorId,
-              roundId: request.roundId,
-              artifactVersionId: request.artifactVersionId,
-              action: request.action,
-              ...(request.comment === undefined ? {} : { comment: request.comment }),
-              ...(request.unresolvedCommentIds === undefined
-                ? {}
-                : { unresolvedCommentIds: request.unresolvedCommentIds }),
+              ...ballot,
+              ...(unresolvedCommentIds === undefined ? {} : { unresolvedCommentIds }),
             },
-            comments: record.comments,
+            comments: bound.comments,
+            receiptComments: bound.owned === undefined ? [] : [bound.owned],
           });
           return { result, settle: true };
         },
@@ -6709,12 +7096,23 @@ export class ExecutionService {
           if (current.fingerprint !== selection.fingerprint)
             throw new WorkbenchError('conflict', '当前计划已变化，请刷新。');
         };
-        const value = taskProgressProjection(selection, {
-          global: this.storage.readGlobal ? this.storage.readGlobal() : { schemaVersion: 1 },
-          readPlan: (target) =>
-            this.storage.readPlan(planKey(target.taskId, target.planId, target.revision)),
-          readNode: (target) => this.storage.readNode(nodeRecordKey(target)),
-        });
+        const value = taskProgressProjection(
+          selection,
+          {
+            global: this.storage.readGlobal ? this.storage.readGlobal() : { schemaVersion: 1 },
+            readPlan: (target) =>
+              this.storage.readPlan(planKey(target.taskId, target.planId, target.revision)),
+            readNode: (target) => this.storage.readNode(nodeRecordKey(target)),
+            workflowLive: (target) =>
+              this.workflowIntents?.observesRunning({
+                spaceId: query.spaceId,
+                taskId: target.taskId,
+                planId: target.planId,
+                revision: target.revision,
+              }) ?? false,
+          },
+          { detail: query.detail === 'nodes' },
+        );
         check();
         return { ok: true, value };
       });
@@ -7863,7 +8261,11 @@ export class ExecutionService {
     if (!Array.isArray(records)) return records;
     const refreshed = this.checkListActor(caller, body, actor.value);
     if (!refreshed.ok) return refreshed;
-    const items = executionInbox({ actorId: actor.value.actorId, records });
+    const derived = executionInbox({ actorId: actor.value.actorId, records });
+    const items =
+      parsed.value?.detail === INBOX_WAITING_DETAIL
+        ? derived
+        : derived.filter((item) => item.action !== 'wait');
     const nodes = records
       .filter((record) =>
         items.some((item) => item.nodeId === record.nodeId && item.taskId === record.taskId),
@@ -7964,6 +8366,140 @@ export class ExecutionService {
     return { ok: true, value: false };
   }
 
+  /**
+   * 参与关系不够。空间门禁把无权、跨空间和找不到的任务收成同一份 omit。
+   * 目录故障原样返回，调用方不得把它当成空指标。
+   */
+  private async efficiencyTaskVisible(
+    taskId: string,
+    actorId: string,
+    spaceIds: readonly string[],
+  ): Promise<'allow' | 'omit' | { readonly ok: false; readonly error: ExecutionFailure }> {
+    if (planMembership(this.workbench.readWorkbench(), taskId, actorId) !== 'allowed') {
+      return 'omit';
+    }
+    const space = await this.gateSpaceScoped(taskId, spaceIds, undefined);
+    if (space === 'missing') return 'omit';
+    if (!space.ok) return space.error.code === 'unavailable' ? space : 'omit';
+    return 'allow';
+  }
+
+  /**
+   * 只记这次已经写进存储的新事件。写盘失败的那次不会留下开始时间。
+   * 不回读任务里的旧节点。同 key 再记一次会被效率日志丢掉。
+   * 返回本次新增终态事件的时间，供任务结束沿用落盘戳而不是另扫历史。
+   */
+  private rememberCommittedEfficiency(
+    committed: ExecutionNodeRecord,
+    priorEventCount: number,
+  ): string | undefined {
+    if (!intactNode(committed)) return undefined;
+    const events = Array.isArray(committed.events) ? committed.events : [];
+    const from = Math.min(Math.max(priorEventCount, 0), events.length);
+    let endedAt: string | undefined;
+    for (const event of events.slice(from)) {
+      const status = event.payload?.status;
+      const version = event.payload?.version;
+      if (typeof status !== 'string' || typeof version !== 'number') continue;
+      noteExecutionFact({
+        taskId: committed.taskId,
+        planId: committed.planId,
+        revision: committed.revision,
+        nodeId: committed.nodeId,
+        assigneeKind: committed.handoff.assignee.kind,
+        eventType: event.type,
+        occurredAt: event.occurredAt,
+        status,
+        version,
+      });
+      if (event.type === 'node-started') {
+        noteTaskStarted({
+          taskId: committed.taskId,
+          planId: committed.planId,
+          revision: committed.revision,
+          occurredAt: event.occurredAt,
+        });
+      }
+      if (
+        (status === 'completed' || status === 'failed' || status === 'cancelled') &&
+        (endedAt === undefined || event.occurredAt > endedAt)
+      ) {
+        endedAt = event.occurredAt;
+      }
+    }
+    return endedAt;
+  }
+
+  private noteEfficiencyPlan(
+    taskId: string,
+    planId: string,
+    revision: number,
+    occurredAt?: string,
+  ): void {
+    notePlanIfTerminal(
+      this.storage
+        .listNodes()
+        .filter((record) => intactNode(record) && samePlan(record, taskId, planId, revision)),
+      occurredAt,
+    );
+  }
+
+  /** 导出时用已经落盘的节点戳补齐效率日志。写入路径不走这里。重复 sourceId 会被忽略。 */
+  private projectEfficiencyFacts(taskIds: ReadonlySet<string>): void {
+    const groups = new Map<
+      string,
+      { nodes: EfficiencyPlanNode[]; started?: string; ended?: string }
+    >();
+    for (const record of this.storage.listNodes()) {
+      if (!intactNode(record) || !taskIds.has(record.taskId)) continue;
+      const key = `${record.taskId}\0${record.planId}\0${record.revision}`;
+      const group = groups.get(key) ?? { nodes: [] };
+      group.nodes.push(record);
+      for (const event of Array.isArray(record.events) ? record.events : []) {
+        const status = event.payload?.status;
+        const version = event.payload?.version;
+        if (typeof status !== 'string' || typeof version !== 'number') continue;
+        noteExecutionFact({
+          taskId: record.taskId,
+          planId: record.planId,
+          revision: record.revision,
+          nodeId: record.nodeId,
+          assigneeKind: record.handoff.assignee.kind,
+          eventType: event.type,
+          occurredAt: event.occurredAt,
+          status,
+          version,
+        });
+        if (
+          event.type === 'node-started' &&
+          (group.started === undefined || event.occurredAt < group.started)
+        ) {
+          group.started = event.occurredAt;
+        }
+        if (
+          (status === 'completed' || status === 'failed' || status === 'cancelled') &&
+          (group.ended === undefined || event.occurredAt > group.ended)
+        ) {
+          group.ended = event.occurredAt;
+        }
+      }
+      groups.set(key, group);
+    }
+    for (const group of groups.values()) {
+      const head = group.nodes[0];
+      if (!head) continue;
+      if (group.started) {
+        noteTaskStarted({
+          taskId: head.taskId,
+          planId: head.planId,
+          revision: head.revision,
+          occurredAt: group.started,
+        });
+      }
+      if (group.ended) notePlanIfTerminal(group.nodes, group.ended);
+    }
+  }
+
   private async startPlanNow(caller: ExecutionCaller, body: unknown, beforeWrite?: () => void) {
     const actor = this.actor(caller, body);
     if (!actor.ok) return actor;
@@ -8032,12 +8568,14 @@ export class ExecutionService {
     if (!started.ok) return fail(started.code);
     for (const record of started.records) {
       const key = nodeRecordKey(record);
-      if (this.storage.readNode(key) === record) continue;
+      const existing = this.storage.readNode(key);
+      if (existing === record) continue;
       const stamped = withExecutionEvent(record, 'node-started', actor.value.actorId);
       if (!stamped) return fail('unavailable');
       beforeWrite?.();
       const stored = await this.persist(() => this.writeNode(stamped));
       if (!stored.ok) return stored;
+      this.rememberCommittedEfficiency(stamped, eventCount(existing));
     }
     const compensated = await this.unlockCompleted(taskId, planId, revision);
     if (!compensated.ok) return compensated;
@@ -8049,6 +8587,7 @@ export class ExecutionService {
     beforeWrite?.();
     const stored = await this.persist(() => this.storage.writePlan(key, receipt));
     if (!stored.ok) return stored;
+    this.noteEfficiencyPlan(taskId, planId, revision);
     return {
       ok: true as const,
       value: {
@@ -8145,6 +8684,8 @@ export class ExecutionService {
       }
       const stored = await this.persist(() => this.writeNode(record));
       if (!stored.ok) return stored;
+      const endedAt = this.rememberCommittedEfficiency(record, eventCount(current));
+      this.noteEfficiencyPlan(current.taskId, current.planId, current.revision, endedAt);
     }
     if (record.command.status === 'completed') {
       const unlocked = await this.unlockFrom(record);
@@ -8210,6 +8751,10 @@ export class ExecutionService {
       if (!stamped) return fail('unavailable');
       const stored = await this.persist(() => this.writeNode(stamped));
       if (!stored.ok) return stored;
+      const endedAt = this.rememberCommittedEfficiency(stamped, eventCount(latest));
+      if (endedAt !== undefined) {
+        this.noteEfficiencyPlan(completed.taskId, completed.planId, completed.revision, endedAt);
+      }
       unlocked += 1;
     }
     return { ok: true, value: unlocked };

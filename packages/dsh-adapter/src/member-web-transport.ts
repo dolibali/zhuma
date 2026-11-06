@@ -6,7 +6,7 @@ import { pipeline } from 'node:stream/promises';
 import { resolveMember } from './member-session.js';
 
 const enabled = new WeakSet<object>();
-const productPath = /^\/api\/zhuma-(?:member|exec|knowledge)\/[a-z][a-z-]*$/u;
+const productPath = /^\/api\/zhuma-(?:member|exec|knowledge|efficiency)\/[a-z][a-z-]*$/u;
 
 async function* chunks(body: ReadableStream<Uint8Array>, signal: AbortSignal) {
   const reader = body.getReader();

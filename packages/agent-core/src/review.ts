@@ -41,6 +41,9 @@ export interface CitedComment {
   readonly versionId?: string;
   /** When set, must name that same artifact version. */
   readonly targetId?: string;
+  /** Reviewer prose stored with the version. Older rows may omit it. */
+  readonly body?: string;
+  readonly authorId?: string;
 }
 
 export type ReviewEvaluation =

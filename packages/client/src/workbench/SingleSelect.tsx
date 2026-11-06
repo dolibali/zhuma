@@ -1,4 +1,11 @@
-import { useRef, useState, type ReactNode, type AriaAttributes, type CSSProperties } from 'react';
+import {
+  useRef,
+  useState,
+  type ReactNode,
+  type AriaAttributes,
+  type CSSProperties,
+  type ComponentProps,
+} from 'react';
 import { Select } from '@base-ui/react/select';
 import { Combobox } from '@base-ui/react/combobox';
 import { ControlIcon, CheckIcon } from './ControlIcon.js';
@@ -48,14 +55,18 @@ export function SingleSelect({
   const searchable = options.length > 8;
   const finalFocus = () => closeReason.current !== 'focus-out';
   const caption = options.find((option) => option.value === value)?.label ?? '请选择';
+  // Native `title` must land on the real <button>. Base UI Trigger merges
+  // floating-ui props; an explicit render keeps the tip for hover/focus.
+  const tip = title ?? caption;
   const triggerProps = {
     id,
     ref: trigger,
     'aria-label': label,
     'aria-invalid': invalid,
     'aria-describedby': descriptionId,
-    title: title ?? caption,
+    title: tip,
     className: `zm-single-select ${className}`,
+    render: (props: ComponentProps<'button'>) => <button type="button" {...props} title={tip} />,
   };
   const positioning = {
     side: 'bottom' as const,

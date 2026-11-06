@@ -32,6 +32,10 @@ import {
 } from './host-run-reader.js';
 import { observeHostNativeRun, type HostNativeClaim } from './host-run-observation.js';
 import type { HostRunOperations } from './host-run-http.js';
+import {
+  createHostNativeConversation,
+  type PassiveSessionHistory,
+} from './host-native-conversation.js';
 import type {
   ExecutionService,
   ExecutionResult,
@@ -74,6 +78,10 @@ import { registerNativeAcceptedInputTool } from './native-work-session-input-too
 import { registerNativeAcceptedFileTool } from './native-work-session-files-tool.js';
 import type { NativeRunAcceptedFiles } from './native-work-session-files-contract.js';
 import { NativeWorkError, type NativeWorkScope } from './native-work-session-contract.js';
+import {
+  createHostRunStartupDiagnostic,
+  emitHostRunStartupFailure,
+} from './host-run-startup-diagnostics.js';
 import { nativeScopeKey } from './native-work-session-record.js';
 import { createHostRunWorkspaces, type HostLocalExecutionConfig } from './host-run-workspaces.js';
 import { openHostWorkspaceApprovals } from './host-workspace-approvals.js';
@@ -174,6 +182,7 @@ export async function openHostRunOwner(
   };
   const lifetime = new AbortController();
   const owned = new Map<string, OwnedRun>();
+  const startup = new WeakMap<OwnedRun, ReturnType<typeof createHostRunStartupDiagnostic>>();
   const admissions = new Map<string, WorkflowAdmission>();
   const absentRetirements = new Map<string, HostAbsentRetirement>();
   const commands = new Set<Promise<unknown>>();
@@ -292,6 +301,9 @@ export async function openHostRunOwner(
     ctx,
     {
       async workingDirectory(binding, grant) {
+        const state = owned.get(nativeScopeKey(binding.scope));
+        const diagnostic = state && startup.get(state);
+        diagnostic?.at('directory');
         if (native.service.isReviewPurpose(grant)) {
           native.service.reviewContext(grant);
           return { kind: 'text-only' };
@@ -304,13 +316,19 @@ export async function openHostRunOwner(
           canonicalPayload(executionRunScope(node!, run)) !== canonicalPayload(binding.scope)
         )
           throw new ExecutionRunError('run-authority-denied');
-        if (run.workspace.kind === 'text-only') return { kind: 'text-only' };
-        return workspaces.directory(binding, grant);
+        const directory =
+          run.workspace.kind === 'text-only'
+            ? { kind: 'text-only' as const }
+            : await workspaces.directory(binding, grant);
+        diagnostic?.at('directory-ready');
+        return directory;
       },
       async compose(agentCtx, binding, grant) {
         if (native.service.isReviewPurpose(grant)) return reviews.compose(agentCtx, binding, grant);
         authorities.assertGrant(grant, 'send');
         const state = owned.get(nativeScopeKey(grant.scope));
+        const diagnostic = state && startup.get(state);
+        diagnostic?.at('composition');
         if (!state || state.opened?.grant !== grant)
           throw new ExecutionRunError('run-authority-denied');
         assertAdmission(state);
@@ -319,8 +337,11 @@ export async function openHostRunOwner(
         assertExecutionRunCompositionBinding(snapshot, binding.scope, projected);
         if (canonicalPayload(binding.selection) !== canonicalPayload(projected.selection))
           throw new NativeWorkError('configuration-mismatch');
-        if (snapshot.payload.tools.kind === 'local-tools')
+        if (snapshot.payload.tools.kind === 'local-tools') {
+          diagnostic?.at('workspace-binding');
           workspaces.bindSession(agentCtx, binding, grant);
+        }
+        diagnostic?.at('model');
         configuration.assertModel(snapshot);
         let baseTools: readonly string[] = [];
         if (
@@ -328,6 +349,7 @@ export async function openHostRunOwner(
           (snapshot.payload.tools.kind === 'local-tools' &&
             snapshot.payload.tools.acceptedInputReader)
         ) {
+          diagnostic?.at('accepted-inputs');
           const registered = registerNativeAcceptedInputTool(
             agentCtx,
             binding,
@@ -355,6 +377,7 @@ export async function openHostRunOwner(
           baseTools = registered.toolAllowlist;
         }
         if (snapshot.schemaVersion === 2 && snapshot.payload.acceptedFileReader) {
+          diagnostic?.at('accepted-files');
           resultProtocol();
           if (!acceptedFiles) throw new NativeWorkError('configuration-mismatch');
           const registered = registerNativeAcceptedFileTool(
@@ -368,6 +391,7 @@ export async function openHostRunOwner(
           baseTools = [...baseTools, ...registered.toolAllowlist];
         }
         if (snapshot.payload.tools.kind === 'local-tools') {
+          diagnostic?.at('local-tools');
           const local = workspaces.resolve(binding, grant);
           const adoptedLocal = await adoptNativeRunLocalTools(agentCtx, binding, grant, {
             composition: snapshot,
@@ -385,12 +409,14 @@ export async function openHostRunOwner(
           ];
         }
         if (snapshot.schemaVersion === 2 && snapshot.payload.outputFilePublisherTool) {
+          diagnostic?.at('output-files');
           resultProtocol();
           if (!outputs) throw new NativeWorkError('configuration-mismatch');
           const registered = outputs.registerNativeOutputFileTool(agentCtx, binding, grant);
           baseTools = [...baseTools, ...registered.toolAllowlist];
         }
         if (snapshot.schemaVersion === 2 && snapshot.payload.resultIntentTool) {
+          diagnostic?.at('result-tool');
           const protocol = frozenHostResultProtocol(snapshot);
           if (
             !results ||
@@ -402,8 +428,10 @@ export async function openHostRunOwner(
           const registered = results.registerNativeResultTool(agentCtx, binding, grant);
           baseTools = [...baseTools, ...registered.toolAllowlist];
         }
+        diagnostic?.at('resource-retirement');
         state.stopResources?.();
         await state.resourceAdoption?.dispose();
+        diagnostic?.at('resource-preparation');
         const producer = await resources.producer(
           state.request,
           snapshot,
@@ -412,6 +440,7 @@ export async function openHostRunOwner(
           authorities,
         );
         assertAdmission(state);
+        diagnostic?.at('resource-adoption');
         const adopted = await registerExecutionRunResources(
           agentCtx,
           snapshot,
@@ -422,6 +451,7 @@ export async function openHostRunOwner(
         state.resourceAdoption = adopted;
         await adopted.ready;
         assertAdmission(state);
+        diagnostic?.at('tool-manifest');
         if (
           canonicalPayload([...baseTools, ...adopted.toolAllowlist]) !==
           canonicalPayload(snapshot.payload.toolAllowlist)
@@ -433,6 +463,7 @@ export async function openHostRunOwner(
         adopted.signal.addEventListener('abort', revokeResources, { once: true });
         state.stopResources = () => adopted.signal.removeEventListener('abort', revokeResources);
         state.observation?.close();
+        diagnostic?.at('observation');
         state.observation = observeHostNativeRun(agentCtx, binding, grant);
         state.stopObservation = state.observation.onClaim((claim) => {
           void accept(state, claim).catch(() => undefined);
@@ -441,6 +472,7 @@ export async function openHostRunOwner(
           if (!fenced) scheduleResultOrRetirement(state);
         });
         // Use the stored composition exactly; registration must not append a second catalog.
+        diagnostic?.at('composition-ready');
         return { context: snapshot.payload.context, toolAllowlist: snapshot.payload.toolAllowlist };
       },
     },
@@ -552,6 +584,19 @@ export async function openHostRunOwner(
     readSendCapabilities,
     (scope) => owned.get(nativeScopeKey(scope))?.resultPending,
   );
+  const conversation = createHostNativeConversation({
+    authorities,
+    native: native.service,
+    history: () => {
+      const history = ctx.get('sessionController') as unknown as PassiveSessionHistory;
+      if (typeof history?.followReadOnly !== 'function') throw new NativeWorkError('unavailable');
+      const identity: unknown = Reflect.get(history, symbols.original);
+      if (!identity || typeof identity !== 'object') throw new NativeWorkError('unavailable');
+      return { source: history, identity };
+    },
+    signal: lifetime.signal,
+    assertCurrent: active,
+  });
 
   async function readSendCapabilities(
     request: MemberRequest,
@@ -1043,6 +1088,10 @@ export async function openHostRunOwner(
     previousScope?: NativeWorkScope,
   ): Promise<'received' | 'unknown'> {
     assertNativeDrive();
+    const diagnostic = createHostRunStartupDiagnostic(state.scope, (failure) =>
+      emitHostRunStartupFailure(ctx, failure),
+    );
+    startup.set(state, diagnostic);
     try {
       assertAdmission(state);
       let absent = previousScope && absentRetirements.get(nativeScopeKey(previousScope));
@@ -1110,12 +1159,14 @@ export async function openHostRunOwner(
       const first = executionRunCompositionRequest(snapshot);
       const { run } = current(state);
       assertAdmission(state);
+      diagnostic.at('native-send');
       const receipt = await native.service.send(opened.grant, {
         requestId: run.attempt.idempotencyKey,
         text: first.firstMessage.text,
         mode: first.firstMessage.mode,
         selection: first.selection,
       });
+      diagnostic.at('receipt');
       const observation = native.service.open(opened.grant);
       if (!observation || receipt.fingerprint !== first.inputFingerprint)
         throw new NativeWorkError('delivery-unknown');
@@ -1133,7 +1184,8 @@ export async function openHostRunOwner(
       const claim = state.observation?.claimFor(receipt.messageId);
       if (claim) await accept(state, claim);
       return 'received';
-    } catch {
+    } catch (error) {
+      diagnostic.failed(error);
       // An error may follow native admission. It never proves absence or releases a claim.
       if (state.opened && !state.opened.grant.signal.aborted) {
         try {
@@ -1144,6 +1196,8 @@ export async function openHostRunOwner(
       }
       if (!fenced) void retire(state).catch(() => undefined);
       return 'unknown';
+    } finally {
+      if (startup.get(state) === diagnostic) startup.delete(state);
     }
   }
   function command<T>(operation: () => Promise<T>): Promise<T> {
@@ -1499,6 +1553,7 @@ export async function openHostRunOwner(
 
   return {
     lookupNativeSession: native.lookupNativeSession,
+    conversation,
     canSwitchBackend() {
       if (
         fenced ||

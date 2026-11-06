@@ -60,6 +60,7 @@ export function nativeSessionCommandIds(
   const request = record(args.request);
   const address = record(request?.address);
   const values = [
+    ...(method === 'commands/execute' ? [args.agentId] : []),
     ...(method.startsWith('dshAcp/')
       ? (acpSessionArgs[method.slice(7)] ?? []).map((name) => args[name])
       : []),
@@ -96,6 +97,8 @@ export function openHostSessionAdmission(
       signal.throwIfAborted();
       const source = current();
       if (closed || !active || !source) return false;
+      if (method === 'commands/execute' && (typeof args.agentId !== 'string' || !args.agentId))
+        return false;
       if (method.startsWith('dshAcp/')) {
         const name = method.slice(7);
         if (!acpCatalogMethods.has(name)) {

@@ -27,6 +27,8 @@ export type {
   TaskProgressTarget,
   TaskProgressQuery,
   TaskProgressResources,
+  TaskProgressNodeState,
+  TaskProgressWorkflow,
   TaskProgressRow,
   TaskProgressValue,
   TaskProgressUnknownReason,
@@ -172,6 +174,8 @@ export interface StartPlanRequest {
 export interface InboxRequest {
   /** Chosen space constraint; a filter the member must currently hold, never a grant. */
   readonly spaceId?: string | undefined;
+  /** `waiting` includes non-executable wait rows. Omitted requests keep the original actions. */
+  readonly detail?: 'waiting' | undefined;
 }
 /** Read-only discovery of confirmed plans the member may explicitly start. */
 export interface StartableRequest {

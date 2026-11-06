@@ -185,6 +185,21 @@ export function MultiSelect({
   const matching = options.filter((option) =>
     option.name.toLowerCase().includes(search.trim().toLowerCase()),
   );
+  const matchingIds = matching.map((option) => option.id);
+  const selectMatching = () => {
+    const next = new Set(selected);
+    for (const id of matchingIds) next.add(id);
+    change([...next]);
+  };
+  const invertMatching = () => {
+    const selectedSet = new Set(selected);
+    const matchingSet = new Set(matchingIds);
+    const next = selected.filter((id) => !matchingSet.has(id));
+    for (const id of matchingIds) {
+      if (!selectedSet.has(id)) next.push(id);
+    }
+    change(next);
+  };
   return (
     <details className="zm-multiselect">
       <summary>
@@ -199,6 +214,34 @@ export function MultiSelect({
             value={search}
             onChange={(event) => setSearch(event.target.value)}
           />
+        )}
+        {!!options.length && (
+          <div className="zm-choice-toolbar" role="group" aria-label={`${label}批量选择`}>
+            <button
+              type="button"
+              className="zm-quiet"
+              disabled={!matching.length}
+              onClick={selectMatching}
+            >
+              全选
+            </button>
+            <button
+              type="button"
+              className="zm-quiet"
+              disabled={!matching.length}
+              onClick={invertMatching}
+            >
+              反选
+            </button>
+            <button
+              type="button"
+              className="zm-quiet"
+              disabled={!selected.length}
+              onClick={() => change([])}
+            >
+              清空
+            </button>
+          </div>
         )}
         <div className="zm-choice-options">
           {matching.map((option) => (
@@ -379,15 +422,31 @@ export function ExpandableText({
 export function Field({
   label,
   children,
+  hint,
 }: {
   label: string;
-  children: ReactElement<{ id?: string }>;
+  children: ReactElement<{ id?: string; 'aria-describedby'?: string }>;
+  hint?: string;
 }) {
   const id = useId();
   return (
     <div className="zm-field">
       <label htmlFor={id}>{label}</label>
-      {cloneElement(children, { id })}
+      {cloneElement(children, {
+        id,
+        ...(hint
+          ? {
+              'aria-describedby': [children.props['aria-describedby'], `${id}-hint`]
+                .filter(Boolean)
+                .join(' '),
+            }
+          : {}),
+      })}
+      {hint && (
+        <small id={`${id}-hint`} className="zm-field-hint">
+          {hint}
+        </small>
+      )}
     </div>
   );
 }

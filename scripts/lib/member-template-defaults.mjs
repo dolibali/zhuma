@@ -6,6 +6,7 @@ export async function publicMemberTemplates(
 ) {
   const catalog = JSON.parse(await readFile(new URL('catalog.json', base), 'utf8'));
   const files = [
+    'requirements-to-code.json',
     'requirements-to-test.json',
     'design-to-plan.json',
     'review-fix-verify.json',
@@ -24,5 +25,5 @@ export async function publicMemberTemplates(
       available: true,
     });
   }
-  return { sourceCommit: '133276e2014bf1bcbd8410bab7bb339c929de46d', assets };
+  return { sourceCommit: '583472338143c5d02f94ec97e0d9eb6dc8dfa76e', assets };
 }

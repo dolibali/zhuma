@@ -1,4 +1,6 @@
 import type { NodeStatus } from '@zhuma/agent-core';
+import { Spinner } from '../workbench/Button.js';
+import { focusNodes } from './progress-focus.js';
 import type { TaskProgressState } from './useTaskProgress.js';
 import type { TaskProgressRow } from './task-progress.js';
 
@@ -49,15 +51,34 @@ export function taskProgressFacts(row: TaskProgressRow): string[] {
   return facts;
 }
 
+function executingLabel(
+  row: TaskProgressRow,
+  titles?: ReadonlyMap<string, string>,
+): string | undefined {
+  const focus = focusNodes(row);
+  if (!focus.length || row.facts !== 'present') return;
+  const names = focus.flatMap((node) => {
+    const title = titles?.get(node.nodeId)?.trim();
+    return title ? [title] : [];
+  });
+  if (names.length > 1 || (names.length === 1 && focus.length > 1))
+    return `执行中 · ${names[0]} 等 ${focus.length} 个`;
+  if (names.length === 1) return `执行中 · ${names[0]}`;
+  const drivingReady = focus.every((node) => node.status === 'ready' && node.authorHeld === 0);
+  return drivingReady ? `执行中 ${focus.length}` : undefined;
+}
+
 /** Shared task/project/detail projection; allocation and runtime are separate facts. */
 export function TaskProgressSummary({
   progress,
   confirmed = false,
   compact = false,
+  nodeTitles,
 }: {
   progress?: TaskProgressState | undefined;
   confirmed?: boolean;
   compact?: boolean;
+  nodeTitles?: ReadonlyMap<string, string> | undefined;
 }) {
   if (!progress) return confirmed ? <span className="zm-muted">进度尚未接通</span> : null;
   if (progress.state === 'loading') return <span className="zm-muted">正在读取进度…</span>;
@@ -68,13 +89,28 @@ export function TaskProgressSummary({
       </span>
     );
   const row = progress.row;
+  const executing = row.facts === 'unknown' ? undefined : executingLabel(row, nodeTitles);
+  const drivingReady =
+    executing !== undefined &&
+    row.facts === 'present' &&
+    focusNodes(row).every((node) => node.status === 'ready' && node.authorHeld === 0);
+  const facts = (compact && row.facts === 'unknown' ? ['进度未知'] : taskProgressFacts(row)).filter(
+    (fact) =>
+      !(executing && fact.startsWith('执行中 ')) && !(drivingReady && fact.startsWith('待处理 ')),
+  );
   return (
     <span
       className={`zm-task-progress${compact ? ' zm-task-progress-compact' : ''}`}
       aria-label="当前确认计划进度"
-      title={row.facts === 'unknown' ? unknownLabels[row.reason] : undefined}
+      title={row.facts === 'unknown' ? unknownLabels[row.reason] : executing}
     >
-      {(compact && row.facts === 'unknown' ? ['进度未知'] : taskProgressFacts(row)).map((fact) => (
+      {executing && (
+        <span className="zm-task-progress-running" title={executing}>
+          <Spinner />
+          <b>{executing}</b>
+        </span>
+      )}
+      {facts.map((fact) => (
         <span key={fact}>{fact}</span>
       ))}
       {!compact && row.facts !== 'unknown' && (

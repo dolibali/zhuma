@@ -92,7 +92,13 @@ test('member native private HTTP: original SDK owner required before any body re
   const reply = await h.routes.get('/api/zhuma-member-native/begin').fetch(request);
   assert.equal(reply.status, 403);
   assert.equal(h.calls(), 0);
-  assert.equal(h.routes.size, 21);
+  assert.equal(h.routes.size, 23);
+  for (const endpoint of ['session-page', 'session-follow'])
+    assert.equal(
+      (await h.routes.get(`/api/zhuma-member-native/${endpoint}`).fetch(h.request(endpoint)))
+        .status,
+      403,
+    );
   for (const endpoint of [
     'review-options',
     'review-start',

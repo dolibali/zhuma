@@ -187,8 +187,8 @@ test('actual D authority + E catalog: published aliases are not duplicate legacy
   const before = await h.bytes(),
     state = canonicalPayload(h.wb.snapshot());
   const result = await h.view.list(h.requests.bob, { spaceId: 'north', limit: 100 }, active());
-  assert.deepEqual(result.counts, { all: 7, material: 2, template: 4, expert: 0, skill: 1 });
-  assert.equal(result.items.filter((row) => row.source === 'builtin').length, 4);
+  assert.deepEqual(result.counts, { all: 8, material: 2, template: 5, expert: 0, skill: 1 });
+  assert.equal(result.items.filter((row) => row.source === 'builtin').length, 5);
   assert.equal(
     result.items.find((row) => row.source === 'asset' && row.asset.kind === 'skill').asset.versions
       .length,
@@ -196,7 +196,7 @@ test('actual D authority + E catalog: published aliases are not duplicate legacy
   );
   assert.equal(
     (await h.owner.sources(h.requests.bob, { spaceId: 'north' }, active())).items.length,
-    4,
+    5,
   );
   assert.equal(
     (await h.owner.reference(h.requests.bob, first.reference, active())).definition.content,
@@ -219,7 +219,7 @@ test('actual D authority + E catalog: published aliases are not duplicate legacy
   assert.equal(canonicalPayload(h.wb.snapshot()), state);
   assert.deepEqual(await h.bytes(), before);
   console.log(
-    'actual catalog/material/source references: 7 logical rows, old publication retained, readonly full fixture bytes unchanged',
+    'actual catalog/material/source references: 8 logical rows, old publication retained, readonly full fixture bytes unchanged',
   );
 });
 

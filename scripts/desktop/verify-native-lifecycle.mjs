@@ -53,9 +53,12 @@ if (
     'skill-loader',
     'mcp-close',
     'native-stream',
+    'native-windows',
   ].includes(values.phase)
 )
   throw new Error('Unknown native verification phase.');
+if (values.phase === 'native-windows' && process.platform !== 'win32')
+  throw new Error('native-windows requires an actual Windows host.');
 // Always build the actual artifact before copying it into the isolated SDK.
 // The Host test imports these emitted bytes, not a fixture source re-bundle.
 const emitted = spawnSync(process.execPath, [join(root, 'scripts/workbench/build.mjs')], {
@@ -509,6 +512,12 @@ void publicContract;
       join(root, `packages/dsh-adapter/tests/${name}.spec.ts`),
       join(stage, `packages/core/agent-loop/tests/zhuma-${name}.spec.ts`),
     );
+  const nativeWindowsSpec =
+    'packages/core/agent-loop/tests/zhuma-native-work-session-windows.spec.ts';
+  copyFileSync(
+    join(root, 'packages/dsh-adapter/tests/native-work-session-windows.spec.ts'),
+    join(stage, nativeWindowsSpec),
+  );
   copyFileSync(
     join(root, '.build/workbench/index.js'),
     join(stage, 'packages/core/agent-loop/tests/zhuma-host-run-plugin.js'),
@@ -683,6 +692,8 @@ void publicContract;
       'ZHUMA_NATIVE_WORK_RETENTION_MODE',
       'ZHUMA_NATIVE_STREAM_ROOT',
       'ZHUMA_NATIVE_STREAM_MODE',
+      'ZHUMA_NATIVE_WINDOWS_PHASE',
+      'ZHUMA_NATIVE_WINDOWS_ROOT',
       'ZHUMA_RUN_RECOVERY_ROOT',
       'ZHUMA_RUN_RECOVERY_MODE',
       'ZHUMA_HOST_COLD_ROOT',
@@ -835,6 +846,25 @@ void publicContract;
           ZHUMA_NATIVE_STREAM_ROOT: inboxData,
           ZHUMA_NATIVE_STREAM_MODE: mode,
         },
+      );
+  }
+  if (
+    values.phase === 'native-windows' ||
+    (values.phase === 'all' && process.platform === 'win32')
+  ) {
+    verify('native-windows', [nativeWindowsSpec], 2);
+    const windowsData = join(evidence, 'native-windows-data');
+    mkdirSync(windowsData, { mode: 0o700 });
+    for (const mode of ['write', 'read'])
+      verify(
+        `native-windows-process-${mode}`,
+        [
+          nativeWindowsSpec,
+          '--testNamePattern=^Windows independent processes preserve the original workspace/session/inbox$',
+        ],
+        1,
+        { ZHUMA_NATIVE_WINDOWS_PHASE: mode, ZHUMA_NATIVE_WINDOWS_ROOT: windowsData },
+        2,
       );
   }
   if (values.phase === 'host-workflow-file')
@@ -996,7 +1026,7 @@ void publicContract;
       {},
       8,
     );
-  else if (values.phase !== 'host-workflow-cold')
+  else if (values.phase !== 'host-workflow-cold' && values.phase !== 'native-windows')
     verify('host-run', ['packages/core/agent-loop/tests/zhuma-host-run-native.spec.ts'], 14);
   const coldRecoveries = [];
   if (
@@ -1112,6 +1142,9 @@ void publicContract;
         nativeFixtureSha256: hash(nativeFixture),
         nativeInputFixtureSha256: hash(nativeInputFixture),
         nativeMigrationFixtureSha256: hash(nativeMigrationFixture),
+        nativeWindowsSpecSha256: hash(
+          join(root, 'packages/dsh-adapter/tests/native-work-session-windows.spec.ts'),
+        ),
         nativeSourceSha256,
         executionRunBundleSha256,
         executionRunFixtureSha256: hash(executionRunFixture),
@@ -1131,10 +1164,12 @@ void publicContract;
           sha256: hash(join(fixtures, `${name}.spec.ts`)),
         })),
         node: process.version,
+        platform: process.platform,
+        arch: process.arch,
         phases,
         model: 'local scripted adapter only',
         realProductGrantVerified: false,
-        emittedHostMemberRunGrantVerified: true,
+        emittedHostMemberRunGrantVerified: values.phase !== 'native-windows',
       },
       null,
       2,

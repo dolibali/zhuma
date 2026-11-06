@@ -2,6 +2,7 @@ import { cp, readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
+import { composeStagedCordisPatch } from '../lib/dev-model-gateway.mjs';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
 const stage = resolve(root, '.build/desktop/deepseek-harness');
@@ -19,10 +20,22 @@ const current = await readFile(resolve(bundle, 'cordis.patch.yml'), 'utf8');
 if (current.split(marker)[0] !== sourcePatch)
   throw new Error('The Web bundle has unrelated changes; refusing to overwrite.');
 const overlay = await readFile(resolve(root, 'distribution/workbench/cordis.patch.yml'), 'utf8');
+// Disposable 自定义提供商 is appended only when the dev entry passed --dev-gateway.
+// Inherited ZHUMA_MODEL_* and an unset NODE_ENV do not authorize it.
+// Formal package builds pass --no-dev-gateway and keep the committed overlay only.
 await cp(resolve(root, '.build/workbench'), resolve(bundle, 'lib/zhuma-workbench'), {
   recursive: true,
 });
-await writeFile(resolve(bundle, 'cordis.patch.yml'), sourcePatch + marker + overlay);
+await writeFile(
+  resolve(bundle, 'cordis.patch.yml'),
+  composeStagedCordisPatch({
+    sourcePatch,
+    marker,
+    overlay,
+    env: process.env,
+    argv: process.argv,
+  }),
+);
 const manifestPath = resolve(bundle, 'package.json');
 const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
 if (!manifest.files.includes('lib/zhuma-workbench')) manifest.files.push('lib/zhuma-workbench');

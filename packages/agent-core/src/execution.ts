@@ -812,6 +812,7 @@ export function executionTodoHint(input: {
     rounds: [],
     confirmations: [],
   });
+  if (item?.action === 'wait') return { nextAction: 'none', label: '等待前置完成' };
   return INBOX_HINTS[item?.action ?? ''] ?? { nextAction: 'none', label: '当前没有执行动作' };
 }
 

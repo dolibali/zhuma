@@ -156,6 +156,83 @@ test('inbox groups carry the task path and owner, and counts follow status', asy
   assert.deepEqual(afterVote.value, { actorId: 'lin', deliver: 0, review: 0, confirm: 0 });
 });
 
+const legacyInboxActions = [
+  'submit',
+  'revise',
+  'continue-handling',
+  'provide-input',
+  'retry-or-take-back',
+  'review',
+  'confirm',
+];
+function legacyActions(items) {
+  for (const item of items) {
+    if (!legacyInboxActions.includes(item.action)) throw new Error('返回的待办动作不正确。');
+  }
+  return items.map((item) => [item.nodeId, item.action]);
+}
+
+test('inbox wire: blocked wait rows stay off the original projection unless the client opts in', async () => {
+  const lin = {
+    id: 'lin',
+    name: '林夏',
+    kind: 'human',
+    role: '复核',
+    capabilities: [],
+    instructions: '',
+    available: true,
+  };
+  const human = workflowNode({
+    id: 'human',
+    title: '人工提交',
+    assigneeId: 'chen',
+    reviewerIds: ['lin'],
+    reviewRequired: true,
+  });
+  const parallel = workflowNode({ id: 'parallel', title: '并行提交', assigneeId: 'chen' });
+  const consume = workflowNode({
+    id: 'consume',
+    title: '汇总',
+    assigneeId: 'chen',
+    dependsOn: ['human'],
+  });
+  const join = workflowNode({
+    id: 'join',
+    title: '汇合',
+    assigneeId: 'qa',
+    dependsOn: ['parallel'],
+  });
+  const { state, applied } = confirm([human, parallel, consume, join], [lin]);
+  const { service, store } = create(state);
+  await start(service, applied);
+  const submitted = await service.submit(session('chen'), {
+    ...locate(applied, 'human', store.node('human').command.version, 'deliver-human'),
+    text: '人工说明',
+  });
+  assert.equal(submitted.ok, true, submitted.ok ? '' : submitted.error.code);
+  const original = await service.inbox(session('chen'), {});
+  const opted = await service.inbox(session('chen'), { detail: 'waiting' });
+  const review = await service.inbox(session('lin'), {});
+  assert.equal(original.ok, true);
+  assert.equal(opted.ok, true);
+  assert.equal(review.ok, true);
+  assert.deepEqual(legacyActions(original.value.items), [['parallel', 'submit']]);
+  assert.equal(JSON.stringify(original.value).includes('"action":"wait"'), false);
+  assert.deepEqual(legacyActions(review.value.items), [['human', 'review']]);
+  assert.throws(() => legacyActions(opted.value.items), /返回的待办动作不正确。/);
+  assert.deepEqual(opted.value.items.map((item) => [item.nodeId, item.action]).sort(), [
+    ['consume', 'wait'],
+    ['join', 'wait'],
+    ['parallel', 'submit'],
+  ]);
+  const foreign = await service.inbox(session('chen'), { spaceId: 'other', detail: 'waiting' });
+  assert.equal(foreign.ok, true);
+  assert.deepEqual(foreign.value.items, []);
+  const rejected = await service.inbox(session('chen'), { detail: 'nodes' });
+  assert.equal(rejected.ok, false);
+  assert.equal(rejected.error.code, 'validation');
+});
+
 test('an expert node waiting on its owner is a delivery count, not a review count', async () => {
   const { state, applied } = confirm([
     workflowNode({ id: 'design', title: '设计', assigneeId: 'qa' }),

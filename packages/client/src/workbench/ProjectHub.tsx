@@ -5,10 +5,14 @@ import { Field, MultiSelect, ParticipantSelect } from './controls.js';
 import { ControlIcon } from './ControlIcon.js';
 import { ProjectArtifactsPanel } from './ProjectArtifactsPanel.js';
 import type { ExecutionApi } from '../execution/ExecutionApi.js';
+import { confirmedNodeTitles } from '../execution/progress-focus.js';
 import { TaskProgressSummary } from '../execution/TaskProgressSummary.js';
 import type { TaskProgressState } from '../execution/useTaskProgress.js';
+import { taskHeading } from './task-heading.js';
 import { ProjectKnowledgePanel } from '../knowledge/ProjectKnowledgePanel.js';
 import type { ProjectKnowledgePanelProps } from '../knowledge/project-knowledge-api.js';
+import { MemberAssetFilePicker } from '../assets/MemberAssetFilePicker.js';
+import type { MemberAssetApi } from '../assets/api.js';
 
 export type ProjectTab = 'overview' | 'work' | 'materials' | 'people';
 const tabs: Record<ProjectTab, string> = {
@@ -34,10 +38,12 @@ export function ProjectFields({
   project,
   state,
   change,
+  memberAssets,
 }: {
   project: Project;
   state: Workbench;
   change(project: Project): void;
+  memberAssets?: { api: MemberAssetApi; spaceId: string };
 }) {
   return (
     <>
@@ -58,6 +64,15 @@ export function ProjectFields({
           onChange={(e) => change({ ...project, description: e.target.value })}
         />
       </Field>
+      {memberAssets && (
+        <MemberAssetFilePicker
+          {...memberAssets}
+          label="项目资料"
+          value={project.fileRefs}
+          hint="新任务创建时沿用这些版本，已有任务保持原资料。"
+          change={(fileRefs) => change({ ...project, fileRefs })}
+        />
+      )}
       <ParticipantSelect
         label="默认参与者"
         multiple
@@ -200,7 +215,7 @@ export function ProjectHub({
         {items.map((task) => (
           <button type="button" key={task.id} onClick={() => openTask(task.id)}>
             <span>
-              <strong>{task.title}</strong>
+              <strong title={task.title || task.goal}>{taskHeading(task)}</strong>
               <small>
                 {state.participants.find((p) => p.id === task.ownerId)?.name ?? '负责人待定'} ·{' '}
                 {task.workflows.flatMap((w) => w.nodes).length} 个节点
@@ -210,6 +225,7 @@ export function ProjectHub({
               <TaskProgressSummary
                 progress={taskProgress?.(task.id)}
                 confirmed={state.appliedPlans.some((plan) => plan.taskId === task.id)}
+                nodeTitles={confirmedNodeTitles(state.appliedPlans, taskProgress?.(task.id))}
                 compact
               />
               <span className={`zm-badge ${task.status}`}>
