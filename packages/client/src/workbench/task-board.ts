@@ -30,8 +30,21 @@ export function taskBoardColumn(
   return 'attention';
 }
 
-/** Pipeline order for detecting a drag that jumps past review. */
+/** Pipeline order for detecting a drag that jumps past review. Stops at ended. */
 const BOARD_PIPELINE = ['planning', 'attention', 'running', 'review', 'ended'] as const;
+
+/**
+ * Columns to render. Pipeline lanes stay in order even when empty.
+ * `unknown` (待核实) sits outside BOARD_PIPELINE and is omitted until a task projects there.
+ */
+export function visibleTaskBoardColumns(
+  occupied: Iterable<TaskBoardColumn>,
+): readonly (typeof taskBoardColumns)[number][] {
+  for (const id of occupied) {
+    if (id === 'unknown') return taskBoardColumns;
+  }
+  return taskBoardColumns.filter((column) => column.id !== 'unknown');
+}
 
 export type BoardDragDecision =
   | { readonly type: 'same' }

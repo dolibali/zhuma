@@ -7,6 +7,7 @@ import {
   boardReviewRequired,
   taskBoardColumn,
   taskBoardColumns,
+  visibleTaskBoardColumns,
   type TaskBoardColumn,
 } from './task-board.js';
 import { taskHeading } from './task-heading.js';
@@ -35,6 +36,9 @@ export function TaskBoard({
   const [overColumn, setOverColumn] = useState<TaskBoardColumn>();
 
   const rows = tasks.map((task) => ({ task, progress: progress(task.id) }));
+  const columns = visibleTaskBoardColumns(
+    rows.map((item) => taskBoardColumn(item.task, confirmed(item.task.id), item.progress)),
+  );
 
   function columnOf(taskId: string): TaskBoardColumn | undefined {
     const row = rows.find((item) => item.task.id === taskId);
@@ -93,13 +97,17 @@ export function TaskBoard({
   }
 
   return (
-    <div className="zm-task-board" aria-label="任务看板">
+    <div
+      className="zm-task-board"
+      aria-label="任务看板"
+      style={{ gridTemplateColumns: `repeat(${columns.length}, minmax(210px, 1fr))` }}
+    >
       {notice && (
         <p className="zm-board-drag-notice" role="status">
           {notice}
         </p>
       )}
-      {taskBoardColumns.map((column) => {
+      {columns.map((column) => {
         const items = rows.filter((item) => columnOf(item.task.id) === column.id);
         return (
           <section

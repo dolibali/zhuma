@@ -5494,7 +5494,7 @@ html[data-platform='darwin'] .zhuma .zm-space-bar {
 }
 .zm-task-board {
   display: grid;
-  grid-template-columns: repeat(6, minmax(210px, 1fr));
+  /* Count is inline: pipeline lanes, plus 待核实 only when that lane is occupied. */
   gap: 14px;
   overflow-x: auto;
   padding-bottom: 12px;
