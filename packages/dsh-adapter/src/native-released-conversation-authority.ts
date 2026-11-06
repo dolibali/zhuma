@@ -191,6 +191,12 @@ export class NativeReleasedConversationAuthorityError extends Error {
     this.name = 'NativeReleasedConversationAuthorityError';
   }
 }
+export type NativeReleasedConversationSendEligibility =
+  | { readonly eligible: true }
+  | {
+      readonly eligible: false;
+      readonly reason: NativeReleasedConversationAuthorityError['code'];
+    };
 function deny(): never {
   throw new NativeReleasedConversationAuthorityError('conversation-authority-denied');
 }
@@ -217,6 +223,22 @@ function failure(error: unknown): NativeReleasedConversationAuthorityError {
       return new NativeReleasedConversationAuthorityError('conversation-authority-capacity');
   }
   return new NativeReleasedConversationAuthorityError('conversation-authority-denied');
+}
+function sendEligibilityFailure(error: unknown): NativeReleasedConversationSendEligibility {
+  try {
+    const reason = failure(error).code;
+    switch (reason) {
+      case 'conversation-authority-validation':
+      case 'conversation-authority-denied':
+      case 'conversation-authority-unavailable':
+      case 'conversation-authority-pending':
+      case 'conversation-authority-capacity':
+        return { eligible: false, reason };
+    }
+  } catch {
+    // A malformed external error never supplies a UI reason or rejects this query.
+  }
+  return { eligible: false, reason: 'conversation-authority-denied' };
 }
 function deferred() {
   let resolve!: () => void;
@@ -398,6 +420,85 @@ export class NativeReleasedConversationAuthorities {
             },
       ),
     };
+  }
+
+  /** Point-in-time Host permission/Run eligibility, NOT native epoch or drain
+   * readiness. No grant, reader or writer reservation is issued. Explicit Send
+   * still requires a fresh open() and the native owner's actual admission.
+   */
+  observeSendEligibility(
+    request: MemberRequest,
+    rawLocator: unknown,
+  ): Promise<NativeReleasedConversationSendEligibility> {
+    const parsed = locatorSchema.safeParse(rawLocator);
+    if (!parsed.success)
+      return Promise.resolve({ eligible: false, reason: 'conversation-authority-validation' });
+    try {
+      this.current();
+    } catch (error) {
+      return Promise.resolve(sendEligibilityFailure(error));
+    }
+    if (this.pending.size + this.owned.size >= 256)
+      return Promise.resolve({ eligible: false, reason: 'conversation-authority-capacity' });
+    const work = Promise.resolve().then(() => this.observeSendEligibilityNow(request, parsed.data));
+    this.pending.add(work);
+    void work.finally(() => this.pending.delete(work)).catch(() => undefined);
+    return work;
+  }
+
+  private async observeSendEligibilityNow(
+    request: MemberRequest,
+    locator: ExecutionRunLocator,
+  ): Promise<NativeReleasedConversationSendEligibility> {
+    let lease: ExecutionMemberLease | undefined;
+    let release: (() => void) | undefined;
+    let result: NativeReleasedConversationSendEligibility;
+    try {
+      this.current();
+      if (this.failed)
+        throw new NativeReleasedConversationAuthorityError('conversation-authority-unavailable');
+      lease = await this.ports.memberLease.call(this.source, request);
+      if (lease && typeof lease.release === 'function') release = lease.release.bind(lease);
+      if (
+        !lease ||
+        !id.safeParse(lease.memberId).success ||
+        !Number.isSafeInteger(lease.expiresAt) ||
+        !(lease.signal instanceof AbortSignal) ||
+        typeof lease.assertCurrent !== 'function' ||
+        typeof lease.release !== 'function'
+      )
+        return deny();
+      const member = lease;
+      const { memberId, expiresAt, signal, assertCurrent, release: memberRelease } = member;
+      const check = () => {
+        if (
+          member.memberId !== memberId ||
+          member.expiresAt !== expiresAt ||
+          member.signal !== signal ||
+          member.assertCurrent !== assertCurrent ||
+          member.release !== memberRelease ||
+          signal.aborted ||
+          expiresAt <= Date.now()
+        )
+          deny();
+      };
+      check();
+      this.observe(locator, member, 'send');
+      check();
+      this.current();
+      result = { eligible: true };
+    } catch (error) {
+      result = sendEligibilityFailure(error);
+    } finally {
+      try {
+        if (lease && !release) throw Error();
+        if (release) assertion(release());
+      } catch {
+        this.failed = true;
+        result = { eligible: false, reason: 'conversation-authority-unavailable' };
+      }
+    }
+    return result;
   }
 
   /** Current passive conversation visibility only. Never call open() for
@@ -965,6 +1066,17 @@ export class NativeReleasedConversationAuthorities {
     return owned.stop().catch(() => {
       throw new NativeReleasedConversationAuthorityError('conversation-authority-unavailable');
     });
+  }
+  /** Host-only wait on this issuer's existing physical cleanup. A revoked grant
+   * can still await its original owner; this neither stops nor authorizes work.
+   */
+  whenSettled(grant: NativeReleasedConversationGrant): Promise<void> {
+    const owned = grant && this.grants.get(grant);
+    return owned
+      ? owned.drain
+      : Promise.reject(
+          new NativeReleasedConversationAuthorityError('conversation-authority-denied'),
+        );
   }
   private recheck(): void {
     for (const owned of [...this.owned]) {

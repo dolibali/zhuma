@@ -4,7 +4,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { canonicalPayload, submitExpertDelivery } from '@zhuma/agent-core';
-import { NativeReleasedConversationAuthorities } from '../dist/native-released-conversation-authority.js';
+import {
+  NativeReleasedConversationAuthorities,
+  NativeReleasedConversationAuthorityError,
+} from '../dist/native-released-conversation-authority.js';
 import { ExecutionRunAuthorities } from '../dist/execution-run-authority.js';
 import { NativeWorkError } from '../dist/native-work-session-contract.js';
 import {
@@ -1196,3 +1199,254 @@ for (const mode of ['send', 'read'])
     await h.manager.close();
     assert.equal(h.retireCalls, mode === 'read' ? 0 : 1);
   });
+
+for (const row of [stopped, delivered])
+  test(`eligibility contract: ${row.name} observes Host permission without native admission or a grant`, async () => {
+    const h = setup({ row: row() });
+    const before = canonicalPayload(h.row);
+    assert.deepEqual(await h.manager.observeSendEligibility(request, locator(h.row)), {
+      eligible: true,
+    });
+    assert.equal(h.releases, 1);
+    assert.equal(h.opens, 0);
+    assert.equal(h.active, 0);
+    assert.equal(h.retireCalls, 0);
+    assert.deepEqual(h.requests, []);
+    assert.equal(canonicalPayload(h.row), before);
+    assert.equal(h.workspaceCalls.length, 1);
+    // An observation cannot retain a Session writer slot or replace fresh Send.
+    const send = await open(h);
+    h.manager.assertGrant(send.grant, 'send');
+    await h.manager.close();
+  });
+
+test('eligibility contract: Host permission does not claim native drain or epoch readiness', async () => {
+  const h = setup();
+  h.readiness = new NativeWorkError('migration-not-ready');
+  assert.deepEqual(await h.manager.observeSendEligibility(request, locator(h.row)), {
+    eligible: true,
+  });
+  assert.equal(h.opens, 0);
+  assert.equal(h.releases, 1);
+  await assert.rejects(open(h), pending);
+  await h.manager.close();
+});
+
+for (const [name, change, req = request] of [
+  ['visible non-controller', () => {}, outside],
+  [
+    'revoked member',
+    (h) => {
+      h.member = false;
+    },
+  ],
+  [
+    'revoked workspace',
+    (h) => {
+      h.workspace = false;
+    },
+  ],
+  [
+    'active Run',
+    (h) => {
+      h.row = accepted();
+    },
+  ],
+  ['expired lease', () => {}],
+])
+  test(`eligibility contract: ${name} is unavailable without acquiring native rights`, async () => {
+    const h = setup(name === 'expired lease' ? { expiresIn: -1 } : {});
+    change(h);
+    assert.deepEqual(await h.manager.observeSendEligibility(req, locator(h.row)), {
+      eligible: false,
+      reason: 'conversation-authority-denied',
+    });
+    assert.equal(h.releases, 1);
+    assert.equal(h.opens, 0);
+    assert.equal(h.retireCalls, 0);
+    await h.manager.close();
+  });
+
+test('eligibility contract: invalid input, copied request and changed source fail closed with fixed reasons', async () => {
+  const h = setup();
+  assert.deepEqual(
+    await h.manager.observeSendEligibility(request, { ...locator(h.row), actorId: 'chen' }),
+    {
+      eligible: false,
+      reason: 'conversation-authority-validation',
+    },
+  );
+  assert.equal(h.leases.length, 0);
+  assert.deepEqual(await h.manager.observeSendEligibility({ ...request }, locator(h.row)), {
+    eligible: false,
+    reason: 'conversation-authority-denied',
+  });
+  h.source.assertWorkspace = () => undefined;
+  assert.deepEqual(await h.manager.observeSendEligibility(request, locator(h.row)), {
+    eligible: false,
+    reason: 'conversation-authority-denied',
+  });
+  assert.equal(h.opens, 0);
+  await h.manager.close();
+});
+
+test('eligibility contract: a late member lease is released and close waits without any native owner', async () => {
+  const leaseGate = deferred();
+  const h = setup({ leaseGate });
+  const observation = h.manager.observeSendEligibility(request, locator(h.row));
+  await tick();
+  let closed = false;
+  const closing = h.manager.close().then(() => {
+    closed = true;
+  });
+  await tick();
+  assert.equal(closed, false);
+  leaseGate.resolve();
+  assert.deepEqual(await observation, { eligible: false, reason: 'conversation-authority-denied' });
+  await closing;
+  assert.equal(h.releases, 1);
+  assert.equal(h.opens, 0);
+  assert.equal(h.retireCalls, 0);
+});
+
+test('eligibility contract: lease identity changes inside a gate cannot authorize a different member', async () => {
+  const h = setup();
+  const original = h.source.assertController;
+  h.source.assertController = (...args) => {
+    original(...args);
+    h.leases.at(-1).lease.memberId = 'outside';
+  };
+  const manager = new NativeReleasedConversationAuthorities(h.source);
+  assert.deepEqual(await manager.observeSendEligibility(request, locator(h.row)), {
+    eligible: false,
+    reason: 'conversation-authority-denied',
+  });
+  assert.equal(h.releases, 1);
+  assert.equal(h.opens, 0);
+  await manager.close();
+  await h.manager.close();
+});
+
+test('eligibility contract: external error fields cannot escape the bounded reason vocabulary', async () => {
+  const h = setup();
+  const error = new NativeReleasedConversationAuthorityError('conversation-authority-denied');
+  Object.defineProperty(error, 'code', {
+    get() {
+      throw Error('PRIVATE_ERROR_FIELD');
+    },
+  });
+  h.source.memberLease = async () => {
+    throw error;
+  };
+  const manager = new NativeReleasedConversationAuthorities(h.source);
+  assert.deepEqual(await manager.observeSendEligibility(request, locator(h.row)), {
+    eligible: false,
+    reason: 'conversation-authority-denied',
+  });
+  await manager.close();
+  await h.manager.close();
+});
+
+test('eligibility contract: failed lease release refuses eligibility and cannot certify clean shutdown', async () => {
+  const h = setup({
+    onRelease() {
+      throw Error('PRIVATE_RELEASE');
+    },
+  });
+  assert.deepEqual(await h.manager.observeSendEligibility(request, locator(h.row)), {
+    eligible: false,
+    reason: 'conversation-authority-unavailable',
+  });
+  assert.equal(h.releases, 1);
+  assert.equal(h.opens, 0);
+  await assert.rejects(h.manager.close(), unavailable);
+});
+
+test('eligibility contract: bounded pending observations are drained without reserving Session slots', async () => {
+  const leaseGate = deferred();
+  const h = setup({ leaseGate });
+  const observations = Array.from({ length: 256 }, () =>
+    h.manager.observeSendEligibility(request, locator(h.row)),
+  );
+  assert.deepEqual(await h.manager.observeSendEligibility(request, locator(h.row)), {
+    eligible: false,
+    reason: 'conversation-authority-capacity',
+  });
+  const closing = h.manager.close();
+  leaseGate.resolve();
+  assert((await Promise.all(observations)).every((item) => !item.eligible));
+  await closing;
+  assert.equal(h.opens, 0);
+  assert.equal(h.retireCalls, 0);
+});
+
+test('settlement contract: waiting alone never stops the original writer', async () => {
+  const h = setup();
+  const owned = await open(h);
+  const settled = h.manager.whenSettled(owned.grant);
+  let done = false;
+  void settled.then(() => {
+    done = true;
+  });
+  await tick();
+  assert.equal(done, false);
+  assert.equal(h.retireCalls, 0);
+  await h.manager.stop(owned.grant);
+  await settled;
+  assert.equal(h.retireCalls, 1);
+  assert.equal(h.manager.whenSettled(owned.grant), settled);
+  await h.manager.close();
+});
+
+test('settlement contract: revoked pending grant waits for original drain after backend replacement', async () => {
+  const settleGate = deferred();
+  const h = setup({ settleGate, stopStatus: 'pending' });
+  const owned = await open(h);
+  assert.equal(await h.manager.stop(owned.grant), 'pending');
+  assert.equal(owned.grant.signal.aborted, true);
+  assert.throws(() => h.manager.assertGrant(owned.grant, 'stop'), denied);
+  const settled = h.manager.whenSettled(owned.grant);
+  let done = false;
+  void settled.then(() => {
+    done = true;
+  });
+  h.backendId = 'replacement';
+  h.backendIdentity = {};
+  h.sourceLifetime.abort();
+  owned.dispose();
+  await tick();
+  assert.equal(done, false);
+  assert.equal(h.retireCalls, 1);
+  settleGate.resolve();
+  await settled;
+  await h.manager.close();
+});
+
+test('settlement contract: foreign, copied, JSON and reader tickets cannot observe another owner drain', async () => {
+  const h = await setupRead();
+  const owned = await open(h);
+  const read = await h.manager.openRead(request, locator(h.row));
+  const other = setup();
+  for (const ticket of [
+    { ...owned.grant },
+    JSON.parse(JSON.stringify(owned.grant)),
+    read.grant,
+    undefined,
+  ])
+    await assert.rejects(h.manager.whenSettled(ticket), denied);
+  await assert.rejects(other.manager.whenSettled(owned.grant), denied);
+  read.dispose();
+  await h.manager.close();
+  await h.manager.whenSettled(owned.grant);
+  await other.manager.close();
+});
+
+test('settlement contract: failed physical cleanup rejects rather than treating an aborted grant as settled', async () => {
+  const h = setup();
+  const owned = await open(h);
+  h.failSettled = true;
+  await assert.rejects(h.manager.stop(owned.grant), unavailable);
+  assert.equal(owned.grant.signal.aborted, true);
+  await assert.rejects(h.manager.whenSettled(owned.grant), unavailable);
+  await assert.rejects(h.manager.close(), unavailable);
+});
