@@ -1225,6 +1225,12 @@ function rejectionDetails(
 
 /** Serializes durable execution commands. One user command writes one node record. */
 export class ExecutionService {
+  private validatedWorkspaceRuns = new WeakMap<
+    ExecutionNodeRecord,
+    readonly WorkspaceApprovalRun[]
+  >();
+  private runValidationSources: readonly unknown[] | undefined;
+  private readonly sealedRunData = new WeakSet<object>();
   private reviewReadAuthorities: ExecutionReviewReadAuthorities | undefined;
   private reviewDriveAuthorities: ExecutionReviewDriveAuthorities | undefined;
   private writes: Promise<unknown> = Promise.resolve();
@@ -5396,14 +5402,22 @@ export class ExecutionService {
     nodes: readonly ExecutionNodeRecord[],
     workspaceRuns?: WorkspaceApprovalRun[],
   ): void {
+    const sources = [this.storage.listNodes, this.storage.readNode, this.storage.readGlobal];
+    if (!this.runValidationSources?.every((source, index) => source === sources[index])) {
+      this.validatedWorkspaceRuns = new WeakMap();
+      this.runValidationSources = sources;
+    }
     for (const node of nodes) {
+      const cached = this.validatedWorkspaceRuns.get(node);
+      if (cached) {
+        if (workspaceRuns) workspaceRuns.push(...structuredClone(cached));
+        continue;
+      }
       const state = readExecutionRunState(node);
-      // Ordinary compatibility callers retain no parsed state. A call-local
-      // collector only keeps the minimal original workspace metadata.
-      if (!workspaceRuns) continue;
+      const metadata: WorkspaceApprovalRun[] = [];
       for (const run of state?.runs ?? []) {
         if (run.workspace.kind !== 'local') continue;
-        workspaceRuns.push({
+        metadata.push({
           scope: executionRunScope(node, run),
           workspace: run.workspace,
           resources: run.resources,
@@ -5411,7 +5425,38 @@ export class ExecutionService {
           ...(run.attempt.executorRunId ? { nativeAgentId: run.attempt.executorRunId } : {}),
         });
       }
+      // No authority or parsed RunState is retained. Only a completely sealed
+      // data graph can certify that this already-validated row is unchanged.
+      // Generic mutable and shallow-frozen sources are fully checked every time.
+      if (this.isSealedRunData(node)) this.validatedWorkspaceRuns.set(node, metadata);
+      if (workspaceRuns) workspaceRuns.push(...structuredClone(metadata));
     }
+  }
+
+  private isSealedRunData(value: unknown): boolean {
+    if (
+      value === null ||
+      value === undefined ||
+      ['string', 'number', 'boolean'].includes(typeof value)
+    )
+      return true;
+    if (typeof value !== 'object' || !Object.isFrozen(value)) return false;
+    if (this.sealedRunData.has(value)) return true;
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null && prototype !== Array.prototype)
+      return false;
+    for (const key of Reflect.ownKeys(value)) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (
+        typeof key !== 'string' ||
+        !descriptor ||
+        !Object.hasOwn(descriptor, 'value') ||
+        !this.isSealedRunData(descriptor.value)
+      )
+        return false;
+    }
+    this.sealedRunData.add(value);
+    return true;
   }
 
   private assertRunStoreCompatibility(workspaceRuns?: WorkspaceApprovalRun[]): void {

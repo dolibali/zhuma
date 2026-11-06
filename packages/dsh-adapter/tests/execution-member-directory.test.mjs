@@ -116,6 +116,25 @@ async function createPlan(h, cookie) {
   );
 }
 
+test('execution member directory: changing the original SDK node reader refuses reads without hiding it behind sealed validation', async (t) => {
+  const h = await fixture(t),
+    ann = await h.login('ann');
+  ok(await h.rpc('inbox', { spaceId: 'personal-ann' }, ann));
+  const table = h.ctx.storageDomain.get('zhuma_execution').table('nodes');
+  const prototype = Object.getPrototypeOf(table);
+  const original = prototype.get;
+  try {
+    prototype.get = function (...args) {
+      return original.apply(this, args);
+    };
+    no(await h.rpc('inbox', { spaceId: 'personal-ann' }, ann), 'unavailable');
+  } finally {
+    prototype.get = original;
+  }
+  assert.deepEqual(ok(await h.rpc('inbox', { spaceId: 'personal-ann' }, ann)).nodes, []);
+  zero(h);
+});
+
 test('execution member directory: fresh real account in empty personal reads inbox/counts/startable through original HTTP, including logout then another account', async (t) => {
   const h = await fixture(t),
     ann = await h.login('ann');
