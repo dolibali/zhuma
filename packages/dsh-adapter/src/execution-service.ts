@@ -1857,21 +1857,34 @@ export class ExecutionService {
     )
       throw new ExecutionRunError('run-state-invalid');
     const state = readExecutionRunState(node);
-    const copy = structuredClone(node);
-    if (state && this.isSealedRunData(node)) {
+    type AuthorData = { runs?: { composition?: FrozenExecutionRunComposition }[] };
+    const native = (node as ExecutionNodeRecord & { nativeExecution?: AuthorData }).nativeExecution;
+    if (state && native?.runs && this.isSealedRunData(node)) {
       // The node/attempt/segment/resource data remain a new mutable copy. Only
       // validated, deeply immutable historical composition leaves may be shared;
       // the Run reader still checks every scope/config/attempt binding afresh.
-      const author = (
-        copy as ExecutionNodeRecord & {
-          nativeExecution?: { runs?: { composition?: FrozenExecutionRunComposition }[] };
-        }
-      ).nativeExecution;
+      // Exclude those leaves BEFORE cloning, rather than cloning their large
+      // bodies only to immediately discard them when restoring the fixed leaf.
+      const copy = structuredClone({
+        ...node,
+        nativeExecution: {
+          ...native,
+          runs: native.runs.map((run, index) => {
+            if (!state.runs[index]?.composition) return run;
+            const metadata = { ...run };
+            delete metadata.composition;
+            return metadata;
+          }),
+        },
+      });
+      const author = (copy as ExecutionNodeRecord & { nativeExecution?: AuthorData })
+        .nativeExecution;
       for (const [index, run] of state.runs.entries())
         if (run.composition && author?.runs?.[index])
           author.runs[index]!.composition = readExecutionRunComposition(run.composition);
+      return copy;
     }
-    return copy;
+    return structuredClone(node);
   }
 
   readRunGlobal(): unknown {

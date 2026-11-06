@@ -30,12 +30,33 @@ test('composition snapshot: Host node copies share only immutable fixed leaves a
   const h = await hostFor(t);
   checked(await h.service.enableRunWriter());
   checked(await h.service.beginRun(h.request, h.begin()));
-  const first = h.service.readRunNode(h.locate());
+  const [, stored] = [...h.domain.table('nodes').entries()].find(
+    ([, node]) => node.nodeId === 'produce',
+  );
+  const clone = globalThis.structuredClone;
+  let copiedNodeBytes = 0;
+  globalThis.structuredClone = (value, ...args) => {
+    if (value?.nodeId === stored.nodeId && value?.nativeExecution?.runs)
+      copiedNodeBytes += Buffer.byteLength(JSON.stringify(value));
+    return clone(value, ...args);
+  };
+  let first;
+  try {
+    first = h.service.readRunNode(h.locate());
+  } finally {
+    globalThis.structuredClone = clone;
+  }
   const next = h.service.readRunNode(h.locate());
   assert.notEqual(first, next);
   assert.notEqual(first.nativeExecution.runs, next.nativeExecution.runs);
   assert.notEqual(first.nativeExecution.runs[0].attempt, next.nativeExecution.runs[0].attempt);
   const leaf = first.nativeExecution.runs[0].composition;
+  assert(copiedNodeBytes > 0);
+  assert(
+    copiedNodeBytes <=
+      Buffer.byteLength(JSON.stringify(stored)) - Buffer.byteLength(JSON.stringify(leaf)),
+    'defensive copies must not duplicate the fixed composition body',
+  );
   assert.equal(leaf, next.nativeExecution.runs[0].composition);
   assert(Object.isFrozen(leaf.payload.resources ?? leaf.payload));
   assert.throws(() => {
@@ -77,7 +98,7 @@ test('composition snapshot: a certified leaf never bypasses a fresh Run scope, c
   assert.equal(h.service.readRunNode(h.locate()).nativeExecution.runs[0].attempt.id, 'run-1');
 });
 
-test('composition snapshot: mutable generic nodes retain independent mutable copies and changed leaves are revalidated', async (t) => {
+test('composition snapshot: mutable and shallow-frozen generic nodes retain independent copies and changed leaves are revalidated', async (t) => {
   const h = await hostFor(t);
   checked(await h.service.enableRunWriter());
   checked(await h.service.beginRun(h.request, h.begin()));
@@ -93,6 +114,12 @@ test('composition snapshot: mutable generic nodes retain independent mutable cop
   assert.notEqual(
     first.nativeExecution.runs[0].composition.payload.context,
     next.nativeExecution.runs[0].composition.payload.context,
+  );
+  Object.freeze(mutable);
+  const shallow = h.service.readRunNode(h.locate());
+  assert.notEqual(
+    shallow.nativeExecution.runs[0].composition,
+    next.nativeExecution.runs[0].composition,
   );
   mutable.nativeExecution.runs[0].composition.payload.context += 'corrupt-input';
   assert.throws(() => h.service.readRunNode(h.locate()), { code: 'run-state-invalid' });
