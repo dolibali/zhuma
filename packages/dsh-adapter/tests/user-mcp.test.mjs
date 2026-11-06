@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
@@ -12,6 +12,14 @@ import { z } from 'zod';
 import { invokeUserMcpTools, openUserMcp, userMcpExplicitGrant } from '../dist/user-mcp.js';
 
 const fixture = fileURLToPath(new URL('./fixtures/user-mcp-stdio-server.mjs', import.meta.url));
+const summaryNodes = Number(
+  /const SUMMARY_NODES = (\d+);/.exec(
+    readFileSync(new URL('../src/user-mcp.ts', import.meta.url), 'utf8'),
+  )?.[1],
+);
+if (!Number.isInteger(summaryNodes) || summaryNodes < 1) {
+  throw new Error('SUMMARY_NODES 未能从 user-mcp.ts 读出');
+}
 
 function option(overrides = {}) {
   return {
@@ -304,3 +312,197 @@ test('空 MCP 不能记成调用成功', async () => {
   assert.equal(down.code, 'mcp-unavailable');
   assert.equal(readMcpCalls(down.log).length, 0);
 });
+
+test(
+  '大平面对象和大原始值数组的摘要访问不超过节点预算，成功、失败和拒绝仍遮住嵌套敏感值',
+  { timeout: 30_000 },
+  async () => {
+    const nestedSecret = 'synthetic-budget-secret-a';
+    const headerSecret = 'synthetic-budget-secret-b';
+    const tailSentinel = 'synthetic-budget-tail';
+    const hugeTail = 'synthetic-budget-huge-tail';
+    const width = 10_000;
+
+    function stats() {
+      return { n: 0, secretReads: 0, tailReads: 0, maxIndex: -1 };
+    }
+
+    function tracked(kind) {
+      const generations = [];
+      const args = { text: 'pong' };
+      Object.defineProperty(args, 'payload', {
+        enumerable: true,
+        get() {
+          const current = stats();
+          generations.push(current);
+          return kind === 'flat' ? flatPayload(current) : arrayPayload(current);
+        },
+      });
+      return { args, generations };
+    }
+
+    function field(target, key, current, produce) {
+      Object.defineProperty(target, key, {
+        enumerable: true,
+        get() {
+          current.n += 1;
+          return produce();
+        },
+      });
+    }
+
+    function flatPayload(current) {
+      const payload = {};
+      field(payload, 'apiKey', current, () => {
+        current.secretReads += 1;
+        return nestedSecret;
+      });
+      field(payload, 'credentials', current, () => ({ apiKey: nestedSecret, region: 'local' }));
+      field(payload, 'headers', current, () => [{ name: 'Accept', Authorization: headerSecret }]);
+      field(payload, 'marker', current, () => 'kept-marker');
+      field(payload, 'blob', current, () => `${'a'.repeat(80_000)}${hugeTail}`);
+      for (let index = 0; index < width; index += 1) {
+        field(payload, `f${index}`, current, () => index);
+      }
+      field(payload, 'tail', current, () => {
+        current.tailReads += 1;
+        return tailSentinel;
+      });
+      return payload;
+    }
+
+    function arrayPayload(current) {
+      const batch = [];
+      const setIndex = (index, produce) => {
+        Object.defineProperty(batch, index, {
+          enumerable: true,
+          get() {
+            current.n += 1;
+            current.maxIndex = Math.max(current.maxIndex, index);
+            return produce();
+          },
+        });
+      };
+      setIndex(0, () => ({
+        credentials: { apiKey: nestedSecret, region: 'local' },
+        headers: [{ Authorization: headerSecret }],
+        label: 'kept-item',
+      }));
+      setIndex(1, () => null);
+      setIndex(2, () => false);
+      for (let index = 3; index < width - 1; index += 1) setIndex(index, () => index);
+      setIndex(width - 1, () => {
+        current.tailReads += 1;
+        return tailSentinel;
+      });
+      return batch;
+    }
+
+    function assertBounded(label, record, generations, kind, invoked) {
+      assert.equal(generations.length, invoked ? 2 : 1, label);
+      const summary = generations.at(-1);
+      assert.equal(
+        summary.n <= summaryNodes,
+        true,
+        `${label} 摘要访问 ${summary.n}，节点预算 ${summaryNodes}`,
+      );
+      assert.equal(summary.secretReads, 0, label);
+      assert.equal(summary.tailReads, 0, label);
+      if (kind === 'array') {
+        assert.equal(
+          summary.maxIndex >= 0 && summary.maxIndex < summaryNodes,
+          true,
+          `${label} 数组下标 ${summary.maxIndex}`,
+        );
+      }
+      if (invoked) {
+        assert.equal(
+          generations[0].n > summaryNodes,
+          true,
+          `${label} 传输读取 ${generations[0].n}，计数器未覆盖大结构`,
+        );
+      }
+      assert.equal(record.argsSummary.includes(nestedSecret), false, label);
+      assert.equal(record.argsSummary.includes(headerSecret), false, label);
+      assert.equal(record.argsSummary.includes(tailSentinel), false, label);
+      assert.equal(record.argsSummary.includes(hugeTail), false, label);
+      assert.equal(record.argsSummary.includes('[redacted]'), true, label);
+      assert.equal(
+        record.argsSummary.includes(kind === 'flat' ? 'kept-marker' : 'kept-item'),
+        true,
+        label,
+      );
+      assert.equal(record.argsSummary.length <= 240, true, label);
+    }
+
+    const root = await mkdtemp(join(tmpdir(), 'zhuma-user-mcp-'));
+    const callsFile = join(root, 'calls.txt');
+    try {
+      const opened = await openUserMcp({
+        option: option({ args: [fixture, callsFile] }),
+        selection: selection(),
+      });
+      assert.equal(opened.ok, true);
+      const plan = [
+        ['echo', 'flat'],
+        ['fail', 'flat'],
+        ['missing', 'flat'],
+        ['echo', 'array'],
+        ['fail', 'array'],
+        ['missing', 'array'],
+      ];
+      const seen = [];
+      for (const [toolName, kind] of plan) {
+        const made = tracked(kind);
+        const result = await opened.session.call(toolName, made.args);
+        seen.push({ toolName, kind, result, generations: made.generations });
+      }
+      await opened.session.close();
+      const records = readMcpCalls(opened.session.log);
+      assert.equal(records.length, plan.length);
+      for (let index = 0; index < plan.length; index += 1) {
+        const [toolName, kind] = plan[index];
+        const record = records[index];
+        const item = seen[index];
+        const invoked = toolName !== 'missing';
+        assert.equal(record.toolName, toolName);
+        assert.equal(record.outcome, toolName === 'echo' ? 'ok' : 'fail');
+        if (toolName === 'echo') {
+          assert.equal(item.result.ok, true);
+          assert.equal(item.result.text, 'pong');
+        } else if (toolName === 'fail') {
+          assert.equal(item.result.ok, false);
+          assert.equal(item.result.code, 'mcp-call-failed');
+          assert.equal(record.errorCode, 'mcp-call-failed');
+        } else {
+          assert.equal(item.result.ok, false);
+          assert.equal(item.result.code, 'mcp-tool-unknown');
+          assert.equal(record.errorCode, 'mcp-tool-unknown');
+        }
+        assertBounded(`${kind}/${toolName}`, record, item.generations, kind, invoked);
+      }
+      const calls = await readFile(callsFile, 'utf8');
+      assert.equal(calls, 'echo\nfail\necho\nfail\n');
+
+      const refused = await openUserMcp({
+        option: option({ args: [fixture, callsFile] }),
+        selection: selection({ toolsAuthorized: false, explicitToolGrant: false }),
+      });
+      assert.equal(refused.ok, true);
+      for (const kind of ['flat', 'array']) {
+        const made = tracked(kind);
+        const result = await refused.session.call('echo', made.args);
+        assert.equal(result.ok, false);
+        assert.equal(result.code, 'mcp-not-authorized');
+        const record = readMcpCalls(refused.session.log).at(-1);
+        assert.equal(record.outcome, 'fail');
+        assert.equal(record.errorCode, 'mcp-not-authorized');
+        assertBounded(`${kind}/拒绝`, record, made.generations, kind, false);
+      }
+      await refused.session.close();
+      assert.equal(await readFile(callsFile, 'utf8'), calls);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+);

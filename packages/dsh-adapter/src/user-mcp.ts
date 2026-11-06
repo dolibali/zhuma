@@ -349,7 +349,17 @@ function summarizeArgs(args: Readonly<Record<string, unknown>>): string {
   return flat.length > SUMMARY_LIMIT ? `${flat.slice(0, SUMMARY_LIMIT - 3)}...` : flat;
 }
 
-/** 按键名递归遮住敏感值。超深度、超节点或循环时截断，不再原样写下剩余内容。 */
+function boundedText(value: string): string {
+  return value.length > SUMMARY_LIMIT ? `${value.slice(0, SUMMARY_LIMIT - 3)}...` : value;
+}
+
+/**
+ * 按键名递归遮住敏感值。
+ * 每个实际访问的值（含字符串、数值、布尔和 null）都消耗一个节点。
+ * 敏感键只记 [redacted]，不读取原值。
+ * 字符串在放进摘要前截断。对象按字段逐个看，预算用尽即停，不先复制全部键值。
+ * 超深度、超节点或循环时停下，不再原样写下剩余内容。
+ */
 function redactArgs(
   value: unknown,
   depth: number,
@@ -357,36 +367,43 @@ function redactArgs(
   seen: WeakSet<object>,
 ): unknown {
   if (budget.nodes <= 0 || depth > SUMMARY_DEPTH) return '[truncated]';
-  if (value === null || typeof value !== 'object') {
-    return typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean'
-      ? value
-      : value === null
-        ? null
-        : '[unserializable]';
+  if (value === null) {
+    budget.nodes -= 1;
+    return null;
+  }
+  if (typeof value !== 'object') {
+    budget.nodes -= 1;
+    if (typeof value === 'string') return boundedText(value);
+    if (typeof value === 'number' || typeof value === 'boolean') return value;
+    return '[unserializable]';
   }
   if (seen.has(value)) return '[truncated]';
-  seen.add(value);
   budget.nodes -= 1;
+  seen.add(value);
   if (Array.isArray(value)) {
     const items: unknown[] = [];
-    for (const item of value) {
+    const total = value.length;
+    for (let index = 0; index < total; index += 1) {
       if (budget.nodes <= 0) {
         items.push('[truncated]');
         break;
       }
-      items.push(redactArgs(item, depth + 1, budget, seen));
+      items.push(redactArgs(value[index], depth + 1, budget, seen));
     }
     return items;
   }
+  const record = value as Record<string, unknown>;
   const redacted: Record<string, unknown> = {};
-  for (const [key, child] of Object.entries(value)) {
+  for (const key in record) {
+    if (!Object.prototype.hasOwnProperty.call(record, key)) continue;
     if (budget.nodes <= 0) {
       redacted['…'] = '[truncated]';
       break;
     }
-    redacted[key] = SECRET_KEY.test(key)
-      ? '[redacted]'
-      : redactArgs(child, depth + 1, budget, seen);
+    const name = boundedText(key);
+    redacted[name] = SECRET_KEY.test(key)
+      ? redactArgs('[redacted]', depth + 1, budget, seen)
+      : redactArgs(record[key], depth + 1, budget, seen);
   }
   return redacted;
 }
