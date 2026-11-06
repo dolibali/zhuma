@@ -14,49 +14,78 @@ import { StartPlanPanel, type ExecutionPlan } from './StartPlanPanel.js';
 import { nodeIdentity, reviewIdentity, useFormKey } from './interaction.js';
 import { NativeRunLauncher } from '../run/NativeRunWorkspace.js';
 import type { NativeRunApi } from '../run/api.js';
+import {
+  recallMemberInbox,
+  rememberMemberInbox,
+  type MemberViewScope,
+} from './member-view-memory.js';
 
 type Props = {
   api: ExecutionApi;
   plan?: ExecutionPlan;
   refreshKey?: number;
   nativeRun?: { api: NativeRunApi; spaceId: string };
+  viewScope?: MemberViewScope;
 };
 type Selection = { item: InboxItem; identity: string; token: object };
 export function ExecutionWorkspace(props: Props) {
   const key = useFormKey(props.api, 'workspace');
   return <Workspace key={key} {...props} />;
 }
-function Workspace({ api, plan, refreshKey, nativeRun }: Props) {
-  const [items, setItems] = useState<readonly InboxItem[]>([]);
-  const [nodes, setNodes] = useState<readonly ExecutionNodeWire[]>([]);
-  const [places, setPlaces] = useState<readonly InboxPlaceWire[]>();
+function Workspace({ api, plan, refreshKey, nativeRun, viewScope }: Props) {
+  const scope = useRef(viewScope);
+  scope.current = viewScope;
+  const recalled = viewScope
+    ? recallMemberInbox(viewScope.accountId, viewScope.spaceId)
+    : undefined;
+  const known = useRef(recalled !== undefined);
+  const [items, setItems] = useState<readonly InboxItem[]>(recalled?.items ?? []);
+  const [nodes, setNodes] = useState<readonly ExecutionNodeWire[]>(recalled?.nodes ?? []);
+  const [places, setPlaces] = useState<readonly InboxPlaceWire[] | undefined>(recalled?.places);
   const [error, setError] = useState('');
-  const [pending, setPending] = useState(true);
+  const [pending, setPending] = useState(recalled === undefined);
+  const [refreshing, setRefreshing] = useState(false);
   const [selected, setSelected] = useState<Selection | undefined>();
   const selectedRef = useRef(selected);
   selectedRef.current = selected;
   const request = useRef<AbortController | undefined>(undefined);
   const alive = useRef(false);
-  const reload = useCallback(async () => {
-    if (!alive.current) return;
-    request.current?.abort();
-    const current = new AbortController();
-    request.current = current;
-    const valid = () => alive.current && request.current === current && !current.signal.aborted;
-    setPending(true);
-    setError('');
-    try {
-      const inbox = await api.inbox(current.signal);
-      if (!valid()) return;
-      setItems(inbox.items);
-      setNodes(inbox.nodes);
-      setPlaces(inbox.places);
-    } catch (caught) {
-      if (valid()) setError(executionErrorMessage(caught));
-    } finally {
-      if (valid()) setPending(false);
-    }
-  }, [api]);
+  const reload = useCallback(
+    async (manual = false) => {
+      if (!alive.current) return;
+      request.current?.abort();
+      const current = new AbortController();
+      request.current = current;
+      const valid = () => alive.current && request.current === current && !current.signal.aborted;
+      if (!known.current) setPending(true);
+      else if (manual) setRefreshing(true);
+      setError('');
+      try {
+        const inbox = await api.inbox(current.signal);
+        if (!valid()) return;
+        setItems(inbox.items);
+        setNodes(inbox.nodes);
+        setPlaces(inbox.places);
+        known.current = true;
+        const memory = scope.current;
+        if (memory)
+          rememberMemberInbox(memory.accountId, memory.spaceId, {
+            items: inbox.items,
+            nodes: inbox.nodes,
+            ...(inbox.places === undefined ? {} : { places: inbox.places }),
+          });
+      } catch (caught) {
+        if (valid() && !(caught instanceof DOMException && caught.name === 'AbortError'))
+          setError(executionErrorMessage(caught));
+      } finally {
+        if (valid()) {
+          setPending(false);
+          setRefreshing(false);
+        }
+      }
+    },
+    [api],
+  );
   useEffect(() => {
     alive.current = true;
     void reload();
@@ -104,7 +133,7 @@ function Workspace({ api, plan, refreshKey, nativeRun }: Props) {
       return;
     selectedRef.current = undefined;
     setSelected(undefined);
-    void reload();
+    void reload(true);
   }
   const agentAction = (node: ExecutionNodeWire, label?: string) =>
     nativeRun ? (
@@ -128,14 +157,15 @@ function Workspace({ api, plan, refreshKey, nativeRun }: Props) {
       : undefined;
   return (
     <div className="zm-execution-workspace">
-      {plan && <StartPlanPanel api={api} plan={plan} onStarted={() => void reload()} />}
+      {plan && <StartPlanPanel api={api} plan={plan} onStarted={() => void reload(true)} />}
       <InboxPanel
         items={items}
         nodes={nodes}
         {...(places === undefined ? {} : { places })}
         error={error}
         pending={pending}
-        reload={() => void reload()}
+        refreshing={refreshing}
+        reload={() => void reload(true)}
         open={open}
         renderAgentAction={nativeRun ? (node) => agentAction(node, '打开 Agent 会话') : undefined}
       />

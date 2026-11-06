@@ -44,6 +44,11 @@ import {
   defaultProjectParticipants,
   type ProjectTab,
 } from './ProjectHub.js';
+import {
+  recallMemberWorkbench,
+  rememberMemberWorkbench,
+  type MemberViewScope,
+} from '../execution/member-view-memory.js';
 
 type Section = 'projects' | 'tasks' | 'assets' | 'members' | 'knowledge';
 type Dialog =
@@ -80,6 +85,7 @@ export function WorkbenchPage({
   projectExecution,
   legacyMode = false,
   knowledge,
+  viewScope,
 }: {
   api: WorkbenchApi;
   initialSection: Section;
@@ -99,9 +105,15 @@ export function WorkbenchPage({
   legacyMode?: boolean;
   knowledge?:
     (Omit<KnowledgePanelProps, 'onDirtyChange'> & { projectApi?: ProjectKnowledgeApi }) | undefined;
+  /** Same account and space only. Absent for the legacy owner page. */
+  viewScope?: MemberViewScope;
 }) {
-  const [state, setState] = useState<Workbench>(emptyWorkbench);
-  const [model, setModel] = useState('尚未读取');
+  const remembered = viewScope
+    ? recallMemberWorkbench(viewScope.accountId, viewScope.spaceId)
+    : undefined;
+  const hasPaint = useRef(remembered !== undefined);
+  const [state, setState] = useState<Workbench>(() => remembered?.state ?? emptyWorkbench());
+  const [model, setModel] = useState(remembered?.model ?? '尚未读取');
   const [section, setSection] = useState(initialSection);
   const [knowledgeDirty, setKnowledgeDirty] = useState(false);
   const [projectKnowledgeDirty, setProjectKnowledgeDirty] = useState(false);
@@ -109,8 +121,8 @@ export function WorkbenchPage({
   function leaveKnowledge(action: () => void) {
     knowledgeLeave.request(action, knowledgeDirty || projectKnowledgeDirty);
   }
-  const [loading, setLoading] = useState(true);
-  const [loaded, setLoaded] = useState(false);
+  const [loading, setLoading] = useState(remembered === undefined);
+  const [loaded, setLoaded] = useState(remembered !== undefined);
   const [error, setError] = useState('');
   const [dialogError, setDialogError] = useState('');
   const pending = useRef<{
@@ -326,15 +338,18 @@ export function WorkbenchPage({
     );
   }
   async function refresh(signal?: AbortSignal) {
-    setLoading(true);
+    if (!hasPaint.current) setLoading(true);
     setError('');
     try {
       const result = await api.snapshot(signal);
+      if (signal?.aborted) return;
       setState(result.state);
       setModel(result.model);
       setLoaded(true);
+      hasPaint.current = true;
     } catch (e) {
-      if (!signal?.aborted) setError(e instanceof Error ? e.message : '读取工作台失败。');
+      if (signal?.aborted || (e instanceof DOMException && e.name === 'AbortError')) return;
+      setError(e instanceof Error ? e.message : '读取工作台失败。');
     } finally {
       if (!signal?.aborted) setLoading(false);
     }
@@ -344,6 +359,12 @@ export function WorkbenchPage({
     void refresh(abort.signal);
     return () => abort.abort();
   }, [api]);
+  const memoryAccount = viewScope?.accountId ?? '';
+  const memorySpace = viewScope?.spaceId ?? '';
+  useEffect(() => {
+    if (!loaded || !memoryAccount || !memorySpace) return;
+    rememberMemberWorkbench(memoryAccount, memorySpace, { state, model });
+  }, [loaded, memoryAccount, memorySpace, state, model]);
   async function submit(command: WorkbenchCommand): Promise<Workbench | null> {
     if (submitting.current) return null;
     submitting.current = true;
@@ -642,7 +663,7 @@ export function WorkbenchPage({
     (task) => !taskFilters.stage || stageFor(task) === taskFilters.stage,
   );
   const stageLoading = taskCandidates.some((task) => progressFor(task.id)?.state === 'loading');
-  if (loading)
+  if (loading && !loaded)
     return (
       <div className="zhuma zm-loading" role="status">
         正在连接工作台…

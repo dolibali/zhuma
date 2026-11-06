@@ -193,6 +193,7 @@ function MemberWork({
     };
   }, [fetcher, accountId, spaceId, view]);
   const started = useCallback(() => setRefreshKey((value) => value + 1), []);
+  const viewScope = useMemo(() => ({ accountId, spaceId }), [accountId, spaceId]);
   return (
     <div className="zm-member-work">
       {leaveConfirmation.dialog}
@@ -206,16 +207,18 @@ function MemberWork({
             {...(nativeExecution ? { nativeRun } : {})}
             projectExecution={projectContext}
             {...(openWork ? { openWork } : {})}
+            viewScope={viewScope}
           />
         </div>
       ) : (
         <main className="zm-page">
           <h1>我的工作</h1>
           <div className="zm-execution-workspace">
-            <StartablePlansPanel api={api} onStarted={started} />
+            <StartablePlansPanel api={api} onStarted={started} viewScope={viewScope} />
             <ExecutionWorkspace
               api={api}
               refreshKey={refreshKey}
+              viewScope={viewScope}
               {...(nativeExecution ? { nativeRun } : {})}
             />
           </div>
@@ -311,6 +314,7 @@ export function MemberExecutionPage({
           <div role="status">正在确认工作空间…</div>
         ) : (
           <MemberSpaceBoundary
+            // 切换页面会重挂载以放弃未保存草稿；已读取的清单由会话记忆立刻画回。
             key={epoch}
             api={identity}
             session={session}

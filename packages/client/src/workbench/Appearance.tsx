@@ -10,7 +10,7 @@ export interface AppearanceStore {
 
 /** The official host owns this preference, persistence and OS theme resolution. */
 export function Appearance({ store }: { store: AppearanceStore }) {
-  const preference = useSyncExternalStore(store.subscribe, store.getSnapshot);
+  const preference = useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot);
   const caption = { light: '浅色', dark: '深色', system: '跟随系统' }[preference];
   return (
     <SingleSelect
