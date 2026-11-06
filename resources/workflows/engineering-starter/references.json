@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "use": "Conceptual references only; no copied implementation, installed dependency, or external execution protocol.",
+  "sources": [
+    {
+      "project": "OpenSpec",
+      "repository": "https://github.com/Fission-AI/OpenSpec",
+      "commit": "3e4d5f0769e2857c8eb54f149cbf5e4f703fa04c",
+      "document": "schemas/spec-driven/schema.yaml",
+      "license": "MIT",
+      "licenseFile": "LICENSE",
+      "licenseGitBlob": "84c125ae7b8ee08dc5b6e06358ebb6134f45a4c4",
+      "appliedIdea": "Separate observable requirements and scenarios from design and verifiable tasks; carry fixed upstream artifacts between stages."
+    },
+    {
+      "project": "Aider",
+      "repository": "https://github.com/Aider-AI/aider",
+      "commit": "5dc9490bb35f9729ef2c95d00a19ccd30c26339c",
+      "document": "aider/website/docs/usage/lint-test.md",
+      "license": "Apache-2.0",
+      "licenseFile": "LICENSE.txt",
+      "licenseGitBlob": "d645695673349e3947e8e5ae42332d0ac3164cd7",
+      "appliedIdea": "Run real project lint/test commands, preserve diagnostics and nonzero exit codes, then repair and rerun the failed scenario."
+    }
+  ]
+}

@@ -63,6 +63,12 @@ MCP Client 增加公开 `captureMcpClientClose(originalMcpFiber.ctx): McpClientC
 
 ## 附加 ACP 插件及会话目录
 
+桌面独立运行时将此 ACP 补丁显式分类为 `shared`，继续由官方 `prepareRuntimePatches` 校验锁文件哈希、原补丁字节、运行依赖与版本，不删除未知补丁分类守卫。官方 Web Bundle 是该插件的运行依赖方，不能将它当作仅构建期补丁排除。
+
+原桌面 Host 直接由 Electron `RUN_AS_NODE` 使用 ASAR 中的 `dsh`，并不先复制到独立磁盘项目。仅将 `codearts-acp.js`、其 manifest 和 `codearts-policy.js` 按精确包路径解包；普通 Node 不能依赖 Electron 的 ASAR 虚拟文件支持。产品设置将逻辑 `app.asar` 路径和原 Loader 的 policy 身份一致归一到同相对位置的 `app.asar.unpacked` 文件，非 ASAR 路径保持原行为；缺文件拒绝，哈希／版本／注册及权限校验保持。发行清单门禁要求三文件可在磁盘直接读取、为常规文件且与构建和 ASAR 内容同字节。
+
+`node scripts/desktop/verify-runtime-packaging.mjs --sdk <已安装依赖的固定SDK>` 在独立临时源码中执行原补丁准备，要求未分类旧版本失败、shared 新版本保留原字节且通过，未知补丁与改字节仍拒绝。再用原 electron-builder 的 FileMatcher／AsarPackager 从独立 runtime 源映射到 `app/dsh`，对比旧 ASAR 载体拒绝和新物理文件通过，并由普通 Node 与真实 Electron `RUN_AS_NODE` 读取同字节、仅检查脚本语法，不执行 CLI。该定向证据不等于完整生产安装、签名、DMG、GUI、模型或业务验收。
+
 官方 Web Bundle 的 manifest／锁文件固定附加 `@zaimokuza/dsh-acp-adapter@0.2.1-rc.4.1`，具体源码与完整性见 `runtime.lock.json` 和 [来源登记](../../third_party/acp-adapter.md)。仅附加插件路由，不替换默认 Agent factory，不修改用户 profile 或 CLI 认证。SDK 的独立 pnpm 安装验证了原发布包与官方 Host 共用 Cordis、LLM、Session、Tools peer 图。
 
 `Gateway.registerSessionResultProjection` 只为插件 `health`／`projectedSubagentIds` 的 unary 结果捕获当前 Host 投影 owner；执行前及异步返回后均核对同一注册。产品 required 模式下缺少投影拒绝派发；卸载、替换、停止和迟到结果均拒绝返回，未配置的 SDK 保持原行为。产品投影按原 C native 绑定逐项过滤完整任务会话记录，未知数据形状或查询失败整体拒绝，避免普通设置页获得任务会话、continuity cause 或 detail；`boundSessions` 不对普通入口开放。纯全局 provider 路由和普通个人会话继续原语义。

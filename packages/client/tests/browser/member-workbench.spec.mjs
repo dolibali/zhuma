@@ -60,7 +60,11 @@ async function replay(page, { empty = false, model = true } = {}) {
     let result;
     if (request.method === 'zhuma-member/command') await control.commandGate;
     if (request.method === 'zhuma-member/plan') await control.planGate;
-    if (request.method === 'zhuma-member/plan')
+    if (request.method === 'zhuma-member/asset-list') {
+      // Fixed-file choices read scoped metadata, not a workbench snapshot or file bytes.
+      expect(request.payload).toEqual({ spaceId: space.id, kind: 'file', includeDrafts: false });
+      result = { ok: true, value: { actorId: 'chen', spaceId: space.id, items: [] } };
+    } else if (request.method === 'zhuma-member/plan')
       result = {
         ok: false,
         error: { code: 'model-unavailable', message: '规划模型暂不可用，请重试。' },
@@ -152,6 +156,7 @@ test('member UI replay: save before confirm, explicit planning failure preserves
   await button(page, '✧ AI 规划').click();
   await button(page, '生成工作流草案').click();
   await expect(page.getByRole('alert')).toContainText('规划模型暂不可用');
+  expect(control.calls.some((c) => c.method === 'zhuma-member/asset-list')).toBe(true);
   await expect(page.getByLabel('任务目标', { exact: true })).toHaveValue(
     '保留手机号和邮箱两种登录方式',
   );

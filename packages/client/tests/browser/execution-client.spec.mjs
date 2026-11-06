@@ -24,6 +24,74 @@ async function finish(page, outcome = 'success') {
   await page.evaluate((value) => window.executionProbe.complete(0, value), outcome);
 }
 
+for (const width of [1440, 620]) {
+  test(`long review workspace locates its heading and preserves keyboard return at ${width}px`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width, height: 900 });
+    await setup(page);
+    await probe(page, () => {
+      const control = window.executionProbe;
+      const review = control.nodes[0];
+      const delivery = control.nodes[1];
+      const text = Array.from(
+        { length: 200 },
+        (_, i) => `第${i}行：${'完整固定提交与工程说明。'.repeat(3)}`,
+      ).join('\n');
+      control.nodes = [
+        ...Array.from({ length: 8 }, (_, i) => ({ ...delivery, nodeId: `work-${i}` })),
+        {
+          ...review,
+          goal: '长正文固定评审',
+          artifacts: [
+            {
+              id: 'previous',
+              version: 1,
+              text: text
+                .split('\n')
+                .map((line) => `旧版 ${line}`)
+                .join('\n'),
+            },
+            { id: 'artifact-1', version: 2, text },
+          ],
+        },
+      ];
+    });
+    await button(page, '刷新').click();
+    const opener = button(page, '提交评审');
+    await opener.focus();
+    await opener.press('Enter');
+    const heading = page.getByRole('heading', { name: '长正文固定评审', exact: true });
+    await expect(heading).toBeFocused();
+    await expect(heading).toBeInViewport();
+    const body = page.getByRole('region', { name: '提交正文', exact: true });
+    await expect(body).toContainText('第199行：完整固定提交与工程说明。');
+    expect(await body.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(
+      true,
+    );
+    const diff = page.locator('.zm-review-diff');
+    await expect(diff).not.toHaveAttribute('open');
+    await diff.locator('summary').click();
+    await expect(diff).toHaveAttribute('open', '');
+    expect(
+      await diff.locator('pre').evaluate((element) => element.scrollHeight > element.clientHeight),
+    ).toBe(true);
+    await button(page, '填写评审意见').click();
+    const input = page.getByLabel('评审意见', { exact: true });
+    await expect(input).toBeFocused();
+    await expect(input).toBeInViewport();
+    await expect(button(page, '通过')).toBeInViewport();
+    await input.fill('已核对完整正文');
+    await opener.focus();
+    await opener.press('Enter');
+    await expect(heading).toBeFocused();
+    await expect(input).toHaveValue('已核对完整正文');
+    await button(page, '通过').click();
+    await expect(input).toHaveCount(0);
+    await expect(opener).toBeFocused();
+  });
+}
+
 test('only an explicit start dispatches; repeated clicks and retry reuse the same request', async ({
   page,
 }) => {
@@ -96,13 +164,14 @@ test('review unmount and return to the same item cannot revive an old receipt', 
 }) => {
   await setup(page, 'review');
   await hold(page);
-  await page.getByLabel('评审意见').fill('旧意见');
+  const input = page.getByRole('textbox', { name: '评审意见', exact: true });
+  await input.fill('旧意见');
   await button(page, '通过').click();
   await button(page, '卸载执行页').click();
   await button(page, '重新打开执行页').click();
-  await page.getByLabel('评审意见').fill('重新打开后的意见');
+  await input.fill('重新打开后的意见');
   await finish(page);
-  await expect(page.getByLabel('评审意见')).toHaveValue('重新打开后的意见');
+  await expect(input).toHaveValue('重新打开后的意见');
   expect(await probe(page, () => window.executionProbe.events.length)).toBe(0);
 });
 

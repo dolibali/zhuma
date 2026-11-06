@@ -114,39 +114,48 @@ export function SidebarAccountFooter({
               className="zm-account-positioner"
             >
               <Popover.Popup className="zhuma zm-account-popup">
-                <Popover.Title className="zm-sr-only">账号与空间</Popover.Title>
+                <Popover.Title className="zm-account-popup-title">账号与空间</Popover.Title>
                 <div className="zm-account-identity">
-                  <small>当前账号</small>
-                  <strong>{accountId}</strong>
+                  <span className="zm-account-avatar" aria-hidden="true">
+                    {Array.from(accountId ?? '')[0]?.toLocaleUpperCase()}
+                  </span>
+                  <div className="zm-account-identity-text">
+                    <small>当前账号</small>
+                    <strong>{accountId}</strong>
+                  </div>
                 </div>
-                <Field label="工作空间">
-                  <SingleSelect
-                    label="切换工作空间"
-                    value={value}
-                    options={spaces.map((space) => ({
-                      value: space.id,
-                      label: `${space.kind === 'personal' ? '个人' : '团队'} · ${space.name}`,
-                    }))}
-                    disabled={!spaces.length}
-                    onValueChange={(id) => {
-                      setOpen(false);
-                      openWork();
-                      shell.requestSpace(id, () => trigger.current?.focus(), state.epoch);
-                    }}
-                  />
-                </Field>
-                {snapshot.space?.status === 'empty' && <p className="zm-muted">尚未分配工作空间</p>}
-                {snapshot.space?.status === 'error' && (
-                  <Button
-                    onClick={() => {
-                      setOpen(false);
-                      openWork();
-                      void shell.space?.refresh();
-                    }}
-                  >
-                    重新连接空间
-                  </Button>
-                )}
+                <div className="zm-account-space">
+                  <Field label="工作空间">
+                    <SingleSelect
+                      label="切换工作空间"
+                      value={value}
+                      options={spaces.map((space) => ({
+                        value: space.id,
+                        label: `${space.kind === 'personal' ? '个人' : '团队'} · ${space.name}`,
+                      }))}
+                      disabled={!spaces.length}
+                      onValueChange={(id) => {
+                        setOpen(false);
+                        openWork();
+                        shell.requestSpace(id, () => trigger.current?.focus(), state.epoch);
+                      }}
+                    />
+                  </Field>
+                  {snapshot.space?.status === 'empty' && (
+                    <p className="zm-muted">尚未分配工作空间</p>
+                  )}
+                  {snapshot.space?.status === 'error' && (
+                    <Button
+                      onClick={() => {
+                        setOpen(false);
+                        openWork();
+                        void shell.space?.refresh();
+                      }}
+                    >
+                      重新连接空间
+                    </Button>
+                  )}
+                </div>
                 <div className="zm-account-exit">
                   {manageAccount && (
                     <Button

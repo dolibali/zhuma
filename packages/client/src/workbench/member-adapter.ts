@@ -71,6 +71,12 @@ export function createMemberWorkbenchAdapter(
         }),
       );
     },
+    async planningModels(signal) {
+      return api.planningModels(signal);
+    },
+    async selectPlanningModel(provider, model, signal) {
+      return api.selectPlanningModel(provider, model, signal);
+    },
     async plan(taskId, expectedRevision, instruction, signal, baseProposalId, adjustment) {
       const value = await api.plan(
         {

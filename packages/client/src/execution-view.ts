@@ -35,6 +35,7 @@ export const INBOX_ACTION_LABELS: Record<InboxAction, string> = {
   'retry-or-take-back': '重试或接回',
   review: '提交评审',
   confirm: '确认',
+  wait: '等待中',
 };
 
 export const INBOX_GROUPS = [
@@ -42,6 +43,7 @@ export const INBOX_GROUPS = [
   { id: 'revise', label: '退回修改' },
   { id: 'review', label: '待我评审' },
   { id: 'active', label: '处理中' },
+  { id: 'waiting', label: '等待中' },
   { id: 'attention', label: '补充与确认' },
   { id: 'other', label: '其他工作项' },
 ] as const;
@@ -62,12 +64,16 @@ export function inboxItemGroup(item: InboxItem): InboxGroup {
   )
     return 'active';
   if (
+    item.action === 'wait' ||
+    (item.kind === 'deliver' &&
+      item.action === 'provide-input' &&
+      ['input-required', 'owner-input-required'].includes(item.reason))
+  )
+    return 'waiting';
+  if (
     (item.kind === 'confirm' &&
       item.action === 'confirm' &&
       ['parent-confirmation', 'explicit-confirmation'].includes(item.reason)) ||
-    (item.kind === 'deliver' &&
-      item.action === 'provide-input' &&
-      ['input-required', 'owner-input-required'].includes(item.reason)) ||
     (item.kind === 'deliver' &&
       item.action === 'retry-or-take-back' &&
       ['retry-or-take-back', 'owner-take-back'].includes(item.reason))

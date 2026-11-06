@@ -6,6 +6,8 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
+import { applyDevModelGatewayEnv } from '../lib/dev-model-gateway.mjs';
+import { assertProductSourceRecipe } from './source-recipe.mjs';
 
 const root = resolve(fileURLToPath(new URL('../..', import.meta.url)));
 const { values } = parseArgs({
@@ -20,19 +22,9 @@ if (process.platform !== 'darwin' || process.arch !== 'arm64')
 if (git(stage, 'rev-parse', 'HEAD') !== lock.upstreams.deepseekHarness.commit)
   throw new Error('Unexpected prepared SDK revision.');
 const stamp = JSON.parse(readFileSync(join(stage, '.zhuma-prepared.json'), 'utf8'));
-const recipe = Buffer.concat(
-  [
-    'patches/deepseek-harness/zhuma-desktop.patch',
-    'packages/dsh-adapter/src/desktop-member-cookie.ts',
-    'scripts/desktop/verify-build-source-paths.ts',
-    'scripts/desktop/verify-runtime-privacy.ts',
-    'branding/default/icon-manifest.json',
-    'scripts/desktop/prepare.mjs',
-    'scripts/desktop/icon-assets.mjs',
-  ].map((name) => readFileSync(join(root, name))),
-);
-if (stamp.pinned !== lock.upstreams.deepseekHarness.commit || stamp.digest !== sha(recipe))
+if (stamp.pinned !== lock.upstreams.deepseekHarness.commit)
   throw new Error('Prepared SDK recipe differs; prepare the matching SDK before refreshing.');
+assertProductSourceRecipe(root, stamp, 'desktop');
 for (const name of [
   'apps/desktop/lib/main.js',
   'apps/desktop-host/lib/index.js',
@@ -83,12 +75,16 @@ if (!values['prepare-only']) {
       cwd: stage,
       stdio: 'inherit',
       env: {
-        ...process.env,
-        DSH_DESKTOP_APP_ID: 'dev.zhuma.app',
-        DSH_CLIENT_TITLE: 'Zhuma',
-        ZHUMA_DESKTOP_PRODUCT_VERSION: JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
-          .version,
-        DSH_DESKTOP_OPEN_DEVTOOLS: process.env.DSH_DESKTOP_OPEN_DEVTOOLS ?? '1',
+        ...applyDevModelGatewayEnv({
+          ...process.env,
+          DSH_DESKTOP_APP_ID: 'dev.zhuma.app',
+          DSH_CLIENT_TITLE: 'Zhuma',
+          ZHUMA_DESKTOP_PRODUCT_VERSION: JSON.parse(
+            readFileSync(join(root, 'package.json'), 'utf8'),
+          ).version,
+          DSH_DESKTOP_OPEN_DEVTOOLS: process.env.DSH_DESKTOP_OPEN_DEVTOOLS ?? '1',
+          ZHUMA_WORKBENCH_DEV_GATEWAY: process.env.ZHUMA_WORKBENCH_DEV_GATEWAY ?? '1',
+        }),
       },
     },
   );

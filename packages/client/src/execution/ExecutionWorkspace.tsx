@@ -174,6 +174,7 @@ function Workspace({ api, plan, refreshKey, nativeRun, viewScope }: Props) {
         <ReviewWorkspace
           api={api}
           node={node}
+          focusRequest={selected.token}
           {...(nativeRun?.api.review
             ? { nativeReview: { api: nativeRun.api.review, spaceId: nativeRun.spaceId } }
             : {})}

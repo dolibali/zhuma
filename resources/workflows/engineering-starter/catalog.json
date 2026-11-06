@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "id": "zhuma-engineering-starter",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "licenseFile": "LICENSE.txt",
-  "description": "四组可选研发工作流及可单独使用的方法 Skills。",
+  "description": "默认需求到代码验收与四组可选研发工作流，以及可单独使用的方法 Skills。",
   "registrationNotes": [
     "此清单仅为静态构建登记元数据，不是导入器或执行协议；工作流文件逐个遵守现有 WorkflowTemplate v1。",
     "默认可见可选，不自动导入、覆盖空间或开始运行；成员显式选择自己的本机执行者。",
@@ -71,9 +71,33 @@
       "name": "工程文档编写",
       "entry": "resources/skills/engineering-starter/engineering-writing/SKILL.md",
       "licenseFile": "resources/skills/engineering-starter/engineering-writing/LICENSE.txt"
+    },
+    {
+      "id": "zhuma-eng-controlled-implementation",
+      "name": "受控代码实现",
+      "entry": "resources/skills/engineering-starter/controlled-implementation/SKILL.md",
+      "licenseFile": "resources/skills/engineering-starter/controlled-implementation/LICENSE.txt"
     }
   ],
   "workflows": [
+    {
+      "id": "zhuma-eng-requirements-to-code",
+      "name": "需求到代码验收",
+      "description": "需求、设计任务、实现、真实验证、实现者送审修正与固定交付；独立和人工双评审，返工沿原节点重提。",
+      "file": "requirements-to-code.json",
+      "roleSkillSuggestions": {
+        "analyst": ["zhuma-eng-requirements-analysis"],
+        "designer": [
+          "zhuma-eng-solution-design",
+          "zhuma-eng-delivery-plan",
+          "zhuma-eng-test-design"
+        ],
+        "implementer": ["zhuma-eng-controlled-implementation", "zhuma-eng-bounded-fix"],
+        "verifier": ["zhuma-eng-focused-verification"],
+        "independent-reviewer": ["zhuma-eng-change-review", "zhuma-eng-acceptance-review"],
+        "human-approver": ["zhuma-eng-acceptance-review", "zhuma-eng-engineering-writing"]
+      }
+    },
     {
       "id": "zhuma-eng-requirements-to-test",
       "name": "需求分析与测试设计",

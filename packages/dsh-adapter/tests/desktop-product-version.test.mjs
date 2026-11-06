@@ -26,6 +26,8 @@ async function patched(t) {
     'desktop-build-version.d.mts',
     'package-target.ts',
     'electron-builder-config.mjs',
+    'desktop-package-environment.mjs',
+    'desktop-build-commit.mjs',
   ];
   for (const file of files) {
     const name = join(scripts, file);
@@ -105,6 +107,188 @@ test('owned desktop version: P/B are explicit while absent P preserves SDK seman
   assert.equal(
     await readFile(join(stage, 'apps/desktop/package.json'), 'utf8'),
     await readFile(join(sdk, 'apps/desktop/package.json'), 'utf8'),
+  );
+});
+
+test('unsigned Windows uses the original scrubbed local environment and omits release policy while signed gates remain', async (t) => {
+  const { stage } = await patched(t);
+  const parsed = async (file) =>
+    ts.createSourceFile(
+      file,
+      await readFile(join(stage, scripts, file), 'utf8'),
+      ts.ScriptTarget.Latest,
+      true,
+    );
+  const environment = await parsed('desktop-package-environment.mjs');
+  const variable = (source, name, statements = source.statements) =>
+    statements.find(
+      (node) =>
+        ts.isVariableStatement(node) &&
+        node.declarationList.declarations.some((d) => d.name.getText(source) === name),
+    );
+  const functionOf = (source, name) =>
+    source.statements.find((node) => ts.isFunctionDeclaration(node) && node.name?.text === name);
+  const local = new Function(
+    `${variable(environment, 'AMBIENT_RELEASE_SETTING').getText(environment)}; ${functionOf(
+      environment,
+      'localMacOSPackageEnvironment',
+    )
+      .getText(environment)
+      .replace(/^export\s+/u, '')}; return localMacOSPackageEnvironment;`,
+  )();
+  const synthetic = {
+    PATH: '/tool/bin',
+    DSH_DESKTOP_WINDOWS_TOKEN_PIN: 'test-only-not-a-credential',
+    DSH_DESKTOP_MANDATORY_UPDATE_TEST_ORIGIN: 'https://example.invalid',
+    ZHUMA_DESKTOP_SOURCE_COMMIT: 'a'.repeat(40),
+  };
+  const clean = local(synthetic);
+  assert.equal(clean.DSH_DESKTOP_APP_ID, 'dev.zhuma.app');
+  assert.equal(clean.DSH_DESKTOP_UNSIGNED, '1');
+  assert.equal(clean.ZHUMA_DESKTOP_SOURCE_COMMIT, synthetic.ZHUMA_DESKTOP_SOURCE_COMMIT);
+  assert.equal(clean.DSH_DESKTOP_WINDOWS_TOKEN_PIN, undefined);
+  assert.equal(clean.DSH_DESKTOP_MANDATORY_UPDATE_TEST_ORIGIN, undefined);
+  const target = await parsed('package-target.ts');
+  const main = functionOf(target, 'main');
+  const select = new Function(
+    'invocation',
+    'target',
+    'localMacOSPackageEnvironment',
+    'loadDesktopPackageEnvironment',
+    'APP_ROOT',
+    'process',
+    `${variable(target, 'environment', main.body.statements).getText(target)}; return environment;`,
+  );
+  assert.deepEqual(
+    select(
+      { unsigned: true },
+      { platform: 'win32' },
+      () => local(synthetic),
+      () => assert.fail('Unsigned must not read .env/windows secrets'),
+      '/fixture',
+      { env: synthetic },
+    ),
+    clean,
+  );
+  let signedReads = 0;
+  select(
+    { unsigned: false },
+    { platform: 'win32' },
+    () => assert.fail('Signed must use original release settings'),
+    () => {
+      signedReads++;
+      return {};
+    },
+    '/fixture',
+    { env: synthetic },
+  );
+  assert.equal(signedReads, 1);
+  const validate = new Function(
+    'resolveDesktopAppId',
+    'resolveNpmRegistry',
+    'resolveDesktopPolicyEnvironment',
+    'resolveWindowsPackageSettings',
+    'resolveMacOSPackageSettings',
+    `${functionOf(environment, 'validateDesktopPackageEnvironment')
+      .getText(environment)
+      .replace(/^export\s+/u, '')}; return validateDesktopPackageEnvironment;`,
+  )(
+    () => {},
+    () => {},
+    () => {
+      throw Error('signed-policy-required');
+    },
+    () => {},
+    () => {},
+  );
+  validate(clean, { platform: 'win32', arch: 'x64' }, { unsigned: true });
+  assert.throws(
+    () => validate({}, { platform: 'win32', arch: 'x64' }, { unsigned: false }),
+    /signed-policy-required/u,
+  );
+  const config = await parsed('electron-builder-config.mjs');
+  const body = functionOf(config, 'createElectronBuilderConfig').body.statements;
+  const policy = new Function(
+    'unsigned',
+    'resolveDesktopPolicyEnvironment',
+    'env',
+    `${variable(config, 'policy', body).getText(config)}; return policy;`,
+  );
+  assert.equal(
+    policy(true, () => assert.fail('Unsigned must not install vendor policy'), clean),
+    undefined,
+  );
+  assert.throws(
+    () =>
+      policy(
+        false,
+        () => {
+          throw Error('signed-policy-required');
+        },
+        {},
+      ),
+    /signed-policy-required/u,
+  );
+});
+
+test('packaged product source is distinct from the original SDK build commit and dirty state', async (t) => {
+  const { stage } = await patched(t);
+  const source = ts.createSourceFile(
+    'config.mjs',
+    await readFile(join(stage, scripts, 'electron-builder-config.mjs'), 'utf8'),
+    ts.ScriptTarget.Latest,
+    true,
+  );
+  const body = source.statements.find(
+    (n) => ts.isFunctionDeclaration(n) && n.name?.text === 'createElectronBuilderConfig',
+  ).body.statements;
+  const declaration = (name) =>
+    body
+      .find(
+        (n) =>
+          ts.isVariableStatement(n) &&
+          n.declarationList.declarations.some((d) => d.name.getText(source) === name),
+      )
+      .getText(source);
+  const object = body.find(ts.isReturnStatement).expression;
+  const extra = object.properties
+    .find((p) => p.name?.getText(source) === 'extraMetadata')
+    .initializer.getText(source);
+  const read = new Function(
+    'env',
+    'resolveDesktopBuildCommit',
+    'appId',
+    'update',
+    'policy',
+    'buildVersion',
+    'productVersion',
+    `${declaration('packaged')};${declaration('productSource')};return (${extra});`,
+  );
+  const { resolveDesktopBuildCommit } = await import(
+    pathToFileURL(join(stage, scripts, 'desktop-build-commit.mjs')).href
+  );
+  const env = {
+    DSH_DESKTOP_BUILD_COMMIT: 'c'.repeat(40),
+    DSH_DESKTOP_BUILD_DIRTY: '1',
+    ZHUMA_DESKTOP_SOURCE_COMMIT: 'a'.repeat(40),
+    ZHUMA_DESKTOP_SOURCE_DIRTY: '0',
+  };
+  const value = read(
+    env,
+    resolveDesktopBuildCommit,
+    'dev.zhuma.app',
+    undefined,
+    undefined,
+    '1.4.0',
+    '0.2.1-rc.4',
+  );
+  assert.equal(value.dshBuildCommit, env.DSH_DESKTOP_BUILD_COMMIT);
+  assert.equal(value.dshBuildDirty, true);
+  assert.equal(value.zhumaSourceCommit, env.ZHUMA_DESKTOP_SOURCE_COMMIT);
+  assert.equal(value.zhumaSourceDirty, false);
+  assert.throws(
+    () => read({ ...env, ZHUMA_DESKTOP_SOURCE_COMMIT: 'invalid' }, resolveDesktopBuildCommit),
+    /commit hash/u,
   );
 });
 test('owned desktop version refuses invalid P/B, metadata, unrelated release numbers and wrong suffixes through the original parser', async (t) => {

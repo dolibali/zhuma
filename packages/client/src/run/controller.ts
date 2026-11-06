@@ -23,9 +23,10 @@ const runIdentity = (run: NativeRunRead | null) =>
   run ? JSON.stringify([run.runId, run.generation, run.segmentId]) : undefined;
 const conversationIdentity = (run: NativeRunRead | null) =>
   run ? JSON.stringify([runIdentity(run), run.native?.sessionId, run.native?.agentId]) : undefined;
-const isMessageTransportUnavailable = (error: unknown) => {
+const isMessageReadUnavailable = (error: unknown) => {
   const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
-  if (code !== undefined) return code === 'unavailable';
+  if (code !== undefined)
+    return code === 'unavailable' || code === 'read-timeout' || code === 'capacity';
   return (
     error instanceof TypeError || (error instanceof DOMException && error.name === 'TimeoutError')
   );
@@ -239,7 +240,7 @@ export function createNativeRunController(api: NativeRunApi, target: NativeRunTa
       observe();
     } catch (error) {
       if (valid()) {
-        if (adopted && isMessageTransportUnavailable(error)) {
+        if (adopted && isMessageReadUnavailable(error)) {
           ready();
           publish({ error: '运行状态已更新，部分会话消息暂未同步，请刷新重试。' });
           observe();

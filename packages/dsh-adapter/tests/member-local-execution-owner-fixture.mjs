@@ -24,6 +24,8 @@ export { fixture } from './member-local-execution-protocol-fixture.mjs';
 export { MemberLocalExecutionProtocol } from '../dist/member-local-execution-protocol.js';
 export { MemberLocalExecutionSecrets } from '../dist/member-local-execution-secrets.js';
 export { acceptedInputRef } from '../dist/native-work-session-input-tool.js';
+export { canonicalPayload } from '@zhuma/agent-core';
+export { createVerifiedTeamAssetFile } from '../dist/team-asset-file-carrier.js';
 
 /** Actual original SDK Host/profile; provider output is scripted, backend authority
  * is separately labelled a contract. No alternative Agent factory is installed. */
@@ -61,6 +63,7 @@ export async function bootLocalOwner(root, protocol, options = {}) {
       protocol,
       ...(options.review ? { review: options.review } : {}),
       ...(options.knowledge ? { knowledge: options.knowledge } : {}),
+      ...(options.teamAssets ? { teamAssets: options.teamAssets } : {}),
       assertModel: options.assertModel ?? (() => undefined),
       ...(workspace
         ? {

@@ -9,8 +9,74 @@ import {
   readExecutionRunComposition,
   executionRunCompositionRequest,
   assertExecutionRunComposition,
+  executionRunCompositionSchema,
 } from '../dist/execution-run-composition.js';
 import { compositionFacts, reader } from './execution-run-composition-fixture.mjs';
+
+function sealData(value) {
+  if (value && typeof value === 'object') {
+    for (const child of Object.values(value)) sealData(child);
+    Object.freeze(value);
+  }
+  return value;
+}
+
+test('composition certificate: a deeply immutable input reuses only the complete parsed frozen snapshot', () => {
+  const original = freezeExecutionRunComposition(compositionFacts());
+  const input = structuredClone(original);
+  // Original schema normalization must survive; raw input is not parsed output.
+  input.payload.scope.actorId = ' chen ';
+  sealData(input);
+  const parsed = executionRunCompositionSchema.parse(input);
+  assert.notEqual(parsed, input);
+  assert.equal(parsed.payload.scope.actorId, 'chen');
+  assert(Object.isFrozen(parsed.payload.scope));
+  assert.equal(executionRunCompositionSchema.parse(input), parsed);
+  assert.equal(readExecutionRunComposition(input), parsed);
+  assert.equal(readExecutionRunComposition(parsed), parsed);
+  assert.throws(() => {
+    parsed.payload.scope.actorId = 'other';
+  }, TypeError);
+  assert.deepEqual(parsed, original);
+});
+
+for (const shallow of [false, true])
+  test(`composition certificate: ${shallow ? 'shallow-frozen' : 'mutable'} input is revalidated and cannot reuse changed content`, () => {
+    const input = structuredClone(freezeExecutionRunComposition(compositionFacts()));
+    if (shallow) Object.freeze(input);
+    const first = executionRunCompositionSchema.parse(input);
+    first.payload.model.model = 'external-edit';
+    const next = executionRunCompositionSchema.parse(input);
+    assert.notEqual(first, next);
+    assert.equal(next.payload.model.model, 'contract-model');
+    input.payload.context += 'changed without a new checksum';
+    assert.equal(executionRunCompositionSchema.safeParse(input).success, false);
+  });
+
+test('composition certificate: replacement, bad checksum, oversized bytes and unknown schema stay rejected after a valid observation', () => {
+  const original = freezeExecutionRunComposition(compositionFacts());
+  executionRunCompositionSchema.parse(original);
+  for (const mutate of [
+    (value) => {
+      value.configurationId = 'composition_' + '0'.repeat(64);
+    },
+    (value) => {
+      value.payload.firstMessage.text += 'changed';
+    },
+    (value) => {
+      value.payload.plan.goal = 'x'.repeat(70_000);
+    },
+    (value) => {
+      value.schemaVersion = 99;
+    },
+  ]) {
+    const changed = structuredClone(original);
+    mutate(changed);
+    sealData(changed);
+    assert.equal(executionRunCompositionSchema.safeParse(changed).success, false);
+    assert.throws(() => readExecutionRunComposition(changed));
+  }
+});
 
 test('composition contract: explicit builtin/model becomes a copied frozen recoverable definition, not an official preset', () => {
   const facts = compositionFacts();

@@ -516,26 +516,14 @@ function mergeComments(
   return [...existing, ...incoming.filter((comment) => !seen.has(comment.id))];
 }
 
-/**
- * Record one trusted actor's ballot. The actor is not read from the ballot alone.
- * Reviewer membership is checked before replay, and the fingerprint includes the actor.
- */
-export function castBallot(input: {
-  readonly record: ExecutionNodeRecord;
-  readonly actorId: string;
-  readonly idempotencyKey: string;
-  readonly expectedVersion: number;
-  readonly ballot: ReviewBallot;
-  readonly comments?: readonly CitedComment[];
-}): NodeCommandResult {
-  if (!input.record.handoff.reviewerIds.includes(input.actorId)) {
-    return reject(input.record, 'not-assigned-reviewer');
-  }
-  if (input.ballot.reviewerId !== input.actorId) {
-    return reject(input.record, 'actor-mismatch');
-  }
-  const comments = input.comments ?? [];
-  const fingerprint = canonicalPayload({
+function ballotFingerprint(
+  input: {
+    readonly actorId: string;
+    readonly ballot: ReviewBallot;
+  },
+  comments: readonly unknown[],
+): string {
+  return canonicalPayload({
     kind: 'ballot',
     actorId: input.actorId,
     reviewerId: input.ballot.reviewerId,
@@ -547,7 +535,75 @@ export function castBallot(input: {
     availability: input.ballot.availability ?? null,
     comments,
   });
-  const replay = replayReceipt(input.record, input.idempotencyKey, fingerprint);
+}
+
+/** The old fingerprint is canonical JSON, including its historical comment snapshot.
+ * Read only that context; every request field is still rebuilt and compared in full.
+ */
+function savedBallotComments(
+  record: ExecutionNodeRecord,
+  idempotencyKey: string,
+): readonly unknown[] | undefined {
+  const receipt = record.receipts.find((item) => item.idempotencyKey === idempotencyKey);
+  if (!receipt) return undefined;
+  try {
+    const saved: unknown = JSON.parse(receipt.fingerprint);
+    if (
+      saved !== null &&
+      typeof saved === 'object' &&
+      !Array.isArray(saved) &&
+      'comments' in saved &&
+      Array.isArray(saved.comments)
+    )
+      return saved.comments;
+  } catch {
+    // A malformed/foreign receipt never becomes a successful legacy replay.
+  }
+  return undefined;
+}
+
+/**
+ * Record one trusted actor's ballot. The actor is not read from the ballot alone.
+ * Reviewer membership is checked before replay, and the fingerprint includes the actor.
+ * `comments` is the full set citation checks use. `receiptComments`, when set, is the
+ * only comment rows this request itself contributes to the receipt. A receipt saved
+ * before that split still matches against its own saved comment snapshot, not later rows.
+ */
+export function castBallot(input: {
+  readonly record: ExecutionNodeRecord;
+  readonly actorId: string;
+  readonly idempotencyKey: string;
+  readonly expectedVersion: number;
+  readonly ballot: ReviewBallot;
+  readonly comments?: readonly CitedComment[];
+  readonly receiptComments?: readonly CitedComment[];
+}): NodeCommandResult {
+  if (!input.record.handoff.reviewerIds.includes(input.actorId)) {
+    return reject(input.record, 'not-assigned-reviewer');
+  }
+  if (input.ballot.reviewerId !== input.actorId) {
+    return reject(input.record, 'actor-mismatch');
+  }
+  const comments = input.comments ?? [];
+  const fingerprintComments = input.receiptComments ?? comments;
+  const fingerprint = ballotFingerprint(input, fingerprintComments);
+  let replay = replayReceipt(input.record, input.idempotencyKey, fingerprint);
+  if (
+    replay &&
+    !replay.ok &&
+    replay.code === 'idempotency-mismatch' &&
+    input.receiptComments !== undefined
+  ) {
+    const savedComments = savedBallotComments(input.record, input.idempotencyKey);
+    if (savedComments !== undefined) {
+      const legacy = replayReceipt(
+        input.record,
+        input.idempotencyKey,
+        ballotFingerprint(input, savedComments),
+      );
+      if (legacy?.ok) replay = legacy;
+    }
+  }
   if (replay) return replay;
   if (input.expectedVersion !== input.record.command.version) {
     return { ok: false, disposition: 'conflict', code: 'conflict', record: input.record };

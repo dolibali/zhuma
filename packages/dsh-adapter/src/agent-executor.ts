@@ -1,4 +1,13 @@
-import type { ExecutionEngine, ExecutionFaultKind } from '@zhuma/agent-core';
+import {
+  checkPromptConstraints,
+  executionConstraintText,
+  PromptConstraintError,
+  readPromptConstraints,
+  type ExecutionEngine,
+  type ExecutionFaultKind,
+  type PromptConstraintSnapshot,
+} from '@zhuma/agent-core';
+import { resolveDevModelGateway } from './dev-model-gateway.js';
 
 /**
  * `verified` 表示这条原生路由在本进程里已经配好，不是评审签字。
@@ -66,6 +75,8 @@ export interface AgentRunRequest {
     readonly bytes: Uint8Array;
   }[];
   readonly promptContext?: readonly { readonly id: string; readonly body: string }[];
+  /** 与规划读取的同一份冻结约束。缺省表示本轮没有项目或工作区约束。 */
+  readonly promptConstraints?: PromptConstraintSnapshot;
 }
 
 export interface AgentActivity {
@@ -319,8 +330,15 @@ export type DshModelConfigResult =
   | { readonly ok: true; readonly config: DshModelConfig }
   | { readonly ok: false; readonly reason: string };
 
-/** 只读环境变量。缺哪一项就在原因里点名，不写出地址和密钥。 */
+/** 只读 ZHUMA_MODEL_* 环境变量（自定义提供商／OpenAI-compatible）。缺项时点名，不写出地址和密钥，无仓库内默认字面量。 */
 export function readDshModelConfig(env: NodeJS.ProcessEnv = process.env): DshModelConfigResult {
+  const gateway = resolveDevModelGateway(env);
+  if (gateway) {
+    return {
+      ok: true,
+      config: { baseUrl: gateway.baseUrl, apiKey: gateway.apiKey, modelId: gateway.modelId },
+    };
+  }
   const baseUrl = env.ZHUMA_MODEL_BASE_URL?.trim() ?? '';
   const apiKey = env.ZHUMA_MODEL_API_KEY?.trim() ?? '';
   const modelId = env.ZHUMA_MODEL_ID?.trim() ?? '';
@@ -355,9 +373,12 @@ function delay(ms: number): Promise<void> {
   });
 }
 
-/** 节点目标、输入说明、交付说明和本轮要求。空的说明不写入。 */
+/** 节点目标、输入说明、交付说明和本轮要求。空的说明不写入。有冻结约束时执行与规划读同一份。 */
 export function taskPrompt(
-  request: Pick<AgentRunRequest, 'goal' | 'instruction' | 'inputNote' | 'expectedOutput'>,
+  request: Pick<
+    AgentRunRequest,
+    'goal' | 'instruction' | 'inputNote' | 'expectedOutput' | 'promptConstraints' | 'toolAllowlist'
+  >,
 ): string {
   const parts = [`节点目标：${request.goal}`];
   const inputNote = request.inputNote?.trim() ?? '';
@@ -365,6 +386,20 @@ export function taskPrompt(
   if (inputNote.length > 0) parts.push(`输入说明：${inputNote}`);
   if (expectedOutput.length > 0) parts.push(`交付说明：${expectedOutput}`);
   parts.push(`本轮要求：${request.instruction}`);
+  if (request.promptConstraints) {
+    const frozen = readPromptConstraints(request.promptConstraints);
+    const checked = checkPromptConstraints(frozen, {
+      ...(request.toolAllowlist?.length ? { tools: [...request.toolAllowlist] } : {}),
+    });
+    if (!checked.ok) {
+      throw new PromptConstraintError(
+        'constraint-violation',
+        checked.issues.map((item) => `${item.code} ${item.target} ${item.reason}`).join('\n'),
+        checked.issues,
+      );
+    }
+    parts.push(executionConstraintText(frozen));
+  }
   return parts.join('\n');
 }
 

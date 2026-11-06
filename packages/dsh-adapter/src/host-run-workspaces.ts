@@ -336,8 +336,17 @@ export function createHostRunWorkspaces(
     changed();
   });
   function selected(actorId: string, spaceId: string, projectId: string, bindingId: string) {
+    return selectFromSources(actorId, spaceId, projectId, bindingId, policySources());
+  }
+  function selectFromSources(
+    actorId: string,
+    spaceId: string,
+    projectId: string,
+    bindingId: string,
+    sources: readonly PolicySource[],
+  ) {
     active();
-    const binding = policySources().find(
+    const binding = sources.find(
       ({ policy }) =>
         policy.id === bindingId &&
         policy.actorId === actorId &&
@@ -519,11 +528,14 @@ export function createHostRunWorkspaces(
     projectId: string,
     workspace: ExecutionWorkspace,
   ) {
-    for (const { policy: row } of policySources()) {
+    // Only this synchronous call owns the material; no await or later check
+    // can reuse it. Each new call still reads the original owner afresh.
+    const sources = policySources();
+    for (const { policy: row } of sources) {
       if (row.actorId !== actorId || row.spaceId !== spaceId || row.projectId !== projectId)
         continue;
       try {
-        const current = selected(actorId, spaceId, projectId, row.id);
+        const current = selectFromSources(actorId, spaceId, projectId, row.id, sources);
         if (sameGrant(current.workspace, workspace)) return current;
       } catch (error) {
         // An independently revoked binding must not shadow another valid grant.

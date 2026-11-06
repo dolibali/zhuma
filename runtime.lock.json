@@ -26,7 +26,7 @@
       "commit": "28ccc6745ec82139c684c3642637e93e00d800f2",
       "integrity": "sha512-IMLKvzdzb3JzbH2DTn5G5CiKC7hMgtaXxItsCKEwJ2JJu5Z4AngeuhET+/33OGhgnEcUo7ZVQez5bymi7oXtKQ==",
       "nativeToolHandoff": {
-        "sourceTree": "4c54f49a7585f43ea41eb9c12a525fff834efff6",
+        "sourceTree": "2b2f65de5f748b0f9f172ba843c1732b166662d5",
         "communityPatchTree": "fbe9a9708ace3a727553abeb8ae3850cc43b9c75",
         "sourcePackageManager": "pnpm@10.7.0",
         "sourceNode": "24.15.0",
@@ -37,11 +37,11 @@
           },
           "host-registration-source.patch": {
             "path": "patches/dsh-acp-adapter/host-registration-source.patch",
-            "sha256": "c4aa5b12cd60adbf8615501cfee44940927763aa45b55a75ebdaf25888a10168"
+            "sha256": "0e538eb53d789d999edf230a5808add054c3658930a9643f924ec6e2543b6b1e"
           },
           "published-package.patch": {
             "path": "patches/dsh-acp-adapter/published-package.patch",
-            "sha256": "e7d8880c63d599db18874bb30d47188c2c0c14b101afddcf821adca1163e328a"
+            "sha256": "37a077f243e9d6265e0c22797def004c84e055385f152b20573752ca2ecfa0be"
           }
         }
       }

@@ -60,12 +60,21 @@ export interface WorkspaceApprovalServiceSource {
     scope: { spaceId: string; projectId: string },
   ): Promise<WorkspaceApprovalMember>;
   runs(): readonly WorkspaceApprovalRun[];
+  /** Same synchronous storage read as assertCompatible + runs, with every
+   * native row fully checked once. No grant or cross-call snapshot is retained. */
+  readSnapshot?(): {
+    readonly state: unknown;
+    readonly runs: readonly WorkspaceApprovalRun[];
+  };
   assertDrained(run: WorkspaceApprovalRun): undefined;
   notify(): void;
 }
 function readState(source: WorkspaceApprovalServiceSource): WorkspaceApprovalState | undefined {
   const raw = source.read();
   source.assertCompatible(raw !== undefined);
+  return parseState(raw);
+}
+function parseState(raw: unknown): WorkspaceApprovalState | undefined {
   if (raw === undefined) return undefined;
   const parsed = workspaceApprovalStateSchema.safeParse(raw);
   if (!parsed.success) return fail('workspace-approval-incompatible');
@@ -107,6 +116,10 @@ export class ExecutionWorkspaceApprovals {
   private readonly stopSource: () => void;
   private readonly hostSignal: AbortSignal;
   private readonly prepare: WorkspaceApprovalHostSource['prepare'];
+  private readonly snapshotReader: WorkspaceApprovalServiceSource['readSnapshot'];
+  private readonly snapshotIssuer:
+    | Pick<WorkspaceApprovalServiceSource, 'signal' | 'read' | 'assertCompatible' | 'runs'>
+    | undefined;
   readonly owner: WorkspaceApprovalOwner;
   constructor(
     private readonly source: WorkspaceApprovalServiceSource,
@@ -121,12 +134,24 @@ export class ExecutionWorkspaceApprovals {
       fail('workspace-approval-unavailable');
     this.hostSignal = host.signal;
     this.prepare = host.prepare;
+    this.snapshotReader = source.readSnapshot;
+    if (this.snapshotReader !== undefined && typeof this.snapshotReader !== 'function')
+      fail('workspace-approval-unavailable');
+    this.snapshotIssuer = this.snapshotReader
+      ? {
+          signal: source.signal,
+          read: source.read,
+          assertCompatible: source.assertCompatible,
+          runs: source.runs,
+        }
+      : undefined;
     readState(source);
     const stop = () => this.fence();
-    source.signal.addEventListener('abort', stop, { once: true });
+    const sourceSignal = source.signal;
+    sourceSignal.addEventListener('abort', stop, { once: true });
     host.signal.addEventListener('abort', stop, { once: true });
     this.stopSource = () => {
-      source.signal.removeEventListener('abort', stop);
+      sourceSignal.removeEventListener('abort', stop);
       this.hostSignal.removeEventListener('abort', stop);
     };
     this.owner = Object.freeze({
@@ -135,6 +160,21 @@ export class ExecutionWorkspaceApprovals {
       revoke: (original, command, wait) => this.mutate(original, command, 'revoke', wait),
       snapshot: () => {
         this.active();
+        if (this.snapshotReader) {
+          const snapshot = this.snapshotReader.call(source);
+          // A future asynchronous adapter cannot silently widen this synchronous graph.
+          if (snapshot instanceof Promise) {
+            void snapshot.catch(() => undefined);
+            return fail('workspace-approval-incompatible');
+          }
+          if (!snapshot || typeof snapshot !== 'object' || !Object.hasOwn(snapshot, 'state'))
+            return fail('workspace-approval-incompatible');
+          const state = parseState(snapshot.state);
+          if (!Array.isArray(snapshot.runs)) return fail('workspace-approval-incompatible');
+          const runs = this.copyRuns(snapshot.runs);
+          this.active();
+          return structuredClone({ state, runs });
+        }
         return structuredClone({ state: readState(source), runs: this.runs() });
       },
       onChange: (listener) => {
@@ -157,12 +197,20 @@ export class ExecutionWorkspaceApprovals {
       this.source.signal.aborted ||
       this.host.signal !== this.hostSignal ||
       this.hostSignal.aborted ||
-      this.host.prepare !== this.prepare
+      this.host.prepare !== this.prepare ||
+      this.source.readSnapshot !== this.snapshotReader ||
+      (this.snapshotIssuer &&
+        (this.source.signal !== this.snapshotIssuer.signal ||
+          this.source.read !== this.snapshotIssuer.read ||
+          this.source.assertCompatible !== this.snapshotIssuer.assertCompatible ||
+          this.source.runs !== this.snapshotIssuer.runs))
     )
       return fail('workspace-approval-unavailable');
   }
   private runs(): readonly WorkspaceApprovalRun[] {
-    const runs = this.source.runs();
+    return this.copyRuns(this.source.runs());
+  }
+  private copyRuns(runs: readonly WorkspaceApprovalRun[]): readonly WorkspaceApprovalRun[] {
     if (runs.length > limits.observedRuns) return fail('workspace-approval-capacity');
     return structuredClone(runs);
   }

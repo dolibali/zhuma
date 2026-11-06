@@ -71,6 +71,31 @@ test('member adapter contract keeps explicit create intent and idempotency acros
   assert.equal('updatedAt' in f.commands[0].command.task, false);
 });
 
+test('member adapter preserves omitted, explicit empty and full fixed file refs without inheriting project state in the renderer', async () => {
+  const f = fixture();
+  await f.api.snapshot();
+  for (const fileRefs of [
+    undefined,
+    [],
+    [
+      {
+        spaceId: 'space-a',
+        assetId: crypto.randomUUID(),
+        kind: 'file',
+        versionId: crypto.randomUUID(),
+        sha256: 'a'.repeat(64),
+      },
+    ],
+  ]) {
+    const value = task();
+    if (fileRefs !== undefined) value.fileRefs = fileRefs;
+    await f.api.save(0, { type: 'save-task', task: value }, crypto.randomUUID(), 'create-task');
+    const sent = f.commands.at(-1).command.task;
+    assert.equal(Object.hasOwn(sent, 'fileRefs'), fileRefs !== undefined);
+    if (fileRefs !== undefined) assert.deepEqual(sent.fileRefs, fileRefs);
+  }
+});
+
 test('member template adapter captures only saved source IDs and strips local task timestamps', async () => {
   const f = fixture();
   const { workflows: _workflows, status: _status, ...seed } = task();
