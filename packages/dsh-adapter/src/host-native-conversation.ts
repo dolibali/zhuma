@@ -6,9 +6,9 @@ import type {
   SessionPage,
   SessionPageRequest,
 } from '@deepseek-ai/dsh-api-session-controller/types';
-import type { ExecutionRunAuthorities } from './execution-run-authority.js';
+import type { NativeReleasedConversationAuthorities } from './native-released-conversation-authority.js';
 import type { MemberRequest } from './member-session.js';
-import type { NativeWorkSessionService } from './native-work-session.js';
+import type { NativeReleasedConversationController } from './native-work-session-conversation.js';
 import { NativeWorkError } from './native-work-session-contract.js';
 import { conversationTarget } from './host-run-reader.js';
 
@@ -29,7 +29,7 @@ const window = {
   turnWindow: z.strictObject({ minMessages: positive.max(500), minTurns: positive }).optional(),
 };
 const address = z.strictObject({ kind: z.literal('session'), sessionId: id });
-const input = z.strictObject({
+export const hostNativeConversationInput = z.strictObject({
   actorId: id,
   spaceId: id,
   sessionId: id,
@@ -48,6 +48,9 @@ const followRequest = z.strictObject({
   assistantStream: z.literal(true).optional(),
 });
 
+export type HostNativeConversationFrame =
+  SessionFollowFrame | { readonly type: 'history-restart'; readonly chatEpoch: number };
+
 /** Non-Remote SDK face. Full original frames are available only after the original member Run lease. */
 export interface PassiveSessionHistory {
   page(request: SessionPageRequest, signal: AbortSignal): Promise<SessionPage>;
@@ -58,14 +61,15 @@ export interface PassiveSessionHistory {
 }
 
 export function createHostNativeConversation(options: {
-  authorities: ExecutionRunAuthorities;
-  native: Pick<NativeWorkSessionService, 'open'>;
+  authorities: NativeReleasedConversationAuthorities;
+  native: Pick<NativeReleasedConversationController, 'open'>;
+  transition(sessionId: string, signal: AbortSignal): Promise<void>;
   history(): { readonly identity: object; readonly source: PassiveSessionHistory };
   signal: AbortSignal;
   assertCurrent(): void;
 }) {
   async function open(request: MemberRequest, raw: unknown, wait: AbortSignal) {
-    const data = input.parse(raw);
+    const data = hostNativeConversationInput.parse(raw);
     const {
       spaceId: _space,
       generation: _generation,
@@ -74,24 +78,25 @@ export function createHostNativeConversation(options: {
     } = data.target;
     options.assertCurrent();
     wait.throwIfAborted();
-    const owned = await options.authorities.open(request, locator, 'read');
+    const owned = await options.authorities.openRead(request, locator);
     try {
       const grant = owned.grant;
       const signal = AbortSignal.any([wait, options.signal, grant.signal]);
       const assert = () => {
         signal.throwIfAborted();
         options.assertCurrent();
-        grant.assertCurrent('history');
+        options.authorities.assertReadGrant(grant);
         if (
-          data.actorId !== grant.scope.actorId ||
-          data.spaceId !== grant.scope.spaceId ||
-          canonicalPayload(data.target) !== canonicalPayload(conversationTarget(grant.scope)) ||
+          data.actorId !== grant.actorId ||
+          data.spaceId !== grant.spaceId ||
+          canonicalPayload(data.target) !==
+            canonicalPayload(conversationTarget(grant.origin.scope)) ||
           options.native.open(grant)?.binding.nativeSessionId !== data.sessionId
         )
           throw new NativeWorkError('scope-mismatch');
       };
       assert();
-      return { data, signal, assert, dispose: () => owned.dispose() };
+      return { data, signal, assert, chatEpoch: grant.chatEpoch, dispose: () => owned.dispose() };
     } catch (error) {
       owned.dispose();
       throw error;
@@ -153,7 +158,7 @@ export function createHostNativeConversation(options: {
     async follow(
       request: MemberRequest,
       raw: unknown,
-      sink: (frame: SessionFollowFrame, signal: AbortSignal) => Promise<void>,
+      sink: (frame: HostNativeConversationFrame, signal: AbortSignal) => Promise<void>,
       wait: AbortSignal,
     ) {
       const owned = await open(request, raw, wait);
@@ -171,6 +176,28 @@ export function createHostNativeConversation(options: {
             throw new NativeWorkError('unavailable');
           await sink(frame, owned.signal);
           owned.assert();
+        }
+        owned.assert();
+      } catch (error) {
+        wait.throwIfAborted();
+        options.signal.throwIfAborted();
+        let revoked = false;
+        try {
+          owned.assert();
+        } catch {
+          revoked = true;
+        }
+        if (!revoked) throw error;
+        // An explicit native transition settles before a fresh reader is qualified.
+        await options.transition(owned.data.sessionId, wait);
+        const fresh = await open(request, raw, wait);
+        try {
+          fresh.assert();
+          if (fresh.chatEpoch < owned.chatEpoch) throw new NativeWorkError('scope-mismatch');
+          await sink({ type: 'history-restart', chatEpoch: fresh.chatEpoch }, fresh.signal);
+          fresh.assert();
+        } finally {
+          fresh.dispose();
         }
       } finally {
         owned.dispose();

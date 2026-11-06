@@ -31,6 +31,8 @@ import {
   type HostRunSendCapabilities,
 } from './host-run-reader.js';
 import { observeHostNativeRun, type HostNativeClaim } from './host-run-observation.js';
+import { NativeReleasedConversationAuthorities } from './native-released-conversation-authority.js';
+import { createHostNativeChat } from './host-native-chat.js';
 import type { HostRunOperations } from './host-run-http.js';
 import {
   createHostNativeConversation,
@@ -194,6 +196,8 @@ export async function openHostRunOwner(
   let outputs: NativeOutputFileIssuer | undefined;
   let acceptedFiles: NativeRunAcceptedFiles | undefined;
   let workflow: ReturnType<typeof createHostWorkflowOwner> | undefined;
+  let releasedAuthorities: NativeReleasedConversationAuthorities | undefined;
+  let chat: ReturnType<typeof createHostNativeChat> | undefined;
   let fenced = false;
   let retirementDrains: ReturnType<typeof createHostRunRetirements> | undefined;
   let closing: Promise<void> | undefined;
@@ -509,6 +513,35 @@ export async function openHostRunOwner(
           : {}),
       }),
     );
+    if (!options.remoteOnly) {
+      const controller = native.conversation;
+      const backend = Object.freeze({ id: 'local', identity: Object.freeze({}) });
+      releasedAuthorities = new NativeReleasedConversationAuthorities(
+        execution.createNativeReleasedConversationAuthoritySource({
+          backend: () => {
+            active();
+            return backend;
+          },
+          openEpoch: controller.openEpoch.bind(controller),
+          assertEpoch: controller.assertEpoch.bind(controller),
+          retireEpoch: controller.retireEpoch.bind(controller),
+          whenEpochSettled: controller.whenEpochSettled.bind(controller),
+          openReadEpoch: controller.openReadEpoch.bind(controller),
+          assertReadEpoch: controller.assertReadEpoch.bind(controller),
+        }),
+      );
+      controller.configure({
+        backend,
+        assertGrant: releasedAuthorities.assertGrant.bind(releasedAuthorities),
+        assertReadGrant: releasedAuthorities.assertReadGrant.bind(releasedAuthorities),
+      });
+      chat = createHostNativeChat({
+        authorities: releasedAuthorities,
+        native: controller,
+        signal: lifetime.signal,
+        assertCurrent: active,
+      });
+    }
     if (resultProtocol() === 2) {
       acceptedFiles = execution.createRunAcceptedFiles(authorities, {
         signal: lifetime.signal,
@@ -566,6 +599,7 @@ export async function openHostRunOwner(
     if (reviewClose.status !== 'settled') throw new NativeWorkError('unavailable');
     await outputs?.close();
     await results?.close();
+    await chat?.close();
     await native.close();
     await workspaces.close();
     await workspaceApprovals.close();
@@ -584,19 +618,23 @@ export async function openHostRunOwner(
     readSendCapabilities,
     (scope) => owned.get(nativeScopeKey(scope))?.resultPending,
   );
-  const conversation = createHostNativeConversation({
-    authorities,
-    native: native.service,
-    history: () => {
-      const history = ctx.get('sessionController') as unknown as PassiveSessionHistory;
-      if (typeof history?.followReadOnly !== 'function') throw new NativeWorkError('unavailable');
-      const identity: unknown = Reflect.get(history, symbols.original);
-      if (!identity || typeof identity !== 'object') throw new NativeWorkError('unavailable');
-      return { source: history, identity };
-    },
-    signal: lifetime.signal,
-    assertCurrent: active,
-  });
+  const conversation =
+    releasedAuthorities &&
+    chat &&
+    createHostNativeConversation({
+      authorities: releasedAuthorities,
+      native: native.conversation,
+      transition: chat.transition,
+      history: () => {
+        const history = ctx.get('sessionController') as unknown as PassiveSessionHistory;
+        if (typeof history?.followReadOnly !== 'function') throw new NativeWorkError('unavailable');
+        const identity: unknown = Reflect.get(history, symbols.original);
+        if (!identity || typeof identity !== 'object') throw new NativeWorkError('unavailable');
+        return { source: history, identity };
+      },
+      signal: lifetime.signal,
+      assertCurrent: active,
+    });
 
   async function readSendCapabilities(
     request: MemberRequest,
@@ -1554,6 +1592,7 @@ export async function openHostRunOwner(
   return {
     lookupNativeSession: native.lookupNativeSession,
     conversation,
+    chat,
     canSwitchBackend() {
       if (
         fenced ||
@@ -1565,6 +1604,7 @@ export async function openHostRunOwner(
         admissions.size ||
         owned.size ||
         absentRetirements.size ||
+        chat?.canSwitchBackend() === false ||
         (reviews as typeof reviews & { canSwitchBackend?: () => boolean }).canSwitchBackend?.() !==
           true ||
         workflow?.canSwitchBackend() !== true
@@ -1638,6 +1678,7 @@ export async function openHostRunOwner(
       closing = closed;
       workflow?.fence();
       reviews.fence();
+      releasedAuthorities?.fence();
       fenced = true;
       stopResultReady();
       absentRetirements.clear();
@@ -1668,6 +1709,7 @@ export async function openHostRunOwner(
           failures.push(error);
         }
         try {
+          await chat?.close();
           await native.close();
           drained = true;
         } catch (error) {

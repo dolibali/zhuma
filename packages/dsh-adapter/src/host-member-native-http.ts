@@ -22,6 +22,9 @@ const endpoints = [
   'lookup',
   'session-page',
   'session-follow',
+  'session-status',
+  'session-send',
+  'session-stop',
   'review-options',
   'review-start',
   'review-read',
@@ -102,7 +105,15 @@ export function openHostMemberNativeHttp(
       rpcId = wire.rpcId;
       const input = payload.parse(wire.payload),
         source = current();
-      if (endpoint === 'session-page' || endpoint === 'session-follow') {
+      if (
+        [
+          'session-page',
+          'session-follow',
+          'session-status',
+          'session-send',
+          'session-stop',
+        ].includes(endpoint)
+      ) {
         const original = local?.source(),
           backend = local?.backend();
         if (source || !original || !backend) return reply(failure(), 409);
@@ -120,19 +131,40 @@ export function openHostMemberNativeHttp(
         const query = z.record(z.string(), z.unknown()).parse(input.query);
         const data = { ...query, actorId: input.actorId, spaceId: input.spaceId };
         const memberRequest = { headers: Object.fromEntries(request.headers) };
+        if (
+          endpoint === 'session-status' ||
+          endpoint === 'session-send' ||
+          endpoint === 'session-stop'
+        ) {
+          if (!original.chat) return reply(failure(), 409);
+          const operation =
+            endpoint === 'session-status'
+              ? 'status'
+              : endpoint === 'session-send'
+                ? 'send'
+                : 'stop';
+          const value =
+            operation === 'status'
+              ? await original.chat.status(memberRequest, data, signal)
+              : await original.chat[operation](memberRequest, data);
+          await assertLocal();
+          return reply({ ok: true, value });
+        }
+        const conversation = original.conversation;
+        if (!conversation) return reply(failure(), 409);
         if (endpoint === 'session-page') {
-          const page = await original.conversation.page(memberRequest, data, signal);
+          const page = await conversation.page(memberRequest, data, signal);
           await assertLocal();
           return reply({ ok: true, value: page });
         }
         const stream = hostRunStream<
-          import('@deepseek-ai/dsh-api-session-controller/types').SessionFollowFrame
+          import('./host-native-conversation.js').HostNativeConversationFrame
         >({
           rpcId,
           signal,
           failure,
           observe: (sink, reading) =>
-            original.conversation.follow(
+            conversation.follow(
               memberRequest,
               data,
               async (frame, authority) => {

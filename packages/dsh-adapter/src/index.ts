@@ -145,7 +145,29 @@ export {
   type ExecutionRunHostPorts,
   type RunEventAuthority,
   type ExecutionRunCompositionInputs,
+  type NativeReleasedConversationRuntimePorts,
 } from './execution-service.js';
+export {
+  NativeReleasedConversationAuthorities,
+  NativeReleasedConversationAuthorityError,
+  type NativeReleasedConversationAction,
+  type NativeReleasedConversationStop,
+  type NativeReleasedConversationBackend,
+  type NativeReleasedConversationEpoch,
+  type NativeReleasedConversationEpochRequest,
+  type NativeReleasedConversationReadEpoch,
+  type NativeReleasedConversationAuthoritySource,
+  type NativeReleasedConversationGrant,
+  type OpenedNativeReleasedConversation,
+  type NativeReleasedConversationReadGrant,
+  type OpenedNativeReleasedConversationRead,
+  type NativeReleasedConversationSendEligibility,
+} from './native-released-conversation-authority.js';
+export { NativeReleasedConversationController } from './native-work-session-conversation.js';
+export type {
+  NativeConversationIssuerPorts,
+  NativeConversationPrefix,
+} from './native-work-session-conversation-contract.js';
 export {
   applySpaceDirectory,
   openSpaceDirectory,

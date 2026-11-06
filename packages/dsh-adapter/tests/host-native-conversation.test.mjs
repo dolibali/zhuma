@@ -20,7 +20,10 @@ function setup() {
   const abort = new AbortController();
   const scope = { ...target, actorId: 'member' };
   const grant = {
-    scope,
+    actorId: 'member',
+    spaceId: 'space',
+    chatEpoch: 0,
+    origin: { scope, nativeSessionId: 'native' },
     signal: abort.signal,
     assertCurrent() {
       abort.signal.throwIfAborted();
@@ -48,10 +51,14 @@ function setup() {
   let historyIdentity = {};
   const conversation = createHostNativeConversation({
     authorities: {
-      async open(request, locator, purpose) {
+      assertReadGrant(value) {
+        assert.equal(value, grant);
+        grant.assertCurrent();
+      },
+      async openRead(request, locator) {
+        grant.assertCurrent();
         opened++;
         assert.equal(request, memberRequest);
-        assert.equal(purpose, 'read');
         assert.deepEqual(locator, {
           taskId: 'task',
           planId: 'plan',
@@ -70,6 +77,7 @@ function setup() {
     native: { open: () => ({ binding: { nativeSessionId: 'native' } }) },
     signal: new AbortController().signal,
     assertCurrent() {},
+    async transition() {},
     history: () => ({
       identity: historyIdentity,
       source: {
@@ -196,4 +204,87 @@ test('follow preserves original full frames and rechecks authority around each d
   );
   assert.deepEqual(seen, [h.originalFrame]);
   assert.equal(h.counts().disposed, 1);
+});
+
+test('revoked epoch uses a fresh passive ticket before requesting a new SDK physical generation', async () => {
+  let epoch = 0,
+    opens = 0,
+    releases = 0;
+  const tickets = [];
+  const frame = {
+    type: 'snapshot',
+    header: { id: 'native' },
+    cursor: -1,
+    records: [],
+    hasMore: false,
+    assistantStream: { revision: 0 },
+  };
+  const source = {};
+  const conversation = createHostNativeConversation({
+    authorities: {
+      async openRead() {
+        opens++;
+        const control = new AbortController();
+        const grant = {
+          actorId: 'member',
+          spaceId: 'space',
+          chatEpoch: epoch,
+          signal: control.signal,
+          origin: { scope: { ...target, actorId: 'member' }, nativeSessionId: 'native' },
+        };
+        tickets.push({ grant, control });
+        return {
+          grant,
+          dispose() {
+            releases++;
+            control.abort();
+          },
+        };
+      },
+      assertReadGrant(grant) {
+        grant.signal.throwIfAborted();
+        assert.equal(grant.chatEpoch, epoch);
+      },
+    },
+    native: { open: () => ({ binding: { nativeSessionId: 'native' } }) },
+    signal: new AbortController().signal,
+    assertCurrent() {},
+    async transition() {
+      assert.equal(epoch, 1);
+    },
+    history: () => ({
+      identity: source,
+      source: {
+        async *followReadOnly(_query, signal) {
+          yield frame;
+          if (!signal.aborted)
+            await new Promise((resolve) =>
+              signal.addEventListener('abort', resolve, { once: true }),
+            );
+        },
+      },
+    }),
+  });
+  const seen = [];
+  await conversation.follow(
+    {},
+    {
+      actorId: 'member',
+      spaceId: 'space',
+      sessionId: 'native',
+      target,
+      request: { address: { kind: 'session', sessionId: 'native' } },
+    },
+    async (value, authority) => {
+      authority.throwIfAborted();
+      seen.push(value);
+      if (value.type === 'snapshot') {
+        epoch = 1;
+        tickets[0].control.abort();
+      } else assert.equal(opens, 2);
+    },
+    new AbortController().signal,
+  );
+  assert.deepEqual(seen, [frame, { type: 'history-restart', chatEpoch: 1 }]);
+  assert.equal(releases, 2);
 });

@@ -6,7 +6,7 @@ const MEMBER_PATH =
 // Local task lookup also reads member-authorized Run facts. Remote/ordinary
 // lookup retains its owner path when there is no local member credential.
 const OPTIONAL_MEMBER_LOOKUP_PATH =
-  /^\/api\/zhuma-member-native\/(?:lookup|session-page|session-follow)$/;
+  /^\/api\/zhuma-member-native\/(?:lookup|session-page|session-follow|session-status|session-send|session-stop)$/;
 // Used only by the owned desktop forwarding operation after its original
 // application-origin fence. These exact POSTs need the real Host CSRF origin.
 const OWNER_POST_PATH =

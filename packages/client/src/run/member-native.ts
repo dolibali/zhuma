@@ -69,7 +69,8 @@ export function createMemberNativeClient(
     }
     return {
       conversationRequest: (
-        endpoint: 'session-page' | 'session-follow',
+        endpoint:
+          'session-page' | 'session-follow' | 'session-status' | 'session-send' | 'session-stop',
         query: unknown,
         rpcId: string,
         signal: AbortSignal,

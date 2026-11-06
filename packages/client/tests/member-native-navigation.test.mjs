@@ -341,7 +341,7 @@ test('task Conversation controls wait for physical stop confirmation and resourc
     [{ status: 'cancelled', resources: 'held', stopPhase: 'confirmed' }, /等待停止确认/],
     [{ status: 'cancelled', resources: 'settled', stopPhase: 'confirmed' }, /已停止/],
     [{ status: 'cancelled', resources: 'held', stopPhase: 'receipt-rejected' }, /停止未确认/],
-    [{ status: 'completed', resources: 'held', stopPhase: 'none' }, /任务已结束，正在收尾/],
+    [{ status: 'completed', resources: 'held', stopPhase: 'none' }, /本轮 · 已结束，正在收尾/],
   ]) {
     phase = next;
     await h.state.getSnapshot().conversation.refresh();
