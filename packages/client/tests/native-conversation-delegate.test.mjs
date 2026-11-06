@@ -12,7 +12,7 @@ const target = {
   generation: 2,
   segmentId: 'segment',
 };
-function fixture() {
+function fixture(options = {}) {
   let run = {
     ...target,
     native: { sessionId: 'native', status: 'idle' },
@@ -32,6 +32,7 @@ function fixture() {
       result: { ok: true, value: { records: [], hasMore: false } },
     });
   const bridge = createNativeConversationDelegate({
+    ...options,
     target,
     sessionId: 'native',
     signal: abort.signal,
@@ -188,4 +189,149 @@ test('original complete frame survives private stream adapter; wrong rpc never p
       .next(),
   );
   assert.equal(invalid.invalidated(), 1);
+});
+
+test('terminal conversation uses one explicit chat send with the original SDK request ID', async () => {
+  const h = fixture({ chat: { restartHistory() {} } });
+  h.setRun({ status: 'completed' });
+  const transport = [];
+  let epoch = 0;
+  h.respond((endpoint, query, rpcId) => {
+    transport.push({ endpoint, request: query.request });
+    const value =
+      endpoint === 'session-status'
+        ? { chatEpoch: epoch, status: 'idle', eligible: true, canStop: epoch > 0 }
+        : { accepted: true, requestId: query.request.requestId, chatEpoch: ++epoch };
+    return Response.json({ type: 'server-response', rpcId, result: { ok: true, value } });
+  });
+  assert.equal((await h.delegate.prompt(h.query())).ok, true);
+  assert.deepEqual(transport.find((item) => item.endpoint === 'session-send').request, {
+    requestId: h.query().requestId,
+    text: '继续检查',
+  });
+  assert.equal(
+    h.calls.some((item) => item[0] === 'send'),
+    false,
+  );
+});
+
+test('history visibility does not confer terminal send eligibility', async () => {
+  const h = fixture({ chat: { restartHistory() {} } });
+  h.setRun({ status: 'completed' });
+  h.respond((endpoint, _query, rpcId) => {
+    assert.equal(endpoint, 'session-status');
+    return Response.json({
+      type: 'server-response',
+      rpcId,
+      result: {
+        ok: true,
+        value: { chatEpoch: 0, status: 'detached', eligible: false, canStop: false },
+      },
+    });
+  });
+  assert.equal((await h.delegate.prompt(h.query())).ok, false);
+  assert.equal(
+    h.calls.some((item) => item[0] === 'send'),
+    false,
+  );
+});
+
+test('authorized epoch transition requests a real SDK history generation without publishing a second baseline', async () => {
+  const reading = new AbortController();
+  let restarts = 0;
+  const h = fixture({
+    chat: {
+      restartHistory() {
+        restarts++;
+        reading.abort();
+      },
+    },
+  });
+  h.respond(
+    (_endpoint, _query, rpcId) =>
+      new Response(
+        JSON.stringify({
+          type: 'server-frame',
+          rpcId,
+          frame: { type: 'history-restart', chatEpoch: 1 },
+        }) + '\n',
+        { headers: { 'content-type': 'application/x-ndjson' } },
+      ),
+  );
+  const handle = h.delegate.follow(
+    { address: { kind: 'session', sessionId: 'native' } },
+    reading.signal,
+  );
+  assert.equal((await handle[Symbol.asyncIterator]().next()).done, true);
+  assert.equal(restarts, 1);
+  assert.equal(h.invalidated(), 0);
+  handle.dispose();
+});
+
+test('original composer stop uses the active chat owner and preserves pending confirmation', async () => {
+  const h = fixture({ chat: { restartHistory() {} } });
+  h.setRun({ status: 'completed' });
+  const operations = [];
+  h.respond((endpoint, _query, rpcId) => {
+    operations.push(endpoint);
+    return Response.json({
+      type: 'server-response',
+      rpcId,
+      result: {
+        ok: true,
+        value:
+          endpoint === 'session-status'
+            ? { chatEpoch: 1, status: 'running', eligible: true, canStop: true }
+            : { status: 'pending', chatEpoch: 1 },
+      },
+    });
+  });
+  assert.equal((await h.delegate.cancel({ sessionId: 'native' })).ok, true);
+  assert.deepEqual(operations, ['session-status', 'session-stop']);
+  assert.equal(
+    h.calls.some((item) => item[0] === 'stop'),
+    false,
+  );
+});
+
+test('a broken read carrier recovers only after fresh authorized newer epoch metadata', async () => {
+  const reading = new AbortController();
+  let restarts = 0;
+  const h = fixture({
+    chat: {
+      restartHistory() {
+        restarts++;
+        reading.abort();
+      },
+    },
+  });
+  let epoch = 0;
+  h.respond((endpoint, _query, rpcId) =>
+    endpoint === 'session-status'
+      ? Response.json({
+          type: 'server-response',
+          rpcId,
+          result: {
+            ok: true,
+            value: { chatEpoch: epoch, status: 'idle', eligible: true, canStop: false },
+          },
+        })
+      : new Response(
+          new ReadableStream({
+            start(controller) {
+              epoch = 1;
+              controller.error(new Error('synthetic carrier ended'));
+            },
+          }),
+          { headers: { 'content-type': 'application/x-ndjson' } },
+        ),
+  );
+  await h.refresh(h.abort.signal);
+  const handle = h.delegate.follow(
+    { address: { kind: 'session', sessionId: 'native' } },
+    reading.signal,
+  );
+  assert.equal((await handle[Symbol.asyncIterator]().next()).done, true);
+  assert.equal(restarts, 1);
+  assert.equal(h.invalidated(), 0);
 });

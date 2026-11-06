@@ -20,6 +20,12 @@ export type NativeConversationDelegate = Pick<
 > & {
   readonly signal: AbortSignal;
 };
+export interface NativeConversationStatus {
+  readonly chatEpoch: number;
+  readonly status: 'idle' | 'running' | 'detached';
+  readonly eligible: boolean;
+  readonly canStop: boolean;
+}
 const blocked = (message = '此操作需要当前任务授权，请重新打开工作会话。') =>
   Object.assign(new Error(message), {
     name: 'RemoteError',
@@ -40,8 +46,12 @@ export function createNativeConversationDelegate(options: {
   signal: AbortSignal;
   assertCurrent(): void;
   invalidate(): void;
-  update(run: NativeRunRead): void;
+  update(run: NativeRunRead, chat?: NativeConversationStatus): void;
+  chat?: { restartHistory(): void };
 }) {
+  let chat: NativeConversationStatus | undefined;
+  let pendingTransition: Promise<unknown> | undefined;
+  let revision = 0;
   const current = () => {
     options.signal.throwIfAborted();
     options.assertCurrent();
@@ -74,8 +84,28 @@ export function createNativeConversationDelegate(options: {
       options.invalidate();
       throw blocked();
     }
-    options.update(run);
+    if (options.chat) await refreshChat(signal);
+    options.update(run, chat);
     return run;
+  }
+  async function refreshChat(signal: AbortSignal) {
+    const { response, rpcId } = await request('session-status', {}, signal);
+    const value = object(result(await response.json(), rpcId));
+    if (
+      !Number.isSafeInteger(value.chatEpoch) ||
+      (value.chatEpoch as number) < 0 ||
+      (value.status !== 'idle' && value.status !== 'running' && value.status !== 'detached') ||
+      typeof value.eligible !== 'boolean' ||
+      typeof value.canStop !== 'boolean'
+    )
+      throw blocked();
+    chat = {
+      chatEpoch: value.chatEpoch as number,
+      status: value.status,
+      eligible: value.eligible,
+      canStop: value.canStop,
+    };
+    return chat;
   }
   function signalFor(signal?: AbortSignal) {
     return signal ? AbortSignal.any([options.signal, signal]) : options.signal;
@@ -86,7 +116,8 @@ export function createNativeConversationDelegate(options: {
       throw blocked();
   }
   async function request(
-    endpoint: 'session-page' | 'session-follow',
+    endpoint:
+      'session-page' | 'session-follow' | 'session-status' | 'session-send' | 'session-stop',
     query: unknown,
     signal: AbortSignal,
   ) {
@@ -134,6 +165,8 @@ export function createNativeConversationDelegate(options: {
     follow(query, signal) {
       const lifetime = new AbortController();
       const reading = AbortSignal.any([signalFor(signal), lifetime.signal]);
+      const readingEpoch = chat?.chatEpoch ?? -1,
+        readingRevision = revision;
       async function* frames() {
         try {
           assertAddress(query);
@@ -148,11 +181,37 @@ export function createNativeConversationDelegate(options: {
             reading.throwIfAborted();
             const wire = object(raw);
             if (wire.type !== 'server-frame' || wire.rpcId !== rpcId) throw blocked();
+            const frame = object(wire.frame);
+            if (frame.type === 'history-restart') {
+              if (
+                !options.chat ||
+                !Number.isSafeInteger(frame.chatEpoch) ||
+                (frame.chatEpoch as number) < 0
+              )
+                throw blocked();
+              if (chat) chat = { ...chat, chatEpoch: frame.chatEpoch as number };
+              options.chat.restartHistory();
+              if (!reading.aborted) throw blocked();
+              return;
+            }
             // The original SessionEventStream validates full original SDK history and Assistant baselines.
             yield wire.frame as SessionFollowFrame;
           }
           if (!reading.aborted) throw blocked();
         } catch (error) {
+          if (!reading.aborted && options.chat) {
+            try {
+              await pendingTransition;
+              reading.throwIfAborted();
+              const fresh = await refreshChat(reading);
+              if (fresh && (fresh.chatEpoch > readingEpoch || revision > readingRevision)) {
+                options.chat.restartHistory();
+                if (reading.aborted) return;
+              }
+            } catch {
+              /* A failed fresh authorization leaves this generation unavailable. */
+            }
+          }
           if (!reading.aborted) options.invalidate();
           throw error;
         } finally {
@@ -179,6 +238,25 @@ export function createNativeConversationDelegate(options: {
       if (!text.trim() || text.length > 16_384)
         return { ok: false, error: blocked('请输入 1–16384 个字符。') };
       const run = await refresh(sending);
+      if (options.chat && ['completed', 'cancelled', 'failed'].includes(run.status)) {
+        if (!chat?.eligible || query.mode === 'steer')
+          return { ok: false, error: blocked('当前会话尚不能继续发送。') };
+        const dispatch = request('session-send', { requestId: query.requestId, text }, sending);
+        pendingTransition = dispatch;
+        const { response, rpcId } = await dispatch;
+        const value = object(result(await response.json(), rpcId));
+        if (
+          value.accepted !== true ||
+          value.requestId !== query.requestId ||
+          !Number.isSafeInteger(value.chatEpoch) ||
+          (value.chatEpoch as number) < 1
+        )
+          throw blocked();
+        revision++;
+        // Native acceptance is final; a later metadata failure must not restore this prompt as unsent.
+        void refresh(options.signal).catch(() => undefined);
+        return { ok: true, value: { accepted: true } };
+      }
       const mode =
         query.mode === 'steer' ? 'steer' : run.native?.status === 'running' ? 'queue' : 'followup';
       if (run.sendCapabilities[mode].kind !== 'available')
@@ -193,6 +271,16 @@ export function createNativeConversationDelegate(options: {
       const stopping = options.signal;
       if (query.sessionId !== options.sessionId) throw blocked();
       const run = await refresh(stopping);
+      if (options.chat && ['completed', 'cancelled', 'failed'].includes(run.status)) {
+        if (!chat?.canStop) return { ok: false, error: blocked('当前没有可停止的聊天运行。') };
+        const dispatch = request('session-stop', {}, stopping);
+        pendingTransition = dispatch;
+        const { response, rpcId } = await dispatch;
+        const value = object(result(await response.json(), rpcId));
+        if (!['pending', 'stopped'].includes(String(value.status))) throw blocked();
+        revision++;
+        return { ok: true, value: { accepted: true } };
+      }
       await options.api.stop(run, crypto.randomUUID(), stopping);
       current();
       stopping.throwIfAborted();
@@ -200,5 +288,14 @@ export function createNativeConversationDelegate(options: {
       return { ok: true, value: { accepted: true } };
     },
   };
-  return { delegate, refresh };
+  return {
+    delegate,
+    refresh,
+    stop: () =>
+      delegate.cancel({
+        sessionId: options.sessionId as Parameters<
+          NativeConversationDelegate['cancel']
+        >[0]['sessionId'],
+      }),
+  };
 }

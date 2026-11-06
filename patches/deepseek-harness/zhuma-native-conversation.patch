@@ -81,7 +81,7 @@ new file mode 100644
 diff --git a/packages/api/session-controller/README.md b/packages/api/session-controller/README.md
 --- a/packages/api/session-controller/README.md
 +++ b/packages/api/session-controller/README.md
-@@ -135,3 +135,11 @@
+@@ -135,3 +135,13 @@
  None.
  
  </details>
@@ -93,6 +93,8 @@ diff --git a/packages/api/session-controller/README.md b/packages/api/session-co
 +Client integrations install `sessions.registerSessionDelegate(id, delegate)` before retaining a Session. The original Session, submission identities, event stream and reference counts remain the owners of Client state. Releasing or aborting the delegate invalidates that generation; later acquisitions require a new delegate, and stale references never fall back to ordinary RPC. Only page, follow, prompt and cancel have delegate adapters. Other mutations are unavailable for a delegated Session. Host authorization remains mandatory.
 +
 +Delegated history calls the Gateway stream factory with its original service receiver, preserving the Host connection and stream supervisor.
++
++Retained history can reopen through `sessions.restartHistory(id)` without replacing the Client Session, its visible window or pending submissions. A native owner disposal refreshes only its stored header and cached projections: durable Sessions remain in the catalog, missing Sessions are removed, and unknown metadata availability reports an error without certifying deletion.
 diff --git a/packages/api/session-controller/src/client/contract/sessions.ts b/packages/api/session-controller/src/client/contract/sessions.ts
 --- a/packages/api/session-controller/src/client/contract/sessions.ts
 +++ b/packages/api/session-controller/src/client/contract/sessions.ts
@@ -104,7 +106,7 @@ diff --git a/packages/api/session-controller/src/client/contract/sessions.ts b/p
  
  export type { AgentContext } from '../scope.ts'
  
-@@ -45,8 +46,23 @@
+@@ -45,8 +46,29 @@
    readonly retainedBy: Readonly<Partial<Record<SessionReferenceSource, number>>>
  }
  
@@ -125,6 +127,12 @@ diff --git a/packages/api/session-controller/src/client/contract/sessions.ts b/p
 +   * @returns idempotent revocation for this exact installation.
 +   */
 +  registerSessionDelegate(id: SessionId, delegate: SessionDelegate): () => void
++  /**
++   * Reopen an already retained Session's history in a new physical stream generation.
++   * Preserves the Session, published window and pending submissions; sends no prompt.
++   * @param id - currently retained Session identity.
++   */
++  restartHistory(id: SessionId): void
    /** Host catalog and local reference-source counts; navigation belongs to view owners. */
    readonly list: ObservableSnapshot<SessionListState>
    /**
@@ -174,10 +182,18 @@ diff --git a/packages/api/session-controller/src/client/sessions/service.ts b/pa
    /** Stable per-id sources retained for the Client root lifetime, including across generation replacement. */
    private readonly retainObservers = new Map<SessionId, RetentionObserver>()
    private readonly scopeDrops = new Set<Promise<void>>()
-@@ -282,11 +285,38 @@
+@@ -282,11 +285,46 @@
      rootCtx.reflect.provide('sessions', this, undefined)
    }
  
++  restartHistory(id: SessionId): void {
++    const record = this.scopes.get(id)
++    if (this.closed || !record?.live || record.retention.referenceCount === 0) {
++      throw new Error('Session history requires a current retained generation')
++    }
++    record.session.restartHistory()
++  }
++
 +  registerSessionDelegate(id: SessionId, delegate: SessionDelegate): () => void {
 +    delegate.signal.throwIfAborted()
 +    if (this.closed || this.scopes.has(id) || this.delegates.has(id)) throw new Error('Session delegation requires an unretained generation')
@@ -348,7 +364,19 @@ diff --git a/packages/api/session-controller/src/client/sessions/session.ts b/pa
      const result = await this.remote.commands.execute(this.sessionId, line, [])
      if (!result.ok) return result
      return { ok: true, value: { matched: result.value !== undefined } }
-@@ -597,6 +647,7 @@
+@@ -497,6 +547,11 @@
+     await this.open()
+   }
+ 
++  /** Replace only the physical history generation; retain the original Session and submissions. */
++  restartHistory(): void {
++    this.events?.restart()
++  }
++
+   // ---- Subscription API (useSyncExternalStore direct wiring) ----
+ 
+   /**
+@@ -597,6 +652,7 @@
     * @returns when the Remote iterator has completed teardown.
     */
    async dispose(): Promise<void> {
@@ -356,7 +384,7 @@ diff --git a/packages/api/session-controller/src/client/sessions/session.ts b/pa
      this.stopObservingInbox()
      // Unsettled echoes retire as failed so their owners can restore or
      // release browser resources; admitted echoes keep their observed outcome.
-@@ -617,7 +668,14 @@
+@@ -617,7 +673,14 @@
      this.openState = 'loading'
      this.openError = null
      this.notifier.markDirty()
@@ -372,7 +400,7 @@ diff --git a/packages/api/session-controller/src/client/sessions/session.ts b/pa
        publish: (change) => {
          if (generation !== this.openGeneration || this.events !== events) return
          this.acceptEventChange(change)
-@@ -889,6 +947,7 @@
+@@ -889,6 +952,7 @@
      const identity = this.projections.values().subagent
      return {
        sessionId: this.sessionId,
@@ -419,7 +447,40 @@ diff --git a/packages/api/session-controller/src/history.ts b/packages/api/sessi
 diff --git a/packages/api/session-controller/src/index.ts b/packages/api/session-controller/src/index.ts
 --- a/packages/api/session-controller/src/index.ts
 +++ b/packages/api/session-controller/src/index.ts
-@@ -539,6 +539,16 @@
+@@ -9,7 +9,7 @@
+ import { errorChain, ReasoningEffortId, type MessageSource } from '@deepseek-ai/dsh-llm'
+ import type {} from '@deepseek-ai/dsh-client-file-upload'
+ import { canOpenNativePath, nativeFileManager, nativeFileApplications, openNativeFileApplication, openNativeAssociatedPath, revealNativePath } from '@deepseek-ai/dsh-native-command'
+-import type { SessionId } from '@deepseek-ai/dsh-session'
++import type { Session, SessionId } from '@deepseek-ai/dsh-session'
+ import type { SessionInspection } from '@deepseek-ai/dsh-session-persistence'
+ import type {} from '@deepseek-ai/dsh-session-projection-cache'
+ import { SessionQueryError, type SessionObservation } from '@deepseek-ai/dsh-session-query'
+@@ -142,6 +142,8 @@
+   private readonly controlState: SessionControlController
+   private readonly history: SessionHistoryController
+   private readonly listState: ApiSessionList
++  private readonly catalogPending = new Map<SessionId, object>()
++  private readonly catalogLifetime = new AbortController()
+   private readonly openPath: (path: string, signal: AbortSignal) => Promise<void>
+   private readonly fileApplications: typeof nativeFileApplications
+   private readonly openFileApplication: typeof openNativeFileApplication
+@@ -189,11 +191,13 @@
+     ctx.plugin(ArchivedSessionGate)
+ 
+     ctx.on('session/created', (session) => {
++      this.catalogPending.delete(session.id)
+       ctx.emit('api-session/added', this.listState.summaryFor(session))
+     })
+     ctx.on('session/disposed', (session) => {
+-      ctx.emit('api-session/removed', session.id)
++      void this.reconcileDisposedSession(session)
+     })
++    ctx.effect(() => () => { this.catalogLifetime.abort(); this.catalogPending.clear() })
+     const publishAgentAvailability = ({ agent }: { agent: Agent }): undefined => {
+       if (ctx.sessions.get(agent.id) === agent.session) {
+         ctx.emit('api-session/added', this.listState.summaryFor(agent.session))
+@@ -539,6 +543,41 @@
    }
  
    /**
@@ -432,15 +493,165 @@ diff --git a/packages/api/session-controller/src/index.ts b/packages/api/session
 +    return this.history.follow(request, signal, false)
 +  }
 +
++  /** A detached native owner does not remove its durable Session from the catalog. */
++  private async reconcileDisposedSession(session: Session): Promise<void> {
++    const token = {}
++    this.catalogPending.set(session.id, token)
++    const persistence = this.ctx.get('sessionPersistence')
++    const signal = this.catalogLifetime.signal
++    try {
++      const stored = await persistence?.stat(session.id, { signal })
++      if (signal.aborted || this.catalogPending.get(session.id) !== token
++        || this.ctx.get('sessionPersistence')?.identity !== persistence?.identity) return
++      const live = this.ctx.sessions.get(session.id)
++      if (live !== undefined) this.ctx.emit('api-session/added', this.listState.summaryFor(live))
++      else if (stored?.header.id === session.id && stored.header.cwd !== undefined) {
++        this.ctx.emit('api-session/added', this.listState.summaryForStored(stored))
++      } else this.ctx.emit('api-session/removed', session.id)
++    } catch (error: unknown) {
++      // Unknown persistence availability cannot certify deletion of a known catalog row.
++      if (!signal.aborted && this.catalogPending.get(session.id) === token) {
++        this.ctx.emit('api-session/error', session.id, 'Session history availability could not be refreshed.')
++      }
++    } finally {
++      if (this.catalogPending.get(session.id) === token) this.catalogPending.delete(session.id)
++    }
++  }
++
 +  /**
     * Read exact projections, returning cached hints only when migration is required.
     * @param request - Session whose current values are required.
     * @param signal - cancellation for the Session read.
+diff --git a/packages/api/session-controller/src/list.ts b/packages/api/session-controller/src/list.ts
+--- a/packages/api/session-controller/src/list.ts
++++ b/packages/api/session-controller/src/list.ts
+@@ -152,7 +152,7 @@
+     }
+     for (const record of cold) {
+       signal?.throwIfAborted()
+-      items.push(this.summarizeCold(record))
++      items.push(this.summaryForStored(record))
+       if (performance.now() >= yieldDeadline) {
+         await scheduler.yield()
+         signal?.throwIfAborted()
+@@ -164,7 +164,8 @@
+     return items
+   }
+ 
+-  private summarizeCold({ header, formatStatus }: SessionRecord): SessionSummary {
++  /** Build a cold catalog row from an authorized stored header and cached projections, without opening its log. */
++  summaryForStored({ header, formatStatus }: Pick<SessionRecord, 'header' | 'formatStatus'>): SessionSummary {
+     const projections = this.projectionsFor(header, undefined)
+     const metadata = projections?.values.sessionListMetadata
+     return {
+diff --git a/packages/api/session-controller/tests/native-catalog-retirement.host.spec.ts b/packages/api/session-controller/tests/native-catalog-retirement.host.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/api/session-controller/tests/native-catalog-retirement.host.spec.ts
+@@ -0,0 +1,98 @@
++/** Original SessionStore disposal and SessionController catalog; synthetic metadata, no model or log writes. */
++import { Context } from '@deepseek-ai/cordis'
++import AgentRegistry from '@deepseek-ai/dsh-agent'
++import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
++import { SessionPersistenceRevision } from '@deepseek-ai/dsh-session-persistence'
++import type { SessionPersistenceSnapshot } from '@deepseek-ai/dsh-session-persistence'
++import { expect, it, vi } from 'vitest'
++import { ClientSessions } from '../src/client/sessions/service.ts'
++import type { SessionRemotes } from '../src/client/sessions/remotes.ts'
++import { createSessionTestController, testSessionPersistence } from './test-remote.ts'
++
++async function bench(stat: () => Promise<SessionPersistenceSnapshot | undefined>) {
++  const ctx = new Context()
++  await ctx.plugin(SessionStore)
++  await ctx.plugin(AgentRegistry)
++  const inspect = vi.fn(() => { throw new Error('catalog must not read transcript') })
++  ctx.provide('sessionPersistence', testSessionPersistence(ctx, { stat, inspect }) as never)
++  createSessionTestController(ctx, { cwd: '/fixture', defaultModelSelection: () => ({ provider: 'fixture', model: 'fixture' }) })
++  const clientCtx = new Context()
++  const unexpected = (): never => { throw new Error('unexpected client mutation') }
++  const remote: SessionRemotes = {
++    $stream: unexpected, commands: { execute: unexpected }, subagents: { prompt: unexpected, interruptByParent: unexpected },
++    session: { attachment: unexpected, cancel: unexpected, canOpenWorkspacePath: unexpected,
++      control: unexpected, create: unexpected, follow: unexpected, fork: unexpected,
++      initializeDefaultModel: unexpected, list: unexpected, modelCatalog: unexpected,
++      openWorkspacePath: unexpected, page: unexpected, projections: unexpected,
++      prompt: unexpected, rename: unexpected, search: unexpected, selectModel: unexpected,
++      updateQueue: unexpected, workspacePathApplications: unexpected },
++  }
++  const client = new ClientSessions(clientCtx, remote)
++  ctx.effect(() => () => clientCtx.fiber.dispose())
++  ctx.on('api-session/added', summary => client.handleSessionAdded(summary))
++  ctx.on('api-session/removed', id => client.handleSessionRemoved(id))
++  const added = vi.fn(), removed = vi.fn(), failed = vi.fn()
++  ctx.on('api-session/added', added)
++  ctx.on('api-session/removed', removed)
++  ctx.on('api-session/error', failed)
++  function enter(id: string, createdAt = 1) {
++    const session = ctx.sessions.prepare(SessionId(id), { meta: { cwd: '/fixture', createdAt } })
++    const detach = ctx.sessions.enter(session)
++    ctx.sessions.announce(session)
++    return { session, detach }
++  }
++  return { ctx, client, added, removed, failed, inspect, enter }
++}
++
++it.each([true, false])('native owner disposal retains a stored catalog row when persisted=%s', async (persisted) => {
++  let stored: SessionPersistenceSnapshot | undefined
++  const stat = vi.fn(async () => stored)
++  const b = await bench(stat)
++  try {
++    const a = b.enter('native-catalog-A'), other = b.enter('native-catalog-B')
++    stored = persisted ? { header: structuredClone(a.session.header), revision: SessionPersistenceRevision('metadata') } : undefined
++    await vi.waitFor(() => expect(b.client.list.getSnapshot().ids).toHaveLength(2))
++    b.added.mockClear()
++    a.detach()
++    await vi.waitFor(() => expect(stat).toHaveBeenCalledOnce())
++    await vi.waitFor(() => expect(b.added.mock.calls.length + b.removed.mock.calls.length).toBe(1))
++    if (persisted) {
++      expect(b.added).toHaveBeenCalledWith(expect.objectContaining({ sessionId: a.session.id, running: false, agentAvailable: false }))
++      expect(b.removed).not.toHaveBeenCalled()
++    } else expect(b.removed).toHaveBeenCalledWith(a.session.id)
++    await vi.waitFor(() => expect(b.client.list.getSnapshot().ids).toHaveLength(persisted ? 2 : 1))
++    expect(b.client.list.getSnapshot().byId[other.session.id]).toBeDefined()
++    expect(b.ctx.sessions.get(other.session.id)).toBe(other.session)
++    expect(b.inspect).not.toHaveBeenCalled()
++  } finally { await b.ctx.fiber.dispose() }
++})
++
++it('a late old disposal cannot remove a newly attached generation of the same SID', async () => {
++  const pending = Promise.withResolvers<SessionPersistenceSnapshot | undefined>()
++  const b = await bench(() => pending.promise)
++  try {
++    const old = b.enter('native-catalog-same')
++    old.detach()
++    const current = b.enter('native-catalog-same', 2)
++    b.added.mockClear()
++    pending.resolve(undefined)
++    await new Promise(resolve => setTimeout(resolve, 0))
++    expect(b.removed).not.toHaveBeenCalled()
++    expect(b.ctx.sessions.get(current.session.id)).toBe(current.session)
++    expect(b.added).not.toHaveBeenCalled()
++    await vi.waitFor(() => expect(b.client.list.getSnapshot().byId[current.session.id]).toBeDefined())
++  } finally { pending.resolve(undefined); await b.ctx.fiber.dispose() }
++})
++
++it('unknown metadata availability reports failure without certifying catalog deletion', async () => {
++  const stat = vi.fn(async () => { throw new Error('synthetic unavailable') })
++  const b = await bench(stat)
++  try {
++    const a = b.enter('native-catalog-unknown')
++    a.detach()
++    await vi.waitFor(() => expect(b.failed).toHaveBeenCalledOnce())
++    expect(b.removed).not.toHaveBeenCalled()
++    await vi.waitFor(() => expect(b.client.list.getSnapshot().byId[a.session.id]).toBeDefined())
++    expect(b.inspect).not.toHaveBeenCalled()
++  } finally { await b.ctx.fiber.dispose() }
++})
 diff --git a/packages/api/session-controller/tests/native-delegate.client.spec.ts b/packages/api/session-controller/tests/native-delegate.client.spec.ts
 new file mode 100644
 --- /dev/null
 +++ b/packages/api/session-controller/tests/native-delegate.client.spec.ts
-@@ -0,0 +1,187 @@
+@@ -0,0 +1,192 @@
 +/** Original Session submission contracts; no Agent or model. */
 +import { describe, expect, it, vi } from 'vitest'
 +import { Session } from '../src/client/sessions/session.ts'
@@ -518,6 +729,11 @@ new file mode 100644
 +      await session.open()
 +      expect(session.getSnapshot().openState).toBe('open')
 +      expect(follow).toHaveBeenCalledOnce()
++      const submission = session.beginSubmission({ mode: 'queue', text: 'retain draft', attachments: [] })
++      session.restartHistory()
++      await vi.waitFor(() => expect(follow).toHaveBeenCalledTimes(2))
++      expect(session.getSnapshot().openState).toBe('open')
++      expect(session.getSnapshot().pendingSubmissions[0]?.requestId).toBe(submission.requestId)
 +    } finally {
 +      lifetime.abort()
 +      await session.dispose()
@@ -791,15 +1007,16 @@ diff --git a/packages/client/ui-workspace/src/client/navigation.ts b/packages/cl
 diff --git a/packages/client/ui-workspace/tests/workspaces-service.client.spec.ts b/packages/client/ui-workspace/tests/workspaces-service.client.spec.ts
 --- a/packages/client/ui-workspace/tests/workspaces-service.client.spec.ts
 +++ b/packages/client/ui-workspace/tests/workspaces-service.client.spec.ts
-@@ -136,6 +136,7 @@
+@@ -136,6 +136,8 @@
  }
  
  class FakeSessions implements ISessions {
 +  declare readonly registerSessionDelegate: ISessions['registerSessionDelegate']
++  declare readonly restartHistory: ISessions['restartHistory']
    readonly list: MutableSource<SessionListState>
    readonly create: ReturnType<typeof vi.fn<ISessions['create']>>
    readonly fork = vi.fn<ISessions['fork']>(async () => sid('forked'))
-@@ -320,6 +321,38 @@
+@@ -320,6 +322,38 @@
  }
  
  describe('UiWorkspaceService', () => {
@@ -841,10 +1058,13 @@ diff --git a/packages/client/ui-workspace/tests/workspaces-service.client.spec.t
 diff --git a/packages/test-support/client-runtime/src/sessions.ts b/packages/test-support/client-runtime/src/sessions.ts
 --- a/packages/test-support/client-runtime/src/sessions.ts
 +++ b/packages/test-support/client-runtime/src/sessions.ts
-@@ -300,6 +300,10 @@
+@@ -300,6 +300,13 @@
   * behavior/calls/stubs) are bench-only surface.
   */
  export class TestSessions implements ISessions {
++  restartHistory(): never {
++    throw new Error('History restart requires the original ClientSessions runtime')
++  }
 +  registerSessionDelegate(): never {
 +    throw new Error('Delegation tests require the original ClientSessions transport')
 +  }

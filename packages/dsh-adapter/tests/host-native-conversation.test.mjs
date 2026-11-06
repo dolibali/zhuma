@@ -16,11 +16,16 @@ function setup() {
   let disposed = 0,
     opened = 0,
     reads = 0,
+    nativeOpens = 0,
+    authorityChecks = 0,
     allowed = true;
   const abort = new AbortController();
   const scope = { ...target, actorId: 'member' };
   const grant = {
-    scope,
+    actorId: 'member',
+    spaceId: 'space',
+    chatEpoch: 0,
+    origin: { scope, nativeSessionId: 'native' },
     signal: abort.signal,
     assertCurrent() {
       abort.signal.throwIfAborted();
@@ -48,10 +53,15 @@ function setup() {
   let historyIdentity = {};
   const conversation = createHostNativeConversation({
     authorities: {
-      async open(request, locator, purpose) {
+      assertReadGrant(value) {
+        authorityChecks++;
+        assert.equal(value, grant);
+        grant.assertCurrent();
+      },
+      async openRead(request, locator) {
+        grant.assertCurrent();
         opened++;
         assert.equal(request, memberRequest);
-        assert.equal(purpose, 'read');
         assert.deepEqual(locator, {
           taskId: 'task',
           planId: 'plan',
@@ -67,9 +77,15 @@ function setup() {
         };
       },
     },
-    native: { open: () => ({ binding: { nativeSessionId: 'native' } }) },
+    native: {
+      open: () => {
+        nativeOpens++;
+        return { binding: { nativeSessionId: 'native' } };
+      },
+    },
     signal: new AbortController().signal,
     assertCurrent() {},
+    async transition() {},
     history: () => ({
       identity: historyIdentity,
       source: {
@@ -90,6 +106,8 @@ function setup() {
     memberRequest,
     abort,
     originalFrame,
+    nativeOpens: () => nativeOpens,
+    authorityChecks: () => authorityChecks,
     raw: (query = {}) => ({
       actorId: 'member',
       spaceId: 'space',
@@ -195,5 +213,151 @@ test('follow preserves original full frames and rechecks authority around each d
     /revoked/,
   );
   assert.deepEqual(seen, [h.originalFrame]);
+  assert.equal(h.counts().disposed, 1);
+});
+
+test('revoked epoch uses a fresh passive ticket before requesting a new SDK physical generation', async () => {
+  let epoch = 0,
+    opens = 0,
+    releases = 0;
+  const tickets = [];
+  const frame = {
+    type: 'snapshot',
+    header: { id: 'native' },
+    cursor: -1,
+    records: [],
+    hasMore: false,
+    assistantStream: { revision: 0 },
+  };
+  const source = {};
+  const conversation = createHostNativeConversation({
+    authorities: {
+      async openRead() {
+        opens++;
+        const control = new AbortController();
+        const grant = {
+          actorId: 'member',
+          spaceId: 'space',
+          chatEpoch: epoch,
+          signal: control.signal,
+          origin: { scope: { ...target, actorId: 'member' }, nativeSessionId: 'native' },
+        };
+        tickets.push({ grant, control });
+        return {
+          grant,
+          dispose() {
+            releases++;
+            control.abort();
+          },
+        };
+      },
+      assertReadGrant(grant) {
+        grant.signal.throwIfAborted();
+        assert.equal(grant.chatEpoch, epoch);
+      },
+    },
+    native: { open: () => ({ binding: { nativeSessionId: 'native' } }) },
+    signal: new AbortController().signal,
+    assertCurrent() {},
+    async transition() {
+      assert.equal(epoch, 1);
+    },
+    history: () => ({
+      identity: source,
+      source: {
+        async *followReadOnly(_query, signal) {
+          yield frame;
+          if (!signal.aborted)
+            await new Promise((resolve) =>
+              signal.addEventListener('abort', resolve, { once: true }),
+            );
+        },
+      },
+    }),
+  });
+  const seen = [];
+  await conversation.follow(
+    {},
+    {
+      actorId: 'member',
+      spaceId: 'space',
+      sessionId: 'native',
+      target,
+      request: { address: { kind: 'session', sessionId: 'native' } },
+    },
+    async (value, authority) => {
+      authority.throwIfAborted();
+      seen.push(value);
+      if (value.type === 'snapshot') {
+        epoch = 1;
+        tickets[0].control.abort();
+      } else assert.equal(opens, 2);
+    },
+    new AbortController().signal,
+  );
+  assert.deepEqual(seen, [frame, { type: 'history-restart', chatEpoch: 1 }]);
+  assert.equal(releases, 2);
+});
+
+test('full SDK follow revalidates each frame without reopening and cloning a native presentation', async () => {
+  const h = setup();
+  const frames = [
+    h.originalFrame,
+    { type: 'assistant-stream', frame: { revision: 1 } },
+    { type: 'assistant-stream', frame: { revision: 2 } },
+  ];
+  h.setFollow(async function* () {
+    yield* frames;
+  });
+  const seen = [];
+  let checkedAtLastSink = 0;
+  await h.conversation.follow(
+    h.memberRequest,
+    h.raw({ assistantStream: true }),
+    async (frame) => {
+      assert(
+        h.authorityChecks() > checkedAtLastSink,
+        'fresh D authority before every delivered frame',
+      );
+      checkedAtLastSink = h.authorityChecks();
+      await Promise.resolve();
+      seen.push(frame);
+    },
+    h.abort.signal,
+  );
+  assert.deepEqual(seen, frames);
+  assert(
+    h.authorityChecks() > checkedAtLastSink,
+    'fresh D authority after the final awaited delivery',
+  );
+  assert.equal(
+    h.nativeOpens(),
+    0,
+    'the authorized origin SID needs no native view/status or binding clone',
+  );
+});
+
+test('authority revoked across an awaited frame still rejects the next publication without native open', async () => {
+  const h = setup();
+  const seen = [];
+  h.setFollow(async function* () {
+    yield h.originalFrame;
+    yield { type: 'assistant-stream', frame: { revision: 1 } };
+  });
+  await assert.rejects(
+    h.conversation.follow(
+      h.memberRequest,
+      h.raw({ assistantStream: true }),
+      async (frame) => {
+        seen.push(frame);
+        await Promise.resolve();
+        h.deny();
+      },
+      h.abort.signal,
+    ),
+    /revoked/,
+  );
+  assert.deepEqual(seen, [h.originalFrame]);
+  assert.equal(h.nativeOpens(), 0);
   assert.equal(h.counts().disposed, 1);
 });

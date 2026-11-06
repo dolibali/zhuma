@@ -5,6 +5,7 @@ import type { MainPanelId } from '@deepseek-ai/dsh-client-ui-layout/client';
 import {
   remoteNodeTargetSchema,
   localReviewOptionsQuerySchema,
+  canonicalPayload,
   type LocalReviewOptionsQuery,
 } from '@zhuma/agent-core';
 import type { MemberShell } from '../identity/shell.js';
@@ -24,6 +25,7 @@ import {
   createNativeConversationDelegate,
   type NativeConversationDelegate,
   type NativeConversationTarget,
+  type NativeConversationStatus,
 } from './native-conversation.js';
 import type { NativeRunRead } from './api.js';
 
@@ -83,7 +85,12 @@ type Entry = { key: number } & (
       target: NativeRunTarget;
       sessionId: string;
       location: NativeConversationTarget;
-      conversation?: { run: NativeRunRead; refresh(): Promise<NativeRunRead> };
+      conversation?: {
+        run: NativeRunRead;
+        chat?: NativeConversationStatus;
+        refresh(): Promise<NativeRunRead>;
+        stop?(): ReturnType<NativeConversationDelegate['cancel']>;
+      };
     }
   | {
       kind: 'review';
@@ -258,6 +265,9 @@ export function installMemberNativeNavigation(
   };
   const sessions = ctx.get('sessions') as unknown as {
     registerSessionDelegate?: (id: string, delegate: NativeConversationDelegate) => () => void;
+    restartHistory?: (id: string) => void;
+    list?: { getSnapshot(): { byId: Readonly<Record<string, { displayTitle: string }>> } };
+    binding?: (id: string) => unknown;
   };
   if (
     !source?.registerSessionNavigationGuard ||
@@ -312,6 +322,21 @@ export function installMemberNativeNavigation(
         close();
       }, signal);
     if (found.sessionId !== sessionId) throw Error('Invalid session identity');
+    if (
+      found.kind === 'task' &&
+      found.presentation === 'sdk-native' &&
+      !selected.origin &&
+      entry?.kind === 'work' &&
+      entry.conversation &&
+      entry.sessionId === sessionId &&
+      canonicalPayload(entry.location) === canonicalPayload(found.target) &&
+      sessions.binding?.(sessionId)
+    ) {
+      // Global panels leave the original mainView resident. Reuse its exact authorized generation.
+      await entry.conversation.refresh();
+      current();
+      return ask(current, signal);
+    }
     const location = found.target;
     let active = true;
     let acceptedEpoch = -1;
@@ -381,18 +406,25 @@ export function installMemberNativeNavigation(
     const { workflow: _workflow, workspaceApprovals: _approvals, ...remoteApi } = api;
     if (!selected.origin && found.presentation === 'sdk-native') {
       const lifetime = new AbortController();
-      const update = (run: NativeRunRead) => {
+      let freshChat: NativeConversationStatus | undefined;
+      const update = (run: NativeRunRead, chat?: NativeConversationStatus) => {
+        freshChat = chat;
         if (entry?.kind !== 'work' || entry.key !== acceptedEpoch || !entry.conversation) return;
         const terminal = ['completed', 'failed', 'cancelled'].includes(run.status);
         blocks.set(
           sessionId as Parameters<typeof blocks.set>[0],
           terminal
-            ? { reason: '本轮任务已结束，当前仅可查看。原任务结果保持不变。' }
+            ? chat?.eligible
+              ? undefined
+              : { reason: '本轮已结束，当前仅可查看。原任务结果保持不变。' }
             : Object.values(run.sendCapabilities).some((value) => value.kind === 'available')
               ? undefined
               : { reason: '当前任务不可发送，请先处理任务状态。' },
         );
-        entry = { ...entry, conversation: { ...entry.conversation, run } };
+        entry = {
+          ...entry,
+          conversation: { ...entry.conversation, run, ...(chat ? { chat } : {}) },
+        };
         publish();
       };
       const conversation = createNativeConversationDelegate({
@@ -408,6 +440,9 @@ export function installMemberNativeNavigation(
         },
         invalidate: close,
         update,
+        ...(sessions.restartHistory
+          ? { chat: { restartHistory: () => sessions.restartHistory!(sessionId) } }
+          : {}),
       });
       const run = await conversation.refresh(lifetime.signal);
       current();
@@ -431,10 +466,18 @@ export function installMemberNativeNavigation(
           api: { ...api, review },
           sessionId,
           location: taskLocation,
-          target: { ...location, title: 'Agent 工作会话' },
-          conversation: { run, refresh: () => conversation.refresh(lifetime.signal) },
+          target: {
+            ...location,
+            title: sessions.list?.getSnapshot().byId[sessionId]?.displayTitle ?? 'Agent 工作会话',
+          },
+          conversation: {
+            run,
+            ...(freshChat ? { chat: freshChat } : {}),
+            refresh: () => conversation.refresh(lifetime.signal),
+            stop: conversation.stop,
+          },
         };
-        update(run);
+        update(run, freshChat);
       }, signal);
       if (!accepted) {
         active = false;
@@ -561,7 +604,7 @@ function nativeTaskConversationStatus(run: NativeRunRead) {
   if (run.status === 'cancelled' || run.stopPhase === 'confirmed')
     return run.stopPhase === 'confirmed' && run.resources === 'settled' ? '已停止' : '等待停止确认';
   if (run.status === 'completed')
-    return run.resources === 'settled' ? '已完成' : '任务已结束，正在收尾';
+    return run.resources === 'settled' ? '已结束' : '已结束，正在收尾';
   if (run.status === 'failed')
     return run.resources === 'settled' ? '执行失败' : '执行失败，正在收尾';
   return run.status === 'running'
@@ -585,8 +628,31 @@ function NativeTaskConversationControls({
   return (
     <div className="zhuma zm-task-conversation-controls" aria-label="任务执行控制">
       <span title={`${entry.target.taskId} · ${entry.target.nodeId}`}>
-        任务 · {nativeTaskConversationStatus(run)}
+        本轮 · {nativeTaskConversationStatus(run)}
       </span>
+      {entry.conversation.chat?.chatEpoch ? (
+        <span>{entry.conversation.chat.status === 'running' ? '聊天中' : '继续聊天'}</span>
+      ) : null}
+      {entry.conversation.chat?.canStop && entry.conversation.stop ? (
+        <Button
+          disabled={busy}
+          onClick={async () => {
+            setBusy(true);
+            setError('');
+            try {
+              const result = await entry.conversation!.stop!();
+              if (!result.ok) throw Error('not confirmed');
+              await refresh();
+            } catch {
+              setError('聊天停止尚未确认，请刷新状态。');
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          {busy ? '正在处理' : '结束聊天'}
+        </Button>
+      ) : null}
       <span
         className="zm-task-conversation-hint"
         title="附件、模型和权限请在任务配置中管理；当前输入框发送文字。"

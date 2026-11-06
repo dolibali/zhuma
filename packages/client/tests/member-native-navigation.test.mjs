@@ -7,7 +7,7 @@ import {
   installMemberNativeNavigation,
   nativeSessionPanel,
 } from '../dist/run/MemberNativeNavigation.js';
-function setup() {
+function setup(options = {}) {
   let guard,
     component,
     shellLeave,
@@ -22,6 +22,7 @@ function setup() {
   let lookup = async () => ({ kind: 'ordinary' });
   let fetcher = () => assert.fail('Navigation must not start a Run or query model metadata');
   const delegates = new Map(),
+    blocks = new Map(),
     released = [];
   let space = { status: 'ready', epoch: 1, space: { id: 'personal' } };
   let backendState = {
@@ -41,10 +42,20 @@ function setup() {
     },
   };
   const ctx = {
-    conversation: { blocks: { set() {}, forget() {} } },
+    conversation: {
+      blocks: {
+        set(id, value) {
+          blocks.set(id, value);
+        },
+        forget(id) {
+          blocks.delete(id);
+        },
+      },
+    },
     get(name) {
       if (name === 'sessions')
         return {
+          ...(options.chat ? { restartHistory() {} } : {}),
           registerSessionDelegate(id, delegate) {
             assert.equal(delegates.has(id), false);
             delegates.set(id, delegate);
@@ -148,6 +159,14 @@ function setup() {
         return {
           lookup: (...args) => lookup(...args),
           fetcher: (...args) => fetcher(...args),
+          conversationRequest: async (endpoint, _query, rpcId) => {
+            assert.equal(endpoint, 'session-status');
+            return Response.json({
+              type: 'server-response',
+              rpcId,
+              result: { ok: true, value: options.chat },
+            });
+          },
         };
       },
     },
@@ -161,6 +180,7 @@ function setup() {
     entries,
     scopes,
     delegates,
+    blocks,
     released,
     setFetcher(fn) {
       fetcher = fn;
@@ -341,7 +361,7 @@ test('task Conversation controls wait for physical stop confirmation and resourc
     [{ status: 'cancelled', resources: 'held', stopPhase: 'confirmed' }, /等待停止确认/],
     [{ status: 'cancelled', resources: 'settled', stopPhase: 'confirmed' }, /已停止/],
     [{ status: 'cancelled', resources: 'held', stopPhase: 'receipt-rejected' }, /停止未确认/],
-    [{ status: 'completed', resources: 'held', stopPhase: 'none' }, /任务已结束，正在收尾/],
+    [{ status: 'completed', resources: 'held', stopPhase: 'none' }, /本轮 · 已结束，正在收尾/],
   ]) {
     phase = next;
     await h.state.getSnapshot().conversation.refresh();
@@ -697,3 +717,61 @@ test('ordinary Session selection leaves the controlled page and preserves origin
   stop();
   h.close();
 });
+
+for (const canStop of [false, true])
+  test(`first terminal navigation publishes fresh chat and canStop=${canStop} without manual refresh`, async () => {
+    const chat = {
+      chatEpoch: canStop ? 1 : 0,
+      status: canStop ? 'running' : 'detached',
+      eligible: true,
+      canStop,
+    };
+    const h = setup({ chat });
+    h.setBackend({ phase: 'ready', selection: { origin: null, connectionId: null } });
+    h.setSpace({ status: 'ready', epoch: 1, space: { id: 'team' } });
+    h.setLookup(async () => task);
+    h.setFetcher(async (path, init) => {
+      if (path === '/zhuma-id/session')
+        return Response.json({
+          ok: true,
+          accountId: 'member',
+          peerId: 'fixture',
+          principal: { kind: 'zhuma-member', memberId: 'member' },
+          spaces: [{ id: 'team', kind: 'team', name: 'Team' }],
+        });
+      assert.equal(path, '/api/zhuma-run/read');
+      const wire = JSON.parse(init.body);
+      return Response.json({
+        type: 'server-response',
+        rpcId: wire.rpcId,
+        result: {
+          ok: true,
+          value: {
+            ...task.target,
+            nodeVersion: 1,
+            runVersion: 1,
+            status: 'completed',
+            dispatch: 'received',
+            resources: 'settled',
+            acknowledged: true,
+            stopPhase: 'none',
+            native: { sessionId: task.sessionId, agentId: task.sessionId, status: 'idle' },
+            sendCapabilities: Object.fromEntries(
+              ['followup', 'queue', 'steer'].map((mode) => [
+                mode,
+                { kind: 'unavailable', code: 'not-permitted' },
+              ]),
+            ),
+          },
+        },
+      });
+    });
+    try {
+      assert.equal(await h.guard(task.sessionId, new AbortController().signal), true);
+      assert.deepEqual(h.state.getSnapshot().conversation.chat, chat);
+      assert.equal(h.blocks.get(task.sessionId), undefined);
+      assert.equal(h.renderTaskControls(task.sessionId).includes('结束聊天'), canStop);
+    } finally {
+      h.close();
+    }
+  });
