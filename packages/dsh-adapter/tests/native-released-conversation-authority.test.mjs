@@ -855,3 +855,292 @@ test('contract: an immediately fenced queued open does not start a new member lo
   assert.equal(h.leases.length, 0);
   assert.equal(h.opens, 0);
 });
+
+async function setupRead(options = {}) {
+  const h = setup(options);
+  await h.manager.close();
+  const issued = new WeakSet(),
+    live = new Set(),
+    aborts = new WeakMap();
+  let reads = 0,
+    released = 0,
+    error,
+    epochOverride;
+  let copy = false,
+    ignoreLateAuthority = false;
+  const currentEpoch = () => epochOverride ?? h.epochs.at(-1)?.chatEpoch ?? 0;
+  h.source.openReadEpoch = async (input) => {
+    input.assertCurrent();
+    await options.readGate?.promise;
+    if (!ignoreLateAuthority) input.assertCurrent();
+    if (error) throw error;
+    const run = readExecutionRunState(h.row)?.runs.find(
+      (item) => item.attempt.id === input.origin.runId,
+    );
+    if (!run?.attempt.sessionId) throw new NativeWorkError('not-started');
+    const abort = new AbortController();
+    let done = false;
+    const ticket = {
+      kind: 'chat-history',
+      chatEpoch: currentEpoch(),
+      actorId: input.actorId,
+      backendId: input.backend.id,
+      signal: abort.signal,
+      binding: {
+        schemaVersion: 1,
+        scope: input.origin,
+        nativeSessionId: run.attempt.sessionId,
+        nativeAgentId: run.attempt.executorRunId,
+        selection: run.selection,
+        receipts: [],
+      },
+      release() {
+        if (done) return;
+        done = true;
+        released++;
+        issued.delete(ticket);
+        live.delete(ticket);
+        abort.abort();
+      },
+    };
+    issued.add(ticket);
+    live.add(ticket);
+    aborts.set(ticket, abort);
+    reads++;
+    return copy ? { ...ticket } : ticket;
+  };
+  h.source.assertReadEpoch = (ticket) => {
+    if (!issued.has(ticket) || ticket.signal.aborted || ticket.chatEpoch !== currentEpoch())
+      throw Error('PRIVATE read issuer/epoch/mapping');
+  };
+  h.manager = new NativeReleasedConversationAuthorities(h.source);
+  return Object.assign(h, {
+    getReadStats: () => ({ reads, released, live: live.size }),
+    setReadError(value) {
+      error = value;
+    },
+    copyReadTicket() {
+      copy = true;
+    },
+    ignoreLateReadAuthority() {
+      ignoreLateAuthority = true;
+    },
+    changeReadEpoch() {
+      epochOverride = currentEpoch() + 1;
+    },
+    abortReader() {
+      for (const ticket of live) aborts.get(ticket).abort();
+    },
+  });
+}
+
+test('passive contract: missing optional read ports are unavailable while the original send source remains usable', async () => {
+  const h = setup();
+  await assert.rejects(h.manager.openRead(request, locator(h.row)), unavailable);
+  assert.equal(h.leases.length, 0);
+  const send = await open(h);
+  h.manager.assertGrant(send.grant, 'send');
+  await h.manager.close();
+});
+
+test('passive contract: a currently visible non-controller reads an active Run without opening a writer', async () => {
+  const h = await setupRead({ row: accepted() });
+  const before = canonicalPayload(h.row);
+  const read = await h.manager.openRead(outside, locator(h.row));
+  h.manager.assertReadGrant(read.grant);
+  assert.equal(read.grant.actorId, 'outside');
+  assert.equal(read.grant.origin.scope.actorId, 'chen');
+  assert.equal(read.grant.chatEpoch, 0);
+  assert.equal(Object.hasOwn(read.grant, 'scope'), false);
+  assert.equal(h.opens, 0);
+  assert.equal(h.retireCalls, 0);
+  assert.equal(canonicalPayload(h.row), before);
+  read.dispose();
+  read.dispose();
+  assert.deepEqual(h.getReadStats(), { reads: 1, released: 1, live: 0 });
+  assert.equal(h.retireCalls, 0);
+  await h.manager.close();
+});
+
+test('passive contract: reader tickets cannot be promoted, copied, serialized or used across issuers', async () => {
+  const h = await setupRead();
+  const read = await h.manager.openRead(outside, locator(h.row));
+  assert.throws(() => h.manager.assertGrant(read.grant, 'send'), denied);
+  assert.throws(() => h.manager.stop(read.grant), denied);
+  assert.throws(() => h.manager.assertReadGrant({ ...read.grant }), denied);
+  assert.throws(() => h.manager.assertReadGrant(JSON.parse(JSON.stringify(read.grant))), denied);
+  const other = await setupRead();
+  assert.throws(() => other.manager.assertReadGrant(read.grant), denied);
+  await other.manager.close();
+  h.manager.assertReadGrant(read.grant);
+  assert.equal(h.opens, 0);
+  assert.equal(h.retireCalls, 0);
+  await h.manager.close();
+});
+
+test('passive contract: a read grant does not reserve the chat or stop slot, and read disposal leaves chat running', async () => {
+  const h = await setupRead();
+  const firstRead = await h.manager.openRead(outside, locator(h.row));
+  const send = await open(h);
+  assert.throws(() => h.manager.assertReadGrant(firstRead.grant), denied);
+  const currentRead = await h.manager.openRead(outside, locator(h.row));
+  assert.equal(currentRead.grant.chatEpoch, send.grant.chatEpoch);
+  currentRead.dispose();
+  assert.equal(h.active, 1);
+  assert.equal(h.retireCalls, 0);
+  h.manager.assertGrant(send.grant, 'send');
+  assert.throws(() => h.manager.assertReadGrant(send.grant), denied);
+  await h.manager.close();
+  assert.equal(h.retireCalls, 1);
+});
+
+test('passive contract: old epoch tickets reject without a hint and a new read observes the new epoch', async () => {
+  const h = await setupRead();
+  const read = await h.manager.openRead(outside, locator(h.row));
+  h.changeReadEpoch();
+  assert.throws(() => h.manager.assertReadGrant(read.grant), denied);
+  const next = await h.manager.openRead(outside, locator(h.row));
+  assert.equal(next.grant.chatEpoch, read.grant.chatEpoch + 1);
+  h.manager.assertReadGrant(next.grant);
+  assert.equal(h.opens, 0);
+  assert.equal(h.retireCalls, 0);
+  await h.manager.close();
+});
+
+test('passive contract: normal Run event progress does not change the reader identity', async () => {
+  const h = await setupRead({ row: accepted() });
+  const read = await h.manager.openRead(outside, locator(h.row));
+  h.row = applyEvent(h.row, 'waiting').record;
+  h.emit();
+  h.manager.assertReadGrant(read.grant);
+  h.row = applyEvent(h.row, 'resumed').record;
+  h.manager.assertReadGrant(read.grant);
+  assert.equal(h.opens, 0);
+  await h.manager.close();
+});
+
+for (const [name, error] of [
+  ['unknown mapping', new NativeWorkError('not-started')],
+  ['preparing mapping', new NativeWorkError('migration-not-ready')],
+  ['tombstone/foreign mapping', new NativeWorkError('scope-mismatch')],
+])
+  test(`passive contract: ${name} never creates or resumes a Session`, async () => {
+    const h = await setupRead();
+    h.setReadError(error);
+    await assert.rejects(h.manager.openRead(outside, locator(h.row)), {
+      code: /conversation-authority-(?:denied|pending)/,
+    });
+    assert.equal(h.getReadStats().reads, 0);
+    assert.equal(h.opens, 0);
+    assert.equal(h.retireCalls, 0);
+    await h.manager.close();
+  });
+
+for (const [name, revoke] of [
+  [
+    'membership removed',
+    (h) => {
+      h.member = false;
+    },
+  ],
+  [
+    'backend replaced',
+    (h) => {
+      h.backendIdentity = {};
+    },
+  ],
+  [
+    'read source method replaced',
+    (h) => {
+      h.source.assertReadEpoch = () => {};
+    },
+  ],
+  [
+    'authenticated reader changed',
+    (h) => {
+      h.leases[0].lease.memberId = 'chen';
+    },
+  ],
+  ['read source signal revoked', (h) => h.abortReader()],
+])
+  test(`passive contract: ${name} closes the read purpose without retiring chat`, async () => {
+    const h = await setupRead();
+    const read = await h.manager.openRead(outside, locator(h.row));
+    revoke(h);
+    assert.throws(() => h.manager.assertReadGrant(read.grant), denied);
+    assert.equal(read.grant.signal.aborted, true);
+    assert.equal(h.retireCalls, 0);
+    assert.equal(h.getReadStats().released, 1);
+    await h.manager.close();
+  });
+
+test('passive contract: controller changes do not revoke an otherwise visible current reader', async () => {
+  const h = await setupRead();
+  const read = await h.manager.openRead(outside, locator(h.row));
+  h.controller = 'other-controller';
+  h.emit();
+  h.manager.assertReadGrant(read.grant);
+  read.dispose();
+  assert.equal(h.retireCalls, 0);
+  await h.manager.close();
+});
+
+test('passive contract: read-only lease expiry releases read listeners without any chat retirement', async () => {
+  const h = await setupRead({ expiresIn: 80 });
+  const read = await h.manager.openRead(outside, locator(h.row));
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(Error('read expiry not observed')), 1500);
+    read.grant.signal.addEventListener(
+      'abort',
+      () => {
+        clearTimeout(timer);
+        resolve();
+      },
+      { once: true },
+    );
+  });
+  assert.equal(h.getReadStats().released, 1);
+  assert.equal(h.retireCalls, 0);
+  await h.manager.close();
+});
+
+test('passive contract: a late read ticket after revocation is released, never issued or retired as a writer', async () => {
+  const readGate = deferred();
+  const h = await setupRead({ readGate });
+  h.ignoreLateReadAuthority();
+  const reading = assert.rejects(h.manager.openRead(outside, locator(h.row)), denied);
+  await tick();
+  h.invalidate();
+  let closed = false;
+  const closing = h.manager.close().then(() => {
+    closed = true;
+  });
+  await tick();
+  assert.equal(closed, false);
+  readGate.resolve();
+  await Promise.all([reading, closing]);
+  assert.deepEqual(h.getReadStats(), { reads: 1, released: 1, live: 0 });
+  assert.equal(h.retireCalls, 0);
+  assert.equal(h.opens, 0);
+});
+
+test('passive contract: a copied C read ticket has no issuer but can only release its own read listener', async () => {
+  const h = await setupRead();
+  const send = await open(h);
+  h.copyReadTicket();
+  await assert.rejects(h.manager.openRead(outside, locator(h.row)), denied);
+  assert.equal(h.getReadStats().released, 1);
+  assert.equal(h.retireCalls, 0);
+  h.manager.assertGrant(send.grant, 'send');
+  await h.manager.close();
+});
+
+test('passive contract: removal of an already-known native Session identity invalidates the reader', async () => {
+  const h = await setupRead();
+  const read = await h.manager.openRead(outside, locator(h.row));
+  delete h.row.nativeExecution.runs[0].attempt.sessionId;
+  assert.throws(() => h.manager.assertReadGrant(read.grant), denied);
+  assert.equal(h.getReadStats().released, 1);
+  assert.equal(h.retireCalls, 0);
+  await h.manager.close();
+});

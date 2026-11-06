@@ -21,6 +21,7 @@ const locatorSchema = z.strictObject({
   runId: id,
 });
 const grantBrand = Symbol('released-conversation-grant');
+const readGrantBrand = Symbol('released-conversation-read-grant');
 export type NativeReleasedConversationAction = 'read' | 'send' | 'stop';
 export type NativeReleasedConversationStop = 'pending' | 'stopped';
 
@@ -47,8 +48,23 @@ export interface NativeReleasedConversationEpochRequest {
   readonly actorId: string;
   readonly backend: NativeReleasedConversationBackend;
   readonly signal: AbortSignal;
-  /** Must be called again immediately before the actual reservation. */
+  /** Recheck before observing an existing epoch or reserving a writing epoch. */
   assertCurrent(): undefined;
+}
+
+/** An existing mapping/epoch observation, never a native writer reservation.
+ * Unknown/preparing/tombstoned sessions must not be materialized to issue it.
+ * Epoch 0 represents a known original Session with no chat epoch yet.
+ */
+export interface NativeReleasedConversationReadEpoch {
+  readonly kind: 'chat-history';
+  readonly chatEpoch: number;
+  readonly actorId: string;
+  readonly backendId: string;
+  readonly binding: NativeSessionBinding;
+  readonly signal: AbortSignal;
+  /** Idempotent read-listener release only, including after revocation. */
+  release(): void;
 }
 
 /** These are NEW Host-only ports, not existing/wired NativeWorkSession APIs.
@@ -63,6 +79,10 @@ export interface NativeReleasedConversationAuthoritySource {
   memberLease(request: MemberRequest): Promise<ExecutionMemberLease>;
   readNode(locator: ExecutionRunLocator): ExecutionNodeRecord | undefined;
   backend(): NativeReleasedConversationBackend;
+  /** Preserve the existing current reader's full history-visibility policy.
+   * Task participation alone must not replace any applicable read-source or
+   * workspace fence; read-epoch adapters supplement, never widen that policy.
+   */
   assertNodeAccess(
     memberId: string,
     spaceId: string,
@@ -100,6 +120,17 @@ export interface NativeReleasedConversationAuthoritySource {
    * Reject an unknown/failed cleanup; never resolve merely because it timed out.
    */
   whenEpochSettled(epoch: NativeReleasedConversationEpoch): Promise<void>;
+  /** Passive navigation only: no Agent, new epoch, native writer or stop slot.
+   * In this request assertCurrent checks existing history access, not control
+   * or terminal/settled state. Missing ports leave this read purpose unavailable.
+   */
+  openReadEpoch?(
+    request: NativeReleasedConversationEpochRequest,
+  ): Promise<NativeReleasedConversationReadEpoch>;
+  /** Check the opaque local issuer, exact mapping and CURRENT epoch on every
+   * page/follow gate. Epoch changes revoke the old ticket; JSON is not a ticket.
+   */
+  assertReadEpoch?(epoch: NativeReleasedConversationReadEpoch): undefined;
 }
 
 /** This grant deliberately has NO .scope and is not a NativeWorkGrant. It
@@ -121,6 +152,22 @@ export interface OpenedNativeReleasedConversation {
    * The Host/native owner holds this handle, not an HTTP/view finally block.
    * A cancelled request only abandons its wait after native admission.
    */
+  dispose(): void;
+}
+
+export interface NativeReleasedConversationReadGrant {
+  readonly [readGrantBrand]: true;
+  readonly actorId: string;
+  readonly spaceId: string;
+  readonly backendId: string;
+  readonly chatEpoch: number;
+  readonly origin: NativeBindingReference;
+  readonly signal: AbortSignal;
+  assertCurrent(action: 'read'): void;
+}
+export interface OpenedNativeReleasedConversationRead {
+  readonly grant: NativeReleasedConversationReadGrant;
+  /** Releases only this reader and its member lease; never retires chat. */
   dispose(): void;
 }
 
@@ -187,10 +234,13 @@ const methods = [
   'retireEpoch',
   'whenEpochSettled',
 ] as const;
-interface Owned {
+const readMethods = ['openReadEpoch', 'assertReadEpoch'] as const;
+interface ObservedAuthority {
   readonly drain: Promise<void>;
   check(action: NativeReleasedConversationAction): void;
   revoke(): void;
+}
+interface Owned extends ObservedAuthority {
   stop(): Promise<NativeReleasedConversationStop>;
 }
 
@@ -200,7 +250,8 @@ interface Owned {
  */
 export class NativeReleasedConversationAuthorities {
   private readonly grants = new WeakMap<object, Owned>();
-  private readonly owned = new Set<Owned>();
+  private readonly readGrants = new WeakMap<object, ObservedAuthority>();
+  private readonly owned = new Set<ObservedAuthority>();
   private readonly sessions = new Map<string, Owned>();
   private readonly pending = new Set<Promise<unknown>>();
   private readonly ports: NativeReleasedConversationAuthoritySource;
@@ -231,6 +282,8 @@ export class NativeReleasedConversationAuthorities {
       assertEpoch: source.assertEpoch,
       retireEpoch: source.retireEpoch,
       whenEpochSettled: source.whenEpochSettled,
+      ...(source.openReadEpoch === undefined ? {} : { openReadEpoch: source.openReadEpoch }),
+      ...(source.assertReadEpoch === undefined ? {} : { assertReadEpoch: source.assertReadEpoch }),
     };
     try {
       const stop = sync(this.ports.onChange.call(source, () => this.recheck()));
@@ -249,11 +302,16 @@ export class NativeReleasedConversationAuthorities {
       this.fenced ||
       this.sourceSignal.aborted ||
       this.source.signal !== this.sourceSignal ||
-      methods.some((name) => this.source[name] !== this.ports[name])
+      methods.some((name) => this.source[name] !== this.ports[name]) ||
+      readMethods.some((name) => this.source[name] !== this.ports[name])
     )
       deny();
   }
-  private observe(locator: ExecutionRunLocator, lease: ExecutionMemberLease) {
+  private observe(
+    locator: ExecutionRunLocator,
+    lease: ExecutionMemberLease,
+    purpose: 'send' | 'read' = 'send',
+  ) {
     this.current();
     requireExecutionRunWriter(sync(this.ports.writerState.call(this.source)));
     const backend = sync(this.ports.backend.call(this.source));
@@ -274,17 +332,17 @@ export class NativeReleasedConversationAuthorities {
     )
       return deny();
     const run = readExecutionRunState(node)?.runs.find((item) => item.attempt.id === locator.runId);
+    if (!run || run.remote) return deny();
     if (
-      !run ||
-      run.remote ||
-      run.resources !== 'settled' ||
-      !run.attempt.acknowledged ||
-      !run.attempt.sessionId ||
-      !run.attempt.executorRunId ||
-      run.dispatch !== 'received' ||
-      (run.attempt.status !== 'cancelled' && run.attempt.status !== 'completed') ||
-      (run.attempt.status === 'cancelled' && run.attempt.stopPhase !== 'confirmed') ||
-      (run.attempt.status === 'completed' && !run.resultDelivery)
+      purpose === 'send' &&
+      (run.resources !== 'settled' ||
+        !run.attempt.acknowledged ||
+        !run.attempt.sessionId ||
+        !run.attempt.executorRunId ||
+        run.dispatch !== 'received' ||
+        (run.attempt.status !== 'cancelled' && run.attempt.status !== 'completed') ||
+        (run.attempt.status === 'cancelled' && run.attempt.stopPhase !== 'confirmed') ||
+        (run.attempt.status === 'completed' && !run.resultDelivery))
     )
       return deny();
     const origin = executionRunScope(node, run);
@@ -298,14 +356,300 @@ export class NativeReleasedConversationAuthorities {
         'history',
       ),
     );
-    assertion(this.ports.assertController.call(this.source, lease.memberId, node));
+    if (purpose === 'send')
+      assertion(this.ports.assertController.call(this.source, lease.memberId, node));
     this.current();
     return {
       backend: { id: backend.id, identity: backend.identity },
       origin,
       run,
-      fingerprint: canonicalPayload(run),
+      // Normal Run progress is not a read-identity replacement. C separately
+      // fences old work history and qualifies the current continuation epoch.
+      fingerprint: canonicalPayload(
+        purpose === 'send'
+          ? run
+          : {
+              origin,
+              selection: run.selection,
+              workspace: run.workspace,
+              inputFingerprint: run.attempt.payloadHash,
+              contextRefs: run.attempt.contextRefs,
+              expertVersionId: run.attempt.expertVersionId,
+              entryNodeStatus: run.attempt.entryNodeStatus,
+            },
+      ),
     };
+  }
+
+  /** Current passive conversation visibility only. Never call open() for
+   * navigation and never promote an old Run.read grant to this purpose.
+   */
+  openRead(
+    request: MemberRequest,
+    rawLocator: unknown,
+  ): Promise<OpenedNativeReleasedConversationRead> {
+    const parsed = locatorSchema.safeParse(rawLocator);
+    if (!parsed.success)
+      return Promise.reject(
+        new NativeReleasedConversationAuthorityError('conversation-authority-validation'),
+      );
+    if (
+      typeof this.ports.openReadEpoch !== 'function' ||
+      typeof this.ports.assertReadEpoch !== 'function'
+    )
+      return Promise.reject(
+        new NativeReleasedConversationAuthorityError('conversation-authority-unavailable'),
+      );
+    try {
+      this.current();
+    } catch (error) {
+      return Promise.reject(failure(error));
+    }
+    if (this.pending.size + this.owned.size >= 256)
+      return Promise.reject(
+        new NativeReleasedConversationAuthorityError('conversation-authority-capacity'),
+      );
+    const work = Promise.resolve().then(() => this.openReadNow(request, parsed.data));
+    this.pending.add(work);
+    void work.finally(() => this.pending.delete(work)).catch(() => undefined);
+    return work;
+  }
+
+  private async openReadNow(
+    request: MemberRequest,
+    locator: ExecutionRunLocator,
+  ): Promise<OpenedNativeReleasedConversationRead> {
+    let lease: ExecutionMemberLease | undefined;
+    let releaseMember: (() => void) | undefined;
+    let memberReleased = false;
+    let owned: ObservedAuthority | undefined;
+    const release = () => {
+      if (memberReleased || !lease) return;
+      memberReleased = true;
+      try {
+        if (!releaseMember) throw Error();
+        releaseMember();
+      } catch {
+        this.failed = true;
+      }
+    };
+    try {
+      this.current();
+      const openReadEpoch = this.ports.openReadEpoch;
+      const assertReadEpoch = this.ports.assertReadEpoch;
+      if (!openReadEpoch || !assertReadEpoch)
+        throw new NativeReleasedConversationAuthorityError('conversation-authority-unavailable');
+      lease = await this.ports.memberLease.call(this.source, request);
+      if (lease && typeof lease.release === 'function') releaseMember = lease.release.bind(lease);
+      if (
+        !lease ||
+        !id.safeParse(lease.memberId).success ||
+        !Number.isSafeInteger(lease.expiresAt) ||
+        lease.expiresAt <= Date.now() ||
+        !(lease.signal instanceof AbortSignal) ||
+        lease.signal.aborted ||
+        typeof lease.assertCurrent !== 'function' ||
+        typeof lease.release !== 'function'
+      )
+        return deny();
+      const member = lease;
+      const memberId = member.memberId,
+        expiresAt = member.expiresAt,
+        memberSignal = member.signal;
+      const memberAssert = member.assertCurrent,
+        memberRelease = member.release;
+      const initial = this.observe(locator, member, 'read');
+      const controller = new AbortController(),
+        drain = deferred();
+      let revoked = false,
+        done = false,
+        readerReleased = false;
+      let epoch: NativeReleasedConversationReadEpoch | undefined;
+      let epochSignal: AbortSignal | undefined;
+      let epochRelease: (() => void) | undefined;
+      let releaseMethod: NativeReleasedConversationReadEpoch['release'] | undefined;
+      let binding: NativeSessionBinding | undefined;
+      let epochIdentity: string | undefined;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const reference = (value: NativeSessionBinding): NativeBindingReference => ({
+        scope: value.scope,
+        nativeSessionId: value.nativeSessionId,
+        nativeAgentId: value.nativeAgentId,
+        selection: value.selection,
+      });
+      const identity = (value: NativeReleasedConversationReadEpoch) =>
+        canonicalPayload({
+          kind: value.kind,
+          chatEpoch: value.chatEpoch,
+          actorId: value.actorId,
+          backendId: value.backendId,
+          binding: reference(value.binding),
+        });
+      const finish = () => {
+        if (!done || readerReleased) return;
+        readerReleased = true;
+        try {
+          if (epoch) {
+            if (!epochRelease) throw Error();
+            assertion(epochRelease());
+          }
+          this.owned.delete(owned!);
+          drain.resolve();
+        } catch {
+          this.failed = true;
+          drain.reject(
+            new NativeReleasedConversationAuthorityError('conversation-authority-unavailable'),
+          );
+        }
+      };
+      const revoke = () => {
+        if (!revoked) {
+          revoked = true;
+          controller.abort();
+          clearTimeout(timer);
+          memberSignal.removeEventListener('abort', revoke);
+          epochSignal?.removeEventListener('abort', revoke);
+          release();
+        }
+        finish();
+      };
+      const verify = (): undefined => {
+        if (
+          revoked ||
+          controller.signal.aborted ||
+          memberSignal.aborted ||
+          Date.now() >= expiresAt ||
+          member.memberId !== memberId ||
+          member.expiresAt !== expiresAt ||
+          member.signal !== memberSignal ||
+          member.assertCurrent !== memberAssert ||
+          member.release !== memberRelease
+        )
+          return deny();
+        const fresh = this.observe(locator, member, 'read');
+        if (
+          fresh.backend.id !== initial.backend.id ||
+          fresh.backend.identity !== initial.backend.identity ||
+          fresh.fingerprint !== initial.fingerprint ||
+          canonicalPayload(fresh.origin) !== canonicalPayload(initial.origin) ||
+          (initial.run.attempt.sessionId !== undefined &&
+            fresh.run.attempt.sessionId !== initial.run.attempt.sessionId) ||
+          (initial.run.attempt.executorRunId !== undefined &&
+            fresh.run.attempt.executorRunId !== initial.run.attempt.executorRunId) ||
+          (binding &&
+            ((fresh.run.attempt.sessionId !== undefined &&
+              fresh.run.attempt.sessionId !== binding.nativeSessionId) ||
+              (fresh.run.attempt.executorRunId !== undefined &&
+                fresh.run.attempt.executorRunId !== binding.nativeAgentId)))
+        )
+          return deny();
+        return undefined;
+      };
+      const check = (action: NativeReleasedConversationAction) => {
+        try {
+          if (action !== 'read') return deny();
+          verify();
+          if (!done) return;
+          if (
+            !epoch ||
+            epoch.signal !== epochSignal ||
+            epochSignal?.aborted ||
+            epoch.release !== releaseMethod ||
+            identity(epoch) !== epochIdentity
+          )
+            return deny();
+          assertion(assertReadEpoch.call(this.source, epoch));
+          verify();
+        } catch {
+          revoke();
+          return deny();
+        }
+      };
+      owned = { drain: drain.promise, revoke, check };
+      this.owned.add(owned);
+      memberSignal.addEventListener('abort', revoke, { once: true });
+      const expire = () => {
+        const left = expiresAt - Date.now();
+        if (left <= 0) revoke();
+        else {
+          timer = setTimeout(expire, Math.min(left, 2_147_483_647));
+          timer.unref();
+        }
+      };
+      expire();
+      try {
+        verify();
+        epoch = await openReadEpoch.call(
+          this.source,
+          Object.freeze({
+            origin: initial.origin,
+            actorId: memberId,
+            backend: Object.freeze(initial.backend),
+            signal: controller.signal,
+            assertCurrent: verify,
+          }),
+        );
+        done = true;
+        if (epoch && typeof epoch.release === 'function') {
+          releaseMethod = epoch.release;
+          epochRelease = epoch.release.bind(epoch);
+        }
+        verify();
+        if (
+          !epoch ||
+          epoch.kind !== 'chat-history' ||
+          !Number.isSafeInteger(epoch.chatEpoch) ||
+          epoch.chatEpoch < 0 ||
+          epoch.actorId !== memberId ||
+          epoch.backendId !== initial.backend.id ||
+          !(epoch.signal instanceof AbortSignal) ||
+          !epochRelease
+        )
+          return deny();
+        epochSignal = epoch.signal;
+        binding = nativeWorkSessionBindingSchema.parse(epoch.binding);
+        if (
+          canonicalPayload(binding.scope) !== canonicalPayload(initial.origin) ||
+          canonicalPayload(binding.selection) !== canonicalPayload(initial.run.selection)
+        )
+          return deny();
+        epochIdentity = identity(epoch);
+        epochSignal.addEventListener('abort', revoke, { once: true });
+        check('read');
+        const origin = Object.freeze({
+          scope: Object.freeze({ ...binding.scope }),
+          nativeSessionId: binding.nativeSessionId,
+          nativeAgentId: binding.nativeAgentId,
+          selection: Object.freeze({ ...binding.selection }),
+        });
+        const grant: NativeReleasedConversationReadGrant = Object.freeze({
+          [readGrantBrand]: true as const,
+          actorId: memberId,
+          spaceId: initial.origin.spaceId,
+          backendId: initial.backend.id,
+          chatEpoch: epoch.chatEpoch,
+          origin,
+          signal: controller.signal,
+          assertCurrent: check,
+        });
+        this.readGrants.set(grant, owned);
+        return Object.freeze({ grant, dispose: revoke });
+      } catch (error) {
+        done = true;
+        revoke();
+        throw error;
+      }
+    } catch (error) {
+      if (owned) owned.revoke();
+      else release();
+      throw failure(error);
+    }
+  }
+
+  assertReadGrant(grant: NativeReleasedConversationReadGrant): void {
+    const owned = grant && this.readGrants.get(grant);
+    if (!owned) return deny();
+    owned.check('read');
   }
 
   /** Explicit Send admission only. There is no caller-provided actor/backend,
