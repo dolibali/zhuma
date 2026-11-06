@@ -238,14 +238,34 @@ for (const [name, identity, expected, failure] of [
   ['revoked space', () => Response.json(session([])), 'space-unavailable', 'space'],
   ['changed account', () => Response.json(session([spaceId], 'lin')), 'unauthenticated', 'member'],
   ['expired session', () => new Response('', { status: 401 }), 'unauthenticated', 'member'],
-  ['directory failure', () => new Response('', { status: 503 }), 'scope-unavailable', 'space'],
-  ['malformed session', () => Response.json({ ok: true }), 'scope-unavailable', 'space'],
+  ['untrusted entry', () => new Response('', { status: 403 }), 'untrusted-request', 'space'],
+  ['directory failure', () => new Response('', { status: 503 }), 'unavailable', null],
+  ['malformed session', () => Response.json({ ok: true }), 'unavailable', null],
+  [
+    'directory network failure',
+    () => {
+      throw new TypeError('Network unavailable');
+    },
+    'unavailable',
+    null,
+  ],
+  [
+    'directory timeout',
+    () => {
+      throw new DOMException('Read expired', 'TimeoutError');
+    },
+    'unavailable',
+    null,
+  ],
 ]) {
-  test(`scoped HTTP contract: ${name} closes before any execution request`, async () => {
+  test(`scoped HTTP contract: ${name} rejects before any execution request`, async () => {
     const { api, calls, failures } = scoped({ identity });
     await assert.rejects(api.startPlan(plan), { code: expected });
     assert.equal(calls.length, 0);
-    assert.equal(failures[failure], 1);
+    assert.deepEqual(failures, {
+      member: failure === 'member' ? 1 : 0,
+      space: failure === 'space' ? 1 : 0,
+    });
   });
 }
 
@@ -281,9 +301,97 @@ for (const code of ['not-found', 'unavailable']) {
     assert.equal(calls.length, 1);
     assert.equal(failures.member, 0);
     await assert.rejects(api.inbox(), { code });
-    assert.equal(failures.space, 1);
+    assert.equal(failures.space, code === 'not-found' ? 1 : 0);
   });
 }
+
+for (const method of ['inbox', 'startable']) {
+  for (const [name, failure, expected] of [
+    [
+      'network',
+      () => {
+        throw new TypeError('Network unavailable');
+      },
+      { name: 'TypeError' },
+    ],
+    ['HTTP503', () => new Response('', { status: 503 }), { code: 'unavailable' }],
+    ['invalid JSON', () => new Response('{invalid'), { name: 'SyntaxError' }],
+    [
+      'invalid projection',
+      (request) =>
+        Response.json({
+          type: 'server-response',
+          rpcId: request.rpcId,
+          result: { ok: true, value: { actorId: 'chen', spaceId: request.payload.spaceId } },
+        }),
+      { code: 'validation' },
+    ],
+  ]) {
+    test(`scoped HTTP contract: ${method} ${name} rejects without invalidating and can freshly retry`, async () => {
+      let first = true;
+      const { api, calls, inspections, failures } = scoped({
+        service(request) {
+          if (first) {
+            first = false;
+            return failure(request);
+          }
+          return Response.json({
+            type: 'server-response',
+            rpcId: request.rpcId,
+            result: { ok: true, value: valueFor(request.method, request.payload) },
+          });
+        },
+      });
+      await assert.rejects(api[method](), expected);
+      assert.deepEqual(failures, { member: 0, space: 0 });
+      assert.equal(calls.length, 1);
+      assert.equal((await api[method]()).actorId, 'chen');
+      assert.equal(calls.length, 2);
+      assert.equal(
+        inspections.length,
+        2,
+        'retry obtains fresh membership, never cached authorization',
+      );
+      assert.deepEqual(failures, { member: 0, space: 0 });
+    });
+  }
+}
+
+test('scoped HTTP contract: an internal deadline does not invalidate a live caller or its space', async (t) => {
+  let deadline = new AbortController();
+  t.mock.method(AbortSignal, 'timeout', () => deadline.signal);
+  const entered = deferred();
+  let first = true;
+  const { api, calls, inspections, failures } = scoped({
+    service(request, options) {
+      if (first) {
+        first = false;
+        entered.resolve();
+        return new Promise((_, reject) =>
+          options.signal.addEventListener('abort', () => reject(options.signal.reason), {
+            once: true,
+          }),
+        );
+      }
+      return Response.json({
+        type: 'server-response',
+        rpcId: request.rpcId,
+        result: { ok: true, value: valueFor(request.method, request.payload) },
+      });
+    },
+  });
+  const caller = new AbortController();
+  const pending = api.inbox(caller.signal);
+  await entered.promise;
+  deadline.abort(new DOMException('Internal read expired', 'TimeoutError'));
+  await assert.rejects(pending, { name: 'TimeoutError' });
+  assert.equal(caller.signal.aborted, false);
+  assert.deepEqual(failures, { member: 0, space: 0 });
+  deadline = new AbortController();
+  assert.equal((await api.inbox(caller.signal)).actorId, 'chen');
+  assert.equal(calls.length, 2);
+  assert.equal(inspections.length, 2);
+});
 
 test('scoped HTTP contract: a service401 after valid precheck expires the member without dispatching a replacement request', async () => {
   const { api, calls, failures } = scoped({ service: () => new Response('', { status: 401 }) });

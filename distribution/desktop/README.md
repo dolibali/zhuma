@@ -1,10 +1,10 @@
-# Zhuma macOS Desktop 发行指南
+# Zhuma Desktop 发行指南
 
 Zhuma 使用固定的官方 DSH Electron 实现，自有工作台通过插件预装，必要的上游改动保存在 `patches/deepseek-harness/zhuma-desktop.patch`。构建脚本在 `.build/desktop/deepseek-harness/` 创建一次性的 DSH Git worktree，**不修改** `upstream/deepseek-harness/` 的已固定代码。
 
 ## 安装与首发边界
 
-产品候选版本为 `1.4.0`，拟对应新 tag `v1.4.0`；工程包、Draft PR 或候选资产不等于正式 Release。本版分别交付 macOS arm64（Apple Silicon）、Windows x64 与 Linux amd64 服务，真实支持与必要验收按 [v1.4 说明](../../docs/release-v1.4.md)和 [#372](https://github.com/dolibali/zhuma/issues/372)核对。macOS 为 ad-hoc、未公证，Windows 未签名；Developer ID、公证、Authenticode 和自动更新尚未提供，不认证 Intel Mac、Windows arm64 或 Linux 桌面。
+当前源码版本为 `1.5.0`，发行目标为新 tag `v1.5.0`，范围与实际验收见[v1.5.0 说明](../../docs/release-v1.5.0.md)和 [#394](https://github.com/dolibali/zhuma/issues/394)。已发布的 [v1.4.0](https://github.com/dolibali/zhuma/releases/tag/v1.4.0) 与原资产保留；工程包或候选产物不等于新版本已公开。平台为 macOS arm64（Apple Silicon）、Windows x64 客户端及 Linux amd64 服务。macOS 为 ad-hoc、未公证，Windows 未签名；Developer ID、公证、Authenticode 和自动更新尚未提供，不认证 Intel Mac、Windows arm64 或 Linux 桌面。
 
 安装时打开已核对来源的候选 DMG，将 Zhuma 拖入 Applications 后运行。正常首次账号／团队、模型与交付入口见[工作台正常操作](../workbench/README.md#正常操作)。已有 profile 不因安装新包而自动迁移或更改部署模式。
 
@@ -26,7 +26,7 @@ pnpm desktop:verify:mac          # 校验安装包名称、App ID、图标、签
 
 桌面预览开发应用位于 `.build/desktop/deepseek-harness/apps/desktop/.desktop-build/development/Zhuma Dev.app`，Renderer CDP 默认 `127.0.0.1:9222`，Main/Host 分别为 `9229`/`9230`。切换 DevTools 使用 `Command + Option + I`。
 
-候选 DMG 输出位于 `.build/desktop/deepseek-harness/apps/desktop/.desktop-build/targets/mac-arm64/unsigned-artifacts/`，具体名称以构建产物为准，构建成功后脚本同时复制到项目根目录下**不会提交 Git 的 `dist/`**。目录名沿用 `unsigned-artifacts`；当前验收候选采用 ad-hoc 临时签名、未公证。此为开发者测试包，正式发行状态以最终 v1.4.0 说明为准。
+候选 DMG 输出位于 `.build/desktop/deepseek-harness/apps/desktop/.desktop-build/targets/mac-arm64/unsigned-artifacts/`，具体名称以构建产物为准，构建成功后脚本同时复制到项目根目录下**不会提交 Git 的 `dist/`**。目录名沿用 `unsigned-artifacts`；候选采用 ad-hoc 临时签名、未公证。正式发行来源与状态以对应版本的 Release 和来源清单为准。
 
 ## Windows x64 工程候选
 
@@ -40,6 +40,8 @@ pnpm desktop:verify:win --source-sha (git rev-parse HEAD)
 ```
 
 脚本使用原 SDK 的 `package:desktop:win:x64:unsigned`，输出到 `dist/windows-x64/`。产品 unsigned 配方沿用原本地环境隔离，不读取 `.env.windows`、签名凭据或供应商更新策略；signed 原门禁保留。来源核验检查准备配方、固定 SDK、独立产品来源字段 `zhumaSourceCommit`／`zhumaSourceDirty`、原 SDK 构建来源、产品／构建／SDK版本、x64 应用 PE、九个工作台文件，以及三个必须解包的 CodeArts 物理文件；保留许可，并生成 `SOURCE.json` 和 `SHA256SUMS`。已有来源记录拒绝覆盖，后续候选应先保存到独立证据目录。NSIS 安装器引导本身允许为 x86，不据此误判应用架构。
+
+从本次命名调整后的后续候选和发行起，产品安装包统一命名为 `zhuma-<版本>-windows-x64-unsigned.exe`，完整标明 Windows、x64 和未签名状态。原 SDK 内部 `win-x64` target 和安装器名称不变，产品导出只复制原字节；候选校验和、总来源清单与 Release 资产使用公开名称。已发布 v1.4.0 继续保留真实原名 `zhuma-1.4.0-win-x64-unsigned.exe` 及原摘要，参见[历史版本说明](../../docs/release-v1.4.md)，不回改或重发。
 
 CI 的 **CI → Run workflow** 可选择 `task=windows-package`，填写与 dispatch ref 相同的完整 `source_sha`。该模式仅在 `windows-2025` 构建并保存候选资产；普通 push／PR 的 scaffold 检查保持原流程。候选 job 只有读取权限，不创建 tag 或 Release。编译和字节核验不代替实际安装、窗口、模型、本机权限、业务链路或恢复验收；这些证据由对应 Windows 环境按准确候选另行提供。
 

@@ -1,5 +1,10 @@
 import type { NativeResultSnapshot } from './native-work-session-result-contract.js';
 import type { NativeWorkResultIntent } from './native-work-session-result-intent.js';
+import type {
+  NativeConversationMetadata,
+  NativeConversationPrefix,
+  NativeConversationReadSource,
+} from './native-work-session-conversation-contract.js';
 
 /** Host-internal seam. Never deserialize a grant from a Client or model request. */
 export interface NativeWorkScope {
@@ -77,7 +82,9 @@ export interface NativeSessionLineage {
     };
   }[];
 }
-export type NativeWorkSessionRecord = NativeSessionBinding | NativeSessionLineage;
+export type NativeWorkSessionRecord = (NativeSessionBinding | NativeSessionLineage) & {
+  readonly conversation?: NativeConversationMetadata | undefined;
+};
 
 /** Issued from D's durable old/new Run pair, not derived from a drive/read grant.
  * assertCurrent rechecks old terminal/resource-settled and exact new current
@@ -150,6 +157,8 @@ export interface NativeWorkStorage {
 export interface NativeSessionMessage {
   readonly id: string;
   readonly text: string;
+  /** Official optimistic submission correlation, never a message identity. */
+  readonly rpcId?: string;
 }
 
 export interface NativeHistoryEvent {
@@ -252,6 +261,31 @@ export type NativeConversationFrame =
 
 /** The only driver is the public DSH AgentRegistry/Agent implementation. */
 export interface NativeWorkRuntime {
+  conversationSourceIdentity?(): NativeConversationReadSource;
+  qualifyConversationRead?(
+    binding: NativeSessionBinding,
+    signal: AbortSignal,
+    assertCurrent: () => void,
+  ): Promise<void>;
+  readConversationPage?(
+    binding: NativeSessionBinding,
+    after: number,
+    limit: number,
+    signal: AbortSignal,
+    assertCurrent: () => void,
+  ): Promise<readonly NativeHistoryEvent[]>;
+  connectConversation?(binding: NativeSessionBinding, grant: NativeWorkGrant): Promise<void>;
+  readConversationPrefix?(
+    binding: NativeSessionBinding,
+    signal: AbortSignal,
+    assertCurrent: () => void,
+  ): Promise<NativeConversationPrefix>;
+  readPrefixSnapshot?(
+    binding: NativeSessionBinding,
+    prefix: NativeConversationPrefix,
+    signal: AbortSignal,
+    assertCurrent: () => void,
+  ): Promise<NativeResultSnapshot>;
   readResultSnapshot?(
     binding: NativeSessionBinding,
     signal: AbortSignal,
@@ -308,6 +342,7 @@ export interface NativeWorkRuntime {
     allowAbsent?: boolean,
     assertCurrent?: () => void,
     expectedScope?: NativeWorkScope,
+    passive?: boolean,
   ): AsyncIterable<NativeWorkFrame>;
   disconnect(sessionId: string): Promise<void>;
   /** Independent cleanup authority is checked by the service, not an expired old drive grant.

@@ -23,7 +23,7 @@ import { NodeInspector } from './NodeInspector.js';
 import { TreeNavigator } from './TreeNavigator.js';
 import { indexWorkTree, resolveWorkLocation, workflowPath } from './navigation.js';
 import { Button } from './Button.js';
-import { Appearance, type AppearanceStore } from './Appearance.js';
+import type { AppearanceStore } from './Appearance.js';
 import { TemplateSaveDialog } from './TemplateSaveDialog.js';
 import { TemplateBindings, type TemplateBindingValues } from './TemplateBindings.js';
 import { SingleSelect } from './SingleSelect.js';
@@ -36,8 +36,10 @@ import { NativeRunLauncher } from '../run/NativeRunWorkspace.js';
 import type { NativeRunApi } from '../run/api.js';
 import { WorkflowControls } from '../workflow/WorkflowControls.js';
 import type { WorkflowView } from '../workflow/api.js';
+import { confirmedNodeTitles, progressNodeMarks } from '../execution/progress-focus.js';
 import { latestTaskPlan, type TaskProgressState } from '../execution/useTaskProgress.js';
 import { TaskProgressSummary } from '../execution/TaskProgressSummary.js';
+import { taskHeading } from './task-heading.js';
 import { expertResources, prepareExpertProposal } from './expert-resources.js';
 import { MemberAssetFilePicker } from '../assets/MemberAssetFilePicker.js';
 import type { MemberAssetApi } from '../assets/api.js';
@@ -73,7 +75,6 @@ export function TaskEditor({
   model,
   saved,
   close,
-  appearance,
   initialPlanning,
   backLabel = '任务清单',
   openWork,
@@ -88,7 +89,8 @@ export function TaskEditor({
   model: string;
   saved(state: Workbench): void;
   close(): void;
-  appearance: AppearanceStore;
+  /** Accepted for existing embedders; theme preferences are managed in Settings. */
+  appearance?: AppearanceStore;
   initialPlanning?: InitialPlanning;
   backLabel?: string;
   openWork?: () => void;
@@ -707,7 +709,6 @@ export function TaskEditor({
             保存为工作流
           </Button>
         )}
-        <Appearance store={appearance} />
         {conflict && (
           <Button disabled={busy || planning} onClick={() => void readLatest()}>
             读取最新版本
@@ -755,7 +756,7 @@ export function TaskEditor({
       </div>
       <div className="zm-editor-heading">
         {task.status === 'ready' ? (
-          <h1>{task.title}</h1>
+          <h1 title={task.title}>{taskHeading(task)}</h1>
         ) : (
           <input
             className="zm-title-input"
@@ -772,7 +773,11 @@ export function TaskEditor({
               ? `计划已确认${applied ? ` v${applied.revision}` : ''}${api.member ? '' : ' · 待执行接入'}`
               : '计划草稿'}
           </span>
-          <TaskProgressSummary progress={progress} confirmed={!!applied} />
+          <TaskProgressSummary
+            progress={progress}
+            confirmed={!!applied}
+            nodeTitles={confirmedNodeTitles(state.appliedPlans, progress)}
+          />
           {applied && refreshProgress && (
             <Button variant="quiet" onClick={refreshProgress}>
               刷新进度
@@ -1072,6 +1077,7 @@ export function TaskEditor({
               workTree={workTree}
               expanded={expanded}
               locateRequest={locateRequest}
+              marks={progressNodeMarks(progress)}
             />
           ) : workflow.nodes.length ? (
             <div className="zm-node-list">

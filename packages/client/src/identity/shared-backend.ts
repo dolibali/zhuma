@@ -63,6 +63,8 @@ const targets = {
   '/api/zhuma-member/snapshot': ['POST', 'member.snapshot'],
   '/api/zhuma-member/command': ['POST', 'member.command'],
   '/api/zhuma-member/plan': ['POST', 'member.plan'],
+  '/api/zhuma-member/planning-models': ['POST', 'member.planning-models'],
+  '/api/zhuma-member/select-planning-model': ['POST', 'member.select-planning-model'],
   '/api/zhuma-member/asset-folder-list': ['POST', 'member.asset-folder-list'],
   '/api/zhuma-member/asset-folder-create': ['POST', 'member.asset-folder-create'],
   '/api/zhuma-member/asset-list': ['POST', 'member.asset-list'],
@@ -97,6 +99,7 @@ const targets = {
   '/api/zhuma-exec/review-outcome': ['POST', 'execution.review-outcome'],
   '/api/zhuma-exec/upstream-content': ['POST', 'execution.upstream-content'],
   '/api/zhuma-exec/draft': ['POST', 'execution.draft'],
+  '/api/zhuma-efficiency/export': ['POST', 'efficiency.export'],
 } as const;
 function target(path: string, method: string): readonly [string, string] {
   if (path === '/zhuma-id/teams')

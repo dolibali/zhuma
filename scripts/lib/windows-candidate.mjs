@@ -1,9 +1,25 @@
 /** Candidate byte/metadata guards, independent of installation or GUI acceptance. */
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { closeSync, lstatSync, openSync, readFileSync, readSync } from 'node:fs';
+import { closeSync, copyFileSync, lstatSync, openSync, readFileSync, readSync } from 'node:fs';
 import { join } from 'node:path';
 import { packagedWorkbench, verifyPackagedCodeArts } from './desktop-codearts-artifacts.mjs';
+
+/** Keep the pinned SDK's internal target name separate from the public asset. */
+export function windowsInstallerNames(buildVersion) {
+  assert.match(buildVersion, /^[0-9A-Za-z.-]+$/u, 'Invalid Windows build version.');
+  return {
+    sdk: `zhuma-${buildVersion}-win-x64-unsigned.exe`,
+    product: `zhuma-${buildVersion}-windows-x64-unsigned.exe`,
+  };
+}
+
+/** Export the original installer bytes; no repackaging or upstream rename. */
+export function copyWindowsInstaller(artifacts, destination, buildVersion) {
+  const names = windowsInstallerNames(buildVersion);
+  copyFileSync(join(artifacts, names.sdk), join(destination, names.product));
+  return names.product;
+}
 
 export const candidateWorkbenchFiles = Object.freeze([
   'index.js',
@@ -105,7 +121,7 @@ export function verifyWindowsCandidateFiles({
   const codeArts = verifyPackagedCodeArts(resources, workbench, asar);
   const executable = join(artifacts, 'win-unpacked/Zhuma.exe');
   assertWindowsPE(executable, 0x8664);
-  const installer = join(artifacts, `zhuma-${buildVersion}-win-x64-unsigned.exe`);
+  const installer = join(artifacts, windowsInstallerNames(buildVersion).sdk);
   // The NSIS bootstrap can be x86 even for an x64 application.
   assertWindowsPE(installer);
   return {

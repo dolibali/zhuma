@@ -6,8 +6,10 @@ import { pathToFileURL } from 'node:url';
 import { applyWorkbenchCommand } from '@zhuma/agent-core';
 import { createDesktopMemberCookieBridge } from '../dist/desktop-member-cookie.js';
 import { hostWorkflowEndpoints } from '../dist/host-workflow-http.js';
+import { hostWorkspaceApprovalEndpoints } from '../dist/host-workspace-approval-http.js';
 import { knowledgeEndpoints } from '../dist/knowledge-http.js';
 import { hashPassword } from '../dist/identity-session.js';
+import { openIdentityMemberHttp } from '../dist/identity-member-http.js';
 import {
   apply as applyExecution,
   inject as executionInject,
@@ -55,17 +57,108 @@ async function sentCookie(bridge, path = '/zhuma-id/session', host = HOST, owner
   return sent;
 }
 
+test('desktop lookup carrier: only the exact POST carries an available member without requiring one for owner navigation', async () => {
+  const bridge = createDesktopMemberCookieBridge();
+  const lookup = '/api/zhuma-member-native/lookup';
+  const forward = async (path = lookup, method = 'POST') => {
+    let sent;
+    const result = await bridge.forward(
+      request(path, { method, headers: { cookie: 'zhuma-member=renderer-forgery' } }),
+      HOST,
+      OWNER,
+      async (credential) => {
+        sent = credential;
+        return new Response('{}');
+      },
+    );
+    assert.equal(result.status, 200);
+    return { sent, result };
+  };
+  // Ordinary and remote owner navigation do not require a local member login.
+  assert.equal((await forward()).sent, OWNER);
+  await login(bridge);
+  const current = await forward();
+  assert.equal(current.sent, `${OWNER}; zhuma-member=${COOKIE_A}`);
+  assert.equal(current.result.headers.get('cache-control'), 'no-store');
+  const ownerDenied = await bridge.forward(
+    request(lookup, { method: 'POST' }),
+    HOST,
+    OWNER,
+    async () => new Response('{}', { status: 401 }),
+  );
+  assert.equal(ownerDenied.status, 401);
+  assert.equal(await sentCookie(bridge), `${OWNER}; zhuma-member=${COOKIE_A}`);
+  for (const path of [
+    lookup + '/extra',
+    lookup + '%2Fextra',
+    lookup + 'x',
+    '/api/zhuma-member-native/%6cookup',
+    '/api/zhuma-member-native/read',
+  ])
+    assert.equal((await forward(path)).sent, OWNER);
+  assert.equal((await forward(lookup, 'GET')).sent, OWNER);
+  bridge.clear();
+  assert.equal((await forward()).sent, OWNER);
+  assert.equal(
+    await sentCookie(bridge),
+    undefined,
+    'Mandatory member routes still reject owner fallback',
+  );
+});
+
+test('desktop lookup carrier: logout and a newer login fence late replies without exposing or replacing credentials', async () => {
+  const bridge = createDesktopMemberCookieBridge();
+  await login(bridge);
+  const pending = deferred();
+  let carried;
+  const reading = bridge.forward(
+    request('/api/zhuma-member-native/lookup', { method: 'POST' }),
+    HOST,
+    OWNER,
+    async (sent) => {
+      carried = sent;
+      return pending.promise;
+    },
+  );
+  bridge.clear();
+  await login(bridge, COOKIE_B);
+  pending.resolve(new Response('{}'));
+  assert.equal((await reading).status, 401);
+  assert.equal(carried, `${OWNER}; zhuma-member=${COOKIE_A}`);
+  assert.equal(await sentCookie(bridge), `${OWNER}; zhuma-member=${COOKIE_B}`);
+  const rejected = await bridge.forward(
+    request('/api/zhuma-member-native/lookup', {
+      method: 'POST',
+      headers: { origin: 'https://foreign.invalid' },
+    }),
+    HOST,
+    OWNER,
+    async () => assert.fail('Foreign origins cannot dispatch lookup'),
+  );
+  assert.equal(rejected.status, 403);
+  assert.equal(await sentCookie(bridge), `${OWNER}; zhuma-member=${COOKIE_B}`);
+});
+
 test('desktop transport contract: only exact member routes carry the private member cookie', async () => {
   const bridge = createDesktopMemberCookieBridge();
   await login(bridge);
   for (const path of [
     '/zhuma-id/session',
+    '/zhuma-id/teams',
+    '/zhuma-id/team-members?spaceId=team-empty',
     '/zhuma-id/spaces/team-empty',
     '/zhuma-id/notes/note-a',
-    ...['snapshot', 'command', 'plan', 'asset-folder-list', 'asset-folder-create'].map(
-      (endpoint) => `/api/zhuma-member/${endpoint}`,
-    ),
+    ...[
+      'snapshot',
+      'command',
+      'plan',
+      'planning-models',
+      'select-planning-model',
+      'asset-folder-list',
+      'asset-folder-create',
+    ].map((endpoint) => `/api/zhuma-member/${endpoint}`),
     ...executionEndpoints.map((endpoint) => `/api/zhuma-exec/${endpoint}`),
+    '/api/zhuma-efficiency/export',
     ...knowledgeEndpoints.map((endpoint) => `/api/zhuma-knowledge/${endpoint}`),
     ...['begin', 'send', 'stop', 'read', 'history', 'options', 'inbox', 'observe'].map(
       (endpoint) => `/api/zhuma-run/${endpoint}`,
@@ -77,7 +170,13 @@ test('desktop transport contract: only exact member routes carry the private mem
     '/api/zhuma/command',
     '/zhuma-id/session/extra',
     '/zhuma-id/unknown',
+    '/zhuma-id/teams/extra',
+    '/zhuma-id/team-members/extra',
+    '/zhuma-id/password/extra',
+    '/zhuma-id/%74eams',
+    '/zhuma-id/team-members%2Fextra',
     '/api/zhuma-exec/unknown',
+    '/api/zhuma-efficiency/unknown',
     '/api/zhuma-exec/inbox/extra',
     '/api/zhuma-exec/project-artifacts/extra',
     '/api/zhuma-exec/review-outcome/extra',
@@ -94,6 +193,114 @@ test('desktop transport contract: only exact member routes carry the private mem
     '/zhuma-id/spaces/%2F',
   ])
     assert.equal(await sentCookie(bridge, path), OWNER);
+});
+
+const memberLifecycleRequests = [
+  ['/zhuma-id/teams', 'GET'],
+  ['/zhuma-id/teams', 'POST'],
+  ['/zhuma-id/team-members?spaceId=team-empty', 'GET'],
+  ['/zhuma-id/team-members', 'POST'],
+  ['/zhuma-id/password', 'POST'],
+];
+
+test('desktop workspace carrier: exact owner/member controls carry the current member and never fall back after revocation', async () => {
+  const bridge = createDesktopMemberCookieBridge();
+  for (const endpoint of hostWorkspaceApprovalEndpoints) {
+    const denied = await bridge.forward(
+      request(`/api/zhuma-workspaces/${endpoint}`, { method: 'POST' }),
+      HOST,
+      OWNER,
+      async () => assert.fail('A signed-out workspace action must not dispatch as owner'),
+    );
+    assert.equal(denied.status, 401);
+  }
+  await login(bridge);
+  for (const endpoint of hostWorkspaceApprovalEndpoints) {
+    const result = await bridge.forward(
+      request(`/api/zhuma-workspaces/${endpoint}`, {
+        method: 'POST',
+        headers: { cookie: 'zhuma-member=renderer-forgery' },
+      }),
+      HOST,
+      OWNER,
+      async (sent) => {
+        assert.equal(sent, `${OWNER}; zhuma-member=${COOKIE_A}`);
+        return new Response('{}');
+      },
+    );
+    assert.equal(result.status, 200);
+  }
+  await bridge.forward(
+    request('/api/zhuma-workspaces/options', { method: 'POST' }),
+    HOST,
+    OWNER,
+    async () => new Response(null, { status: 401 }),
+  );
+  for (const endpoint of hostWorkspaceApprovalEndpoints) {
+    const denied = await bridge.forward(
+      request(`/api/zhuma-workspaces/${endpoint}`, { method: 'POST' }),
+      HOST,
+      OWNER,
+      async () => assert.fail('A revoked workspace member must not dispatch as owner'),
+    );
+    assert.equal(denied.status, 401);
+  }
+});
+
+test('desktop account lifecycle transport: exact reads and writes carry only the main-owned member; public registration stays separate', async () => {
+  const bridge = createDesktopMemberCookieBridge();
+  await login(bridge);
+  for (const [path, method] of memberLifecycleRequests) {
+    const result = await bridge.forward(
+      request(path, {
+        method,
+        headers: { cookie: 'zhuma-member=renderer-forgery' },
+      }),
+      HOST,
+      OWNER,
+      async (credential) => {
+        assert.equal(credential, `${OWNER}; zhuma-member=${COOKIE_A}`);
+        return new Response('{}');
+      },
+    );
+    assert.equal(result.status, 200);
+  }
+  for (const loggedIn of [false, true]) {
+    const current = createDesktopMemberCookieBridge();
+    if (loggedIn) await login(current);
+    const registration = await current.forward(
+      request('/zhuma-id/register', { method: 'POST' }),
+      HOST,
+      OWNER,
+      async (credential) => {
+        assert.equal(credential, OWNER);
+        return new Response('{}');
+      },
+    );
+    assert.equal(registration.status, 200);
+  }
+});
+
+test('desktop account lifecycle transport: signed-out or revoked members never fall back to the owner', async () => {
+  for (const revoked of [false, true]) {
+    const bridge = createDesktopMemberCookieBridge();
+    if (revoked) {
+      await login(bridge);
+      const denied = await bridge.forward(
+        request('/zhuma-id/teams'),
+        HOST,
+        OWNER,
+        async () => new Response('{}', { status: 401 }),
+      );
+      assert.equal(denied.status, 401);
+    }
+    for (const [path, method] of memberLifecycleRequests) {
+      const denied = await bridge.forward(request(path, { method }), HOST, OWNER, async () =>
+        assert.fail('Account lifecycle must not fall back to owner'),
+      );
+      assert.equal(denied.status, 401);
+    }
+  }
 });
 
 test('desktop knowledge carrier contract: signed-out and revoked members cannot dispatch exact knowledge routes as owner', async () => {
@@ -178,9 +385,12 @@ test('desktop workflow carrier contract: unknown or near-prefix paths and origin
     '/api/zhuma-workflow/%72ead',
     '/api/zhuma-workflows/read',
     '/api/zhuma-local-setup/initialize',
-    '/api/zhuma-workspaces/options',
-    '/api/zhuma-workspaces/approve',
-    '/api/zhuma-workspaces/revoke',
+    '/api/zhuma-codearts/configure',
+    '/api/zhuma-workspaces/unknown',
+    '/api/zhuma-workspaces/options/extra',
+    '/api/zhuma-workspaces/approve%2Fextra',
+    '/api/zhuma-workspaces/%72evoke',
+    '/api/zhuma-workspace/options',
   ])
     assert.equal(await sentCookie(bridge, path), OWNER, path);
 });
@@ -565,6 +775,7 @@ test('desktop transport contract: a late logout reply cannot clear a newer membe
 test('desktop transport HTTP contract: real identity/execution services authorize, revoke and retain business data independently of the carrier', async () => {
   // Real Connection/identity/execution and Node HTTP; memory credentials/KV/access matcher.
   // This is not an official Electron process, installed product or disk-restart proof.
+  let lifecycleHandle;
   const password = randomBytes(24).toString('hex');
   const host = await bootIdentity(
     {
@@ -592,7 +803,16 @@ test('desktop transport HTTP contract: real identity/execution services authoriz
         { spaceId: 'empty', accountId: 'chen' },
       ],
     },
+    {
+      publish(handle) {
+        lifecycleHandle = handle;
+        return () => {
+          if (lifecycleHandle === handle) lifecycleHandle = undefined;
+        };
+      },
+    },
   );
+  const lifecycleHttp = openIdentityMemberHttp(host.ctx, () => lifecycleHandle);
   const { state, task } = fixture();
   const confirmed = applyWorkbenchCommand(state, {
     type: 'save-task',
@@ -680,6 +900,11 @@ test('desktop transport HTTP contract: real identity/execution services authoriz
     });
     assert.equal(ownerOnly.status, 401); // Real multi-member Host does not map owner to member.
     await ownerOnly.body?.cancel();
+    const ownerTeams = await fetch(`${origin}/zhuma-id/teams`, {
+      headers: { host: new URL(origin).host, cookie: owner },
+    });
+    assert.equal(ownerTeams.status, 401);
+    await ownerTeams.body?.cancel();
     assert.equal((await call('/zhuma-id/session')).status, 401);
     assert.equal(
       (await call('/zhuma-id/login', 'POST', { accountId: 'chen', password })).status,
@@ -688,6 +913,14 @@ test('desktop transport HTTP contract: real identity/execution services authoriz
     const session = await call('/zhuma-id/session');
     assert.equal(session.body.accountId, 'chen');
     assert.equal(session.body.principal.kind, 'zhuma-member');
+    const teams = await call('/zhuma-id/teams');
+    assert.equal(teams.status, 200);
+    assert.equal(teams.body.value.accountId, 'chen');
+    assert.deepEqual(teams.body.value.teams.map((team) => team.id).sort(), ['empty', 'project']);
+    const members = await call('/zhuma-id/team-members?spaceId=project');
+    assert.equal(members.status, 200);
+    assert.deepEqual(members.body.value.accountIds, ['chen']);
+    assert.equal((await call('/zhuma-id/session')).status, 200);
     assert.equal(
       (await call('/zhuma-id/logout', 'POST', {}, { origin: 'https://untrusted.invalid' })).status,
       403,
@@ -746,6 +979,7 @@ test('desktop transport HTTP contract: real identity/execution services authoriz
     server.closeAllConnections();
     if (server.listening) await new Promise((resolve) => server.close(resolve));
     await execution.dispose();
+    await lifecycleHttp.close();
     await host.dispose();
   }
 });

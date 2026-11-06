@@ -28,9 +28,9 @@ const context = {
   source: 'a'.repeat(40),
   tree: 'b'.repeat(40),
   repository: 'example/product',
-  version: '1.4.0',
-  tag: 'v1.4.0',
-  filename: 'zhuma-1.4.0-mac-arm64-unsigned.dmg',
+  version: '1.5.0',
+  tag: 'v1.5.0',
+  filename: 'zhuma-1.5.0-mac-arm64-unsigned.dmg',
   sdkPin: 'c'.repeat(40),
   sdkVersion: '0.2.1-rc.4',
   rootLockSha256: 'd'.repeat(64),
@@ -107,7 +107,7 @@ function fakeApi(options = {}) {
       return {
         draft: false,
         tag_name: context.tag,
-        html_url: 'https://github.com/example/product/releases/tag/v1.4.0',
+        html_url: `https://github.com/example/product/releases/tag/${context.tag}`,
       };
     }
     assert.fail('Unexpected synthetic API request');
@@ -272,11 +272,14 @@ test('release contracts: publish verifies provenance/checksums and all remote as
     h = fakeApi();
   assert.equal(
     await publish(context, directory, h.api),
-    'https://github.com/example/product/releases/tag/v1.4.0',
+    `https://github.com/example/product/releases/tag/${context.tag}`,
   );
   const writes = h.calls.filter((call) => call.method !== 'GET');
   assert.equal(writes.length, 16);
   assert.equal(writes[0].path, 'repos/example/product/git/refs');
+  assert.ok(
+    writes[1].body.body.includes(`/blob/${context.source}/docs/release-v${context.version}.md`),
+  );
   assert.equal(writes.at(-1).method, 'PATCH');
   assert.equal(
     h.calls.some((call) => call.method === 'DELETE'),
@@ -320,6 +323,13 @@ test('release workflow contract: manual default artifact build, fixed actions, a
   assert.deepEqual(workflow.jobs.assemble.needs, ['build', 'windows']);
   assert.equal(workflow.jobs.assemble.permissions.contents, 'read');
   assert.equal(workflow.jobs.publish.needs, 'assemble');
+  const ci = parse(await readFile(join(root, '.github/workflows/ci.yml'), 'utf8'));
+  for (const job of [workflow.jobs.windows, ci.jobs['windows-candidate']]) {
+    const uploads = job.steps.filter((step) => step.uses?.startsWith('actions/upload-artifact@'));
+    assert(uploads.length > 0);
+    for (const step of uploads)
+      assert(step.with.path.split('\n').includes('dist/windows-x64/*-windows-x64-unsigned.exe'));
+  }
   for (const job of Object.values(workflow.jobs))
     for (const step of job.steps) if (step.uses) assert.match(step.uses, /^[\w/-]+@[a-f0-9]{40}$/);
   const runs = workflow.jobs.build.steps.map((step) => step.run ?? '').join('\n');

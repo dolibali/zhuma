@@ -22,19 +22,124 @@ test('board projection uses authoritative progress and keeps unknown/cancelled d
     ready(unknown()),
   ])
     assert.equal(taskBoardColumn(task, true, progress), 'unknown');
-  assert.equal(taskBoardColumn(task, true, ready(row())), 'review');
+  assert.equal(taskBoardColumn(task, true, ready(row())), 'running');
   assert.equal(taskBoardColumn(task, true, ready(row({ facts: 'not-started' }))), 'attention');
+  const idle = {
+    byStatus: { ...row().byStatus, running: 0 },
+    resources: { authorHeld: 0, reviewHeld: 1, stopRequested: 0 },
+    workflow: 'inactive',
+  };
+  assert.equal(taskBoardColumn(task, true, ready(row(idle))), 'review');
   const counts = { ...row().byStatus, 'in-review': 0 };
   assert.equal(taskBoardColumn(task, true, ready(row({ byStatus: counts }))), 'running');
   assert.equal(
-    taskBoardColumn(task, true, ready(row({ byStatus: { ...counts, 'needs-revision': 1 } }))),
+    taskBoardColumn(
+      task,
+      true,
+      ready(
+        row({
+          byStatus: { ...counts, running: 0, 'needs-revision': 1, completed: 4 },
+          resources: { authorHeld: 0, reviewHeld: 0, stopRequested: 0 },
+          workflow: 'inactive',
+        }),
+      ),
+    ),
     'attention',
+  );
+  const quiet = { authorHeld: 0, reviewHeld: 0, stopRequested: 0 };
+  const queued = {
+    byStatus: { ...row().byStatus, running: 0, 'in-review': 0, completed: 1, ready: 3, blocked: 1 },
+    resources: quiet,
+    workflow: 'running',
+    nodeStatuses: [
+      { nodeId: 'first', status: 'ready', authorHeld: 0, assignee: 'expert' },
+      { nodeId: 'second', status: 'ready', authorHeld: 0, assignee: 'expert' },
+      { nodeId: 'human', status: 'ready', authorHeld: 0, assignee: 'human' },
+      { nodeId: 'join', status: 'blocked', authorHeld: 0, assignee: 'expert' },
+      { nodeId: 'done', status: 'completed', authorHeld: 0, assignee: 'expert' },
+    ],
+  };
+  assert.equal(taskBoardColumn(task, true, ready(row(queued))), 'running');
+  assert.equal(
+    taskBoardColumn(
+      task,
+      true,
+      ready(
+        row({
+          ...queued,
+          nodeStatuses: queued.nodeStatuses.map((node) =>
+            node.assignee === 'expert' && node.status === 'ready'
+              ? { ...node, status: 'completed', assignee: 'expert' }
+              : node,
+          ),
+          workflow: 'running',
+        }),
+      ),
+    ),
+    'attention',
+  );
+  assert.equal(
+    taskBoardColumn(
+      task,
+      true,
+      ready(
+        row({
+          byStatus: {
+            ...row().byStatus,
+            running: 0,
+            'in-review': 0,
+            completed: 0,
+            ready: 3,
+            blocked: 2,
+          },
+          resources: quiet,
+          workflow: 'requires-resume',
+          nodeStatuses: [
+            { nodeId: 'first', status: 'ready', authorHeld: 0, assignee: 'expert' },
+            { nodeId: 'second', status: 'ready', authorHeld: 0, assignee: 'expert' },
+            { nodeId: 'human', status: 'ready', authorHeld: 0, assignee: 'human' },
+            { nodeId: 'join', status: 'blocked', authorHeld: 0, assignee: 'expert' },
+            { nodeId: 'later', status: 'blocked', authorHeld: 0, assignee: 'expert' },
+          ],
+        }),
+      ),
+    ),
+    'attention',
+  );
+  assert.equal(
+    taskBoardColumn(
+      task,
+      true,
+      ready(
+        row({
+          byStatus: {
+            ...row().byStatus,
+            running: 0,
+            'in-review': 0,
+            completed: 0,
+            ready: 2,
+            blocked: 3,
+          },
+          resources: { authorHeld: 1, reviewHeld: 0, stopRequested: 0 },
+          workflow: 'requires-resume',
+          nodeStatuses: [
+            { nodeId: 'first', status: 'ready', authorHeld: 1, assignee: 'expert' },
+            { nodeId: 'human', status: 'ready', authorHeld: 0, assignee: 'human' },
+            { nodeId: 'b1', status: 'blocked', authorHeld: 0, assignee: 'expert' },
+            { nodeId: 'b2', status: 'blocked', authorHeld: 0, assignee: 'expert' },
+            { nodeId: 'b3', status: 'blocked', authorHeld: 0, assignee: 'expert' },
+          ],
+        }),
+      ),
+    ),
+    'running',
   );
   for (const delivery of ['cancelled', 'mixed-terminal', 'all-accepted'])
     assert.equal(taskBoardColumn(task, true, ready(row({ delivery }))), 'ended');
   // Editing a next draft never overwrites the previous confirmed plan's facts.
   const draft = { status: 'draft' };
-  assert.equal(taskBoardColumn(draft, true, ready(row())), 'review');
+  assert.equal(taskBoardColumn(draft, true, ready(row())), 'running');
+  assert.equal(taskBoardColumn(draft, true, ready(row(idle))), 'review');
   assert.equal(taskBoardColumn(draft, true, ready(row({ byStatus: counts }))), 'running');
   assert.equal(taskBoardColumn(draft, true, ready(row({ delivery: 'all-accepted' }))), 'ended');
   assert.equal(taskBoardColumn(draft, true, undefined), 'unknown');

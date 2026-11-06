@@ -7,7 +7,7 @@ import {
   installMemberNativeNavigation,
   nativeSessionPanel,
 } from '../dist/run/MemberNativeNavigation.js';
-function setup() {
+function setup(options = {}) {
   let guard,
     component,
     shellLeave,
@@ -20,6 +20,10 @@ function setup() {
       },
     };
   let lookup = async () => ({ kind: 'ordinary' });
+  let fetcher = () => assert.fail('Navigation must not start a Run or query model metadata');
+  const delegates = new Map(),
+    blocks = new Map(),
+    released = [];
   let space = { status: 'ready', epoch: 1, space: { id: 'personal' } };
   let backendState = {
     phase: 'ready',
@@ -38,8 +42,32 @@ function setup() {
     },
   };
   const ctx = {
-    get() {
+    conversation: {
+      blocks: {
+        set(id, value) {
+          blocks.set(id, value);
+        },
+        forget(id) {
+          blocks.delete(id);
+        },
+      },
+    },
+    get(name) {
+      if (name === 'sessions')
+        return {
+          ...(options.chat ? { restartHistory() {} } : {}),
+          registerSessionDelegate(id, delegate) {
+            assert.equal(delegates.has(id), false);
+            delegates.set(id, delegate);
+            return () => {
+              delegates.delete(id);
+            };
+          },
+        };
       return {
+        clearSessionSelection(id) {
+          released.push(id);
+        },
         registerSessionNavigationGuard(fn) {
           guard = fn;
           return () => {
@@ -55,7 +83,7 @@ function setup() {
       register(options, view) {
         entries.push(options);
         views.push({ options, view });
-        component = view;
+        if (options.name === 'shell.overlay') component = view;
         return () => {};
       },
     },
@@ -130,7 +158,15 @@ function setup() {
         scopes.push(args);
         return {
           lookup: (...args) => lookup(...args),
-          fetcher: () => assert.fail('Navigation must not start a Run or query model metadata'),
+          fetcher: (...args) => fetcher(...args),
+          conversationRequest: async (endpoint, _query, rpcId) => {
+            assert.equal(endpoint, 'session-status');
+            return Response.json({
+              type: 'server-response',
+              rpcId,
+              result: { ok: true, value: options.chat },
+            });
+          },
         };
       },
     },
@@ -143,6 +179,12 @@ function setup() {
     state,
     entries,
     scopes,
+    delegates,
+    blocks,
+    released,
+    setFetcher(fn) {
+      fetcher = fn;
+    },
     guard: (value, signal, intent) => {
       lastSignal = AbortSignal.any([signal, layout.beginNavigation()]);
       return guard(value, lastSignal, intent);
@@ -171,6 +213,12 @@ function setup() {
       const main = views.find((v) => v.options.name === 'main');
       return renderToStaticMarkup(createElement(main.view, { state }));
     },
+    renderTaskControls: (sessionId) => {
+      const controls = views.find(
+        (v) => v.options.name === 'conversation.session.header.utilities',
+      );
+      return renderToStaticMarkup(createElement(controls.view, { state, sessionId }));
+    },
     change() {
       session = { ...session, epoch: 2 };
       listeners.forEach((fn) => fn());
@@ -182,6 +230,7 @@ function setup() {
 }
 const task = {
   kind: 'task',
+  presentation: 'sdk-native',
   sessionId: 'actual-native-session',
   target: {
     spaceId: 'team',
@@ -194,6 +243,134 @@ const task = {
     segmentId: 'segment',
   },
 };
+test('local task A/B/A permits original mainView only after exact delegation, then blanks and releases on member change', async () => {
+  const h = setup();
+  h.setBackend({ phase: 'ready', selection: { origin: null, connectionId: null } });
+  const second = {
+    ...task,
+    sessionId: 'native-B',
+    target: { ...task.target, nodeId: 'node-B', runId: 'run-B' },
+  };
+  h.setLookup(async (id) => (id === second.sessionId ? second : task));
+  h.setFetcher(async (path, init) => {
+    if (path === '/zhuma-id/session')
+      return Response.json({
+        ok: true,
+        accountId: 'member',
+        peerId: 'fixture',
+        principal: { kind: 'zhuma-member', memberId: 'member' },
+        spaces: [{ id: 'team', kind: 'team', name: 'Team' }],
+      });
+    assert.equal(path, '/api/zhuma-run/read');
+    const wire = JSON.parse(init.body);
+    const selected = wire.payload.runId === second.target.runId ? second : task;
+    return Response.json({
+      type: 'server-response',
+      rpcId: wire.rpcId,
+      result: {
+        ok: true,
+        value: {
+          ...selected.target,
+          nodeVersion: 1,
+          runVersion: 1,
+          status: 'running',
+          dispatch: 'received',
+          resources: 'held',
+          acknowledged: true,
+          stopPhase: 'none',
+          native: { sessionId: selected.sessionId, agentId: selected.sessionId, status: 'running' },
+          sendCapabilities: {
+            followup: { kind: 'available' },
+            queue: { kind: 'available' },
+            steer: { kind: 'available' },
+          },
+        },
+      },
+    });
+  });
+  let previous;
+  for (const selected of [task, second, task]) {
+    assert.equal(await h.guard(selected.sessionId, new AbortController().signal), true);
+    assert.deepEqual([...h.delegates.keys()], [selected.sessionId]);
+    assert.equal(h.state.getSnapshot().sessionId, selected.sessionId);
+    assert.deepEqual(h.state.getSnapshot().location, selected.target);
+    if (previous) assert.equal(previous.signal.aborted, true);
+    previous = h.delegates.get(selected.sessionId);
+  }
+  h.change();
+  assert.equal(h.state.getSnapshot(), undefined);
+  assert.equal(previous.signal.aborted, true);
+  assert.equal(h.delegates.size, 0);
+  assert.deepEqual(h.released, [task.sessionId, second.sessionId, task.sessionId]);
+  h.close();
+});
+test('local unqualified or unsupported bindings preserve original task controls without SDK retention', async () => {
+  for (const presentation of [undefined, 'task-controls', 'unsupported-engine']) {
+    const h = setup();
+    h.setBackend({ phase: 'ready', selection: { origin: null, connectionId: null } });
+    h.setLookup(async () => ({ ...task, presentation }));
+    assert.equal(await h.guard(task.sessionId, new AbortController().signal), false);
+    assert.equal(h.delegates.size, 0);
+    assert.equal(h.state.getSnapshot().conversation, undefined);
+    assert.equal(h.panel(), nativeSessionPanel);
+    h.close();
+  }
+});
+test('task Conversation controls wait for physical stop confirmation and resource settlement', async () => {
+  const h = setup();
+  h.setBackend({ phase: 'ready', selection: { origin: null, connectionId: null } });
+  h.setLookup(async () => task);
+  let phase = { status: 'cancelled', resources: 'held', stopPhase: 'requested' };
+  h.setFetcher(async (path, init) => {
+    if (path === '/zhuma-id/session')
+      return Response.json({
+        ok: true,
+        accountId: 'member',
+        peerId: 'fixture',
+        principal: { kind: 'zhuma-member', memberId: 'member' },
+        spaces: [{ id: 'team', kind: 'team', name: 'Team' }],
+      });
+    assert.equal(path, '/api/zhuma-run/read');
+    const wire = JSON.parse(init.body);
+    return Response.json({
+      type: 'server-response',
+      rpcId: wire.rpcId,
+      result: {
+        ok: true,
+        value: {
+          ...task.target,
+          nodeVersion: 1,
+          runVersion: 1,
+          dispatch: 'received',
+          acknowledged: true,
+          ...phase,
+          native: { sessionId: task.sessionId, agentId: task.sessionId, status: 'idle' },
+          sendCapabilities: {
+            followup: { kind: 'available' },
+            queue: { kind: 'available' },
+            steer: { kind: 'available' },
+          },
+        },
+      },
+    });
+  });
+  assert.equal(await h.guard(task.sessionId, new AbortController().signal), true);
+  assert.match(h.renderTaskControls(task.sessionId), /正在停止/);
+  assert.doesNotMatch(h.renderTaskControls(task.sessionId), /已停止/);
+  for (const [next, expected] of [
+    [{ status: 'cancelled', resources: 'held', stopPhase: 'confirmed' }, /等待停止确认/],
+    [{ status: 'cancelled', resources: 'settled', stopPhase: 'confirmed' }, /已停止/],
+    [{ status: 'cancelled', resources: 'held', stopPhase: 'receipt-rejected' }, /停止未确认/],
+    [{ status: 'completed', resources: 'held', stopPhase: 'none' }, /本轮 · 已结束，正在收尾/],
+  ]) {
+    phase = next;
+    await h.state.getSnapshot().conversation.refresh();
+    assert.match(h.renderTaskControls(task.sessionId), expected);
+    if (next.stopPhase !== 'confirmed' || next.resources !== 'settled')
+      assert.doesNotMatch(h.renderTaskControls(task.sessionId), /已停止/);
+  }
+  h.close();
+});
 test('original review Session opens its read-only purpose view with no work/model API call', async () => {
   const h = setup();
   h.setLookup(async () => ({
@@ -540,3 +717,61 @@ test('ordinary Session selection leaves the controlled page and preserves origin
   stop();
   h.close();
 });
+
+for (const canStop of [false, true])
+  test(`first terminal navigation publishes fresh chat and canStop=${canStop} without manual refresh`, async () => {
+    const chat = {
+      chatEpoch: canStop ? 1 : 0,
+      status: canStop ? 'running' : 'detached',
+      eligible: true,
+      canStop,
+    };
+    const h = setup({ chat });
+    h.setBackend({ phase: 'ready', selection: { origin: null, connectionId: null } });
+    h.setSpace({ status: 'ready', epoch: 1, space: { id: 'team' } });
+    h.setLookup(async () => task);
+    h.setFetcher(async (path, init) => {
+      if (path === '/zhuma-id/session')
+        return Response.json({
+          ok: true,
+          accountId: 'member',
+          peerId: 'fixture',
+          principal: { kind: 'zhuma-member', memberId: 'member' },
+          spaces: [{ id: 'team', kind: 'team', name: 'Team' }],
+        });
+      assert.equal(path, '/api/zhuma-run/read');
+      const wire = JSON.parse(init.body);
+      return Response.json({
+        type: 'server-response',
+        rpcId: wire.rpcId,
+        result: {
+          ok: true,
+          value: {
+            ...task.target,
+            nodeVersion: 1,
+            runVersion: 1,
+            status: 'completed',
+            dispatch: 'received',
+            resources: 'settled',
+            acknowledged: true,
+            stopPhase: 'none',
+            native: { sessionId: task.sessionId, agentId: task.sessionId, status: 'idle' },
+            sendCapabilities: Object.fromEntries(
+              ['followup', 'queue', 'steer'].map((mode) => [
+                mode,
+                { kind: 'unavailable', code: 'not-permitted' },
+              ]),
+            ),
+          },
+        },
+      });
+    });
+    try {
+      assert.equal(await h.guard(task.sessionId, new AbortController().signal), true);
+      assert.deepEqual(h.state.getSnapshot().conversation.chat, chat);
+      assert.equal(h.blocks.get(task.sessionId), undefined);
+      assert.equal(h.renderTaskControls(task.sessionId).includes('结束聊天'), canStop);
+    } finally {
+      h.close();
+    }
+  });

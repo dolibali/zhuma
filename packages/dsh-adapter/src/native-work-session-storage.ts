@@ -118,6 +118,9 @@ export async function openNativeWorkSessions(
   const close = () =>
     (closed ??= (async () => {
       const drain = service.sealInputReads();
+      // A failed/unknown chat retirement retains its mapping owner; never close
+      // that domain from a finally while physical cleanup remains unqualified.
+      await service.conversation.close();
       try {
         let retirementFailed = false;
         try {
@@ -187,5 +190,5 @@ export async function openNativeWorkSessions(
     { global: true },
   );
   ctx.effect(() => stopAgentGate);
-  return { service, runtime, close, lookupNativeSession };
+  return { service, runtime, conversation: service.conversation, close, lookupNativeSession };
 }

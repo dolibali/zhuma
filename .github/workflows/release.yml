@@ -133,7 +133,7 @@ jobs:
         with:
           name: desktop-windows-x64-${{ inputs.source_sha }}
           path: |
-            dist/windows-x64/*.exe
+            dist/windows-x64/*-windows-x64-unsigned.exe
             dist/windows-x64/SOURCE.json
             dist/windows-x64/SHA256SUMS
             dist/windows-x64/LICENSE

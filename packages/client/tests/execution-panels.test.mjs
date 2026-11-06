@@ -43,6 +43,29 @@ const item = {
   action: 'submit',
 };
 
+test('review keeps the complete fixed body and diff in separate bounded reading areas', () => {
+  const text = '完整提交正文\n'.repeat(200) + '正文末尾';
+  const markup = renderToStaticMarkup(
+    createElement(ReviewWorkspace, {
+      api: {},
+      node: {
+        ...node,
+        artifacts: [
+          { id: 'previous', version: 1, text: '原文\n'.repeat(200) },
+          { id: 'artifact-1', version: 2, text },
+        ],
+      },
+      onSubmitted() {},
+    }),
+  );
+  assert(markup.includes(text));
+  assert.match(markup, /aria-label="提交正文" tabindex="0"/);
+  assert.match(markup, /<details class="zm-review-diff"><summary>与上一版的差异<\/summary>/);
+  assert.match(markup, /原文/);
+  assert.match(markup, /aria-label="评审意见与操作"/);
+  assert.match(markup, /填写评审意见/);
+});
+
 test('panels render delivery and review without an actor control', () => {
   const inbox = renderToStaticMarkup(
     createElement(InboxPanel, {
@@ -76,6 +99,55 @@ test('panels render delivery and review without an actor control', () => {
   assert.match(review, /通过/);
   assert.match(review, /退回修改/);
   assert.equal(review.includes('type="hidden"'), false);
+  assert.equal(review.includes('与上一版的差异'), false);
+
+  const compared = renderToStaticMarkup(
+    createElement(ReviewWorkspace, {
+      api,
+      onSubmitted() {},
+      node: {
+        ...node,
+        artifacts: [
+          { id: 'artifact-1', version: 1, text: '第一行\n保留' },
+          { id: 'artifact-2', version: 2, text: '第一行\n已改' },
+          { id: 'artifact-3', version: 3, text: '后来的正文' },
+        ],
+        rounds: [
+          {
+            id: 'round-1',
+            status: 'open',
+            artifactVersionId: 'artifact-2',
+            reviewerIds: ['lin'],
+            ballots: [],
+          },
+        ],
+        comments: [
+          {
+            id: 'c-old',
+            status: 'open',
+            versionId: 'artifact-1',
+            targetId: 'artifact-1',
+            body: '旧版意见',
+          },
+          {
+            id: 'c-now',
+            status: 'open',
+            versionId: 'artifact-2',
+            targetId: 'artifact-2',
+            body: '请改第二行',
+          },
+        ],
+      },
+    }),
+  );
+  assert.match(compared, /第一行/);
+  assert.match(compared, /已改/);
+  assert.match(compared, /与上一版的差异/);
+  assert.match(compared, /-保留/);
+  assert.match(compared, /\+已改/);
+  assert.match(compared, /请改第二行/);
+  assert.equal(compared.includes('旧版意见'), false);
+  assert.equal(compared.includes('后来的正文'), false);
 
   const workspace = renderToStaticMarkup(
     createElement(ExecutionWorkspace, {
@@ -120,7 +192,9 @@ for (const mode of ['submit', 'revise', 'review'])
           : createElement(DeliveryPanel, { api, node: current, mode, onSubmitted() {} }),
       );
       assert.equal(markup.match(/<h2\b[^>]*>([\s\S]*?)<\/h2>/)?.[1], title);
-      const body = markup.match(/<p class="zm-execution-text">([\s\S]*?)<\/p>/)?.[1];
+      const body = markup.match(
+        /<p class="zm-execution-text(?: [^"]*)?"[^>]*>([\s\S]*?)<\/p>/,
+      )?.[1];
       if (goal !== title) {
         const escaped = renderToStaticMarkup(createElement('span', null, goal)).slice(6, -7);
         assert.equal(

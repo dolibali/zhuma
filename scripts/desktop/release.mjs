@@ -256,7 +256,7 @@ export async function publish(context, directory, api) {
       body: `Zhuma ${context.version}
 
 Windows x64 安装包、macOS arm64 DMG 与 Linux amd64 服务镜像／便携包来自同一准确 main 提交。
-安装、签名、配置、数据与验证边界见 [本版说明](https://github.com/${context.repository}/blob/${context.source}/docs/release-v1.4.md)。
+安装、签名、配置、数据与验证边界见 [本版说明](https://github.com/${context.repository}/blob/${context.source}/docs/release-v${context.version}.md)。
 
 下载所需平台文件与 SOURCE.json、SHA256SUMS，先核对摘要。macOS 为 ad-hoc、未公证；Windows 未签名；无自动更新。服务镜像压缩包使用 docker load，部署模板须先填写自己的入口和持久卷，不含凭据。
 

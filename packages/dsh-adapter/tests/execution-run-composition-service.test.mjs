@@ -278,7 +278,11 @@ test('real JSON composition: old human draft, submit, review and downstream writ
   );
   assert.deepEqual(h.service.readRunComposition(h.runLocator()), saved);
   assert.equal(h.read('consume').command.status, 'ready');
-  const corrupted = h.read();
+  const immutable = h.read();
+  assert.throws(() => {
+    immutable.nativeExecution.runs[0].composition.payload.model.model = 'silent-latest';
+  }, TypeError);
+  const corrupted = structuredClone(immutable);
   const original = structuredClone(corrupted);
   const savedLocator = h.runLocator();
   corrupted.nativeExecution.runs[0].composition.payload.model.model = 'silent-latest';

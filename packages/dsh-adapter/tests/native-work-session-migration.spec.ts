@@ -1,9 +1,12 @@
 /** Actual patched native lifecycle/history; D pair/member/phase authority remain contracts. */
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, readFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, realpath, rm, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'vitest';
+import LocalFileSystem from '@deepseek-ai/dsh-fs-local';
+import WorkingDirectory from '@deepseek-ai/dsh-working-directory';
+import { SessionId } from '@deepseek-ai/dsh-session';
 import {
   boot,
   grant,
@@ -31,6 +34,29 @@ function readGrant(scope) {
     );
   };
   return current;
+}
+
+class NoModel extends ScriptedAdapter {
+  resolutions = 0;
+  streamAttempts = 0;
+  override resolveModel() {
+    this.resolutions++;
+    throw Error('durability tests must not resolve a model');
+  }
+  override async *stream() {
+    this.streamAttempts++;
+    throw Error('durability tests must not request a model');
+    yield {};
+  }
+}
+function noModel(t) {
+  const adapter = new NoModel();
+  t.onTestFinished(() => {
+    assert.equal(adapter.resolutions, 0);
+    assert.equal(adapter.streamAttempts, 0);
+    assert.equal(adapter.requests.length, 0);
+  });
+  return adapter;
 }
 
 test('actual native: migration retains old queue/history but only reserves the new segment until explicit send', async (t) => {
@@ -355,6 +381,168 @@ test('actual native: direct foreign runtime restore invalidates old readiness be
   assert.equal(other.adapter.requests.length, 0);
   assert.equal(host.adapter.requests.length, 0);
 });
+
+for (const mode of ['text-only', 'local']) {
+  test(`actual native: ${mode} create survives a reserved-before-append failure and cold cleanup`, async (t) => {
+    const root = await realpath(await home(t)),
+      current = grant(),
+      adapter = noModel(t);
+    await mkdir(join(root, 'workspace'));
+    let host = await boot(
+      root,
+      adapter,
+      undefined,
+      mode === 'local'
+        ? {
+            workingDirectory: () => ({
+              kind: 'local',
+              scope: current.scope,
+              cwd: join(root, 'workspace'),
+              signal: current.signal,
+              assertCurrent() {},
+            }),
+          }
+        : {},
+    );
+    t.onTestFinished(() => host.close());
+    if (mode === 'local') {
+      await host.ctx.plugin(LocalFileSystem, { cwd: root });
+      await host.ctx.plugin(WorkingDirectory, { defaultDirectory: root });
+    }
+    const beforeAppend = Error('controlled failure before native input append');
+    host.runtime.send = () => {
+      throw beforeAppend;
+    };
+    await assert.rejects(
+      host.service.send(
+        current,
+        message('reserved-only', 'must never reach native input', 'queue'),
+      ),
+      (error) => error === beforeAppend,
+    );
+    const binding = host.service.open(current).binding;
+    assert.equal(binding.receipts.length, 1);
+    assert.equal(binding.receipts[0].status, 'reserved');
+    await host.runtime.disconnect(binding.nativeSessionId);
+    await host.close();
+
+    // A new Context must find a physical header, not the old writer's pending
+    // in-process stat. No replacement Agent/session may be created to clean up.
+    host = await boot(root, adapter);
+    const nativeId = SessionId(binding.nativeSessionId);
+    assert.ok(await host.ctx.sessionPersistence.stat(nativeId));
+    const reader = await host.ctx.sessionPersistence.open(nativeId, 'read');
+    let events;
+    try {
+      ({ events } = await reader.read());
+    } finally {
+      await reader.close();
+    }
+    assert.equal(
+      events.some((event) => event.type === 'user/message'),
+      false,
+    );
+    assert.equal(
+      events.some((event) => event.type === 'agent/inbox/spliced'),
+      false,
+    );
+    const bytes = await readFile(join(root, 'domains', 'zhuma_native_work_sessions.json'));
+    const retired = await host.service.retireForCleanup(
+      { scope: current.scope, assertCurrent() {} },
+      new AbortController().signal,
+    );
+    assert.equal(retired.status, 'retired');
+    assert.equal(retired.drain.basis, 'flushed-and-closed');
+    retired.drain.assertCurrent();
+    assert.equal(host.ctx.agents.list().length, 0);
+    assert.deepEqual(
+      await readFile(join(root, 'domains', 'zhuma_native_work_sessions.json')),
+      bytes,
+    );
+  });
+}
+
+for (const failure of ['no-listener', 'throw']) {
+  test(`actual native: initial durability ${failure} refuses before reserving input and disposes the Agent`, async (t) => {
+    const root = await home(t),
+      current = grant(),
+      host = await boot(root, noModel(t));
+    t.onTestFinished(() => host.close());
+    const flush = host.ctx.sessions.flush.bind(host.ctx.sessions),
+      refused = Error('controlled initial durability failure');
+    let calls = 0;
+    host.ctx.sessions.flush = async (session) => {
+      if (++calls === 1) {
+        if (failure === 'throw') throw refused;
+        return false;
+      }
+      return flush(session);
+    };
+    await assert.rejects(
+      host.service.send(current, message('refuse-before-reserve', 'not admitted', 'queue')),
+      (error) => (failure === 'throw' ? error === refused : error.code === 'unavailable'),
+    );
+    const binding = host.service.open(current).binding;
+    assert.ok(calls >= 1);
+    assert.deepEqual(binding.receipts, []);
+    assert.equal(host.runtime.isConnected(binding.nativeSessionId), false);
+    assert.equal(host.ctx.agents.list().length, 0);
+    assert.throws(() => host.service.migrationDrain(current.scope), {
+      code: 'migration-not-ready',
+    });
+  });
+}
+
+for (const revoked of ['grant', 'directory']) {
+  test(`actual native: ${revoked} revocation during initial durability cannot publish a late Agent or reserve input`, async (t) => {
+    const root = await realpath(await home(t)),
+      current = grant(),
+      directory = new AbortController(),
+      entered = Promise.withResolvers(),
+      release = Promise.withResolvers();
+    await mkdir(join(root, 'workspace'));
+    const host = await boot(root, noModel(t), undefined, {
+      workingDirectory: () => ({
+        kind: 'local',
+        scope: current.scope,
+        cwd: join(root, 'workspace'),
+        signal: directory.signal,
+        assertCurrent() {
+          assert.equal(directory.signal.aborted, false);
+        },
+      }),
+    });
+    t.onTestFinished(() => host.close());
+    await host.ctx.plugin(LocalFileSystem, { cwd: root });
+    await host.ctx.plugin(WorkingDirectory, { defaultDirectory: root });
+    const flush = host.ctx.sessions.flush.bind(host.ctx.sessions);
+    host.ctx.sessions.flush = async (session) => {
+      entered.resolve();
+      await release.promise;
+      return flush(session);
+    };
+    const sending = host.service.send(
+      current,
+      message('revoked-durability', 'not admitted', 'queue'),
+    );
+    const refused = assert.rejects(sending);
+    try {
+      await Promise.race([entered.promise, sending]);
+      if (revoked === 'grant') current.revoke();
+      else directory.abort();
+    } finally {
+      release.resolve();
+      await refused;
+    }
+    const binding = host.service.open(readGrant(current.scope)).binding;
+    assert.deepEqual(binding.receipts, []);
+    assert.equal(host.runtime.isConnected(binding.nativeSessionId), false);
+    assert.equal(host.ctx.agents.list().length, 0);
+    assert.throws(() => host.service.migrationDrain(current.scope), {
+      code: 'migration-not-ready',
+    });
+  });
+}
 
 test('actual native: an unmaterialized failed setup is separate absence evidence, never a fake flush', async (t) => {
   const root = await home(t),

@@ -15,7 +15,7 @@ export const serverReceipt = (context) => ({
   artifactBytes: 100,
 });
 export const platformNames = (context) => [
-  `zhuma-${context.version}-win-x64-unsigned.exe`,
+  `zhuma-${context.version}-windows-x64-unsigned.exe`,
   'windows-SOURCE.json',
   'server-SOURCE.json',
   `zhuma-${context.version}-server-linux-amd64-portable.tar.gz`,

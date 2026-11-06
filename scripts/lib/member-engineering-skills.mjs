@@ -11,6 +11,7 @@ const folders = [
   'focused-verification',
   'source-curation',
   'engineering-writing',
+  'controlled-implementation',
 ];
 
 /** Public checked-in bytes only. The Host's pinned helper verifies every body.
@@ -38,7 +39,7 @@ export async function publicMemberEngineeringSkills(root = new URL('../../', imp
     licenses.push({ name: row.id, text: await readFile(new URL(licenseFile, root), 'utf8') });
   }
   return {
-    bundle: { sourceCommit: '133276e2014bf1bcbd8410bab7bb339c929de46d', assets },
+    bundle: { sourceCommit: '583472338143c5d02f94ec97e0d9eb6dc8dfa76e', assets },
     licenses,
   };
 }

@@ -36,12 +36,14 @@ export async function readHostRunModels(
   signal: AbortSignal,
   timeoutMs = 2500,
 ): Promise<HostRunModels> {
-  const llm = ctx.llm;
-  const origin = llm && (Reflect.get(llm, symbols.original) ?? llm);
+  const llm = ctx.get('llm');
+  signal.throwIfAborted();
+  if (!llm) throw new ExecutionRunError('run-authority-unavailable');
+  const origin = Reflect.get(llm, symbols.original) ?? llm;
   function active(currentSignal: AbortSignal) {
     currentSignal.throwIfAborted();
     const current = ctx.get('llm');
-    if (!llm || !current || (Reflect.get(current, symbols.original) ?? current) !== origin)
+    if (!current || (Reflect.get(current, symbols.original) ?? current) !== origin)
       throw new ExecutionRunError('run-authority-unavailable');
   }
   active(signal);

@@ -3,7 +3,11 @@ import test from 'node:test';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { openMemberWorkbenchHttp, applyMemberWorkbench } from '../dist/member-workbench-http.js';
+import {
+  openMemberWorkbenchHttp,
+  applyMemberWorkbench,
+  memberWorkbenchEndpoints,
+} from '../dist/member-workbench-http.js';
 import { startMemberWorkbenchHost } from './member-workbench-host.mjs';
 import {
   setup,
@@ -133,7 +137,7 @@ test('member HTTP close contract: a held catalog read drains, late calls are fen
   release.resolve();
   assert.equal((await (await reply).json()).result.error.code, 'cancelled');
   await close;
-  assert.equal(mounted.stops, 3);
+  assert.equal(mounted.stops, memberWorkbenchEndpoints.length);
   assert.equal(f.writes, 0);
 });
 
@@ -216,7 +220,7 @@ test('member HTTP close contract: model abort completes failed audit and reentra
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(JSON.stringify([...f.audits.values()]), before);
   assert.equal(f.workbench.snapshot().appliedPlans.length, 0);
-  assert.equal(mounted.stops, 3);
+  assert.equal(mounted.stops, memberWorkbenchEndpoints.length);
 });
 
 for (const boundary of ['workbench', 'outcome', 'failed-outcome']) {

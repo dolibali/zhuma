@@ -45,6 +45,10 @@ function fixture() {
   };
 }
 test('actual Session argument shapes cover create/reuse, live mutations and cold parent/child addresses without scanning prompts', () => {
+  assert.deepEqual(
+    nativeSessionCommandIds({ agentId: 'task', line: '/fixture' }, 'commands/execute'),
+    ['task'],
+  );
   assert.deepEqual(nativeSessionCommandIds({ request: { sessionId: 'task' } }), ['task']);
   assert.deepEqual(
     nativeSessionCommandIds({
@@ -60,6 +64,13 @@ test('actual Session argument shapes cover create/reuse, live mutations and cold
     }),
     [],
   );
+});
+test('original slash-command execution cannot bypass the native Session owner gate', async () => {
+  const h = fixture();
+  h.setSource({ lookupNativeSession: (id) => (id === 'ordinary' ? null : {}) });
+  assert.equal(await h.call('commands/execute', { agentId: 'task' }), false);
+  assert.equal(await h.call('commands/execute', {}), false);
+  assert.equal(await h.call('commands/execute', { agentId: 'ordinary' }), true);
 });
 
 test('ACP exact session parameters and explicit globals cannot bypass task or parent ownership', async () => {

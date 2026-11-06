@@ -13,7 +13,7 @@ import type { WorkbenchApi, WorkbenchWriteIntent } from './api.js';
 import { useUnsavedChanges } from './UnsavedChanges.js';
 import { Field, Modal, ParticipantSelect, MultiSelect } from './controls.js';
 import { TaskEditor, type InitialPlanning } from './TaskEditor.js';
-import { Appearance, type AppearanceStore } from './Appearance.js';
+import type { AppearanceStore } from './Appearance.js';
 import { Button } from './Button.js';
 import { SingleSelect } from './SingleSelect.js';
 import { TemplateBrowser } from './TemplateBrowser.js';
@@ -23,10 +23,14 @@ import { AssetImportDialog } from './AssetImportDialog.js';
 import { ResourceSourceDialog } from './SourceFiles.js';
 import { ExpertBrowser, type ExpertBrowserView } from './ExpertBrowser.js';
 import type { NativeRunApi } from '../run/api.js';
-import { ControlIcon } from './ControlIcon.js';
+import { ControlIcon, ProjectIcon } from './ControlIcon.js';
 import { TaskBoard } from './TaskBoard.js';
 import { taskBoardColumn, taskBoardColumns } from './task-board.js';
-import { emptyTaskFilters, taskFilterCandidates } from './task-filters.js';
+import {
+  emptyTaskFilters,
+  taskFilterCandidates,
+  taskFiltersForNavigation,
+} from './task-filters.js';
 import { useTaskFilters } from './useTaskFilters.js';
 import { PlanningReadiness, usePlanningReadiness } from './PlanningReadiness.js';
 import {
@@ -34,7 +38,9 @@ import {
   useTaskProgress,
   type TaskProgressState,
 } from '../execution/useTaskProgress.js';
+import { confirmedNodeTitles } from '../execution/progress-focus.js';
 import { TaskProgressSummary } from '../execution/TaskProgressSummary.js';
+import { AUTOMATIC_TASK_TITLE_LIMIT, taskHeading } from './task-heading.js';
 import { KnowledgePanel, type KnowledgePanelProps } from '../knowledge/KnowledgePanel.js';
 import type { ProjectKnowledgeApi } from '../knowledge/project-knowledge-api.js';
 import { useLeaveConfirmation } from './useLeaveConfirmation.js';
@@ -77,7 +83,6 @@ const labels: Record<Section, string> = {
 export function WorkbenchPage({
   api,
   initialSection,
-  appearance,
   expertLibrary = false,
   openWork,
   nativeRun,
@@ -88,7 +93,8 @@ export function WorkbenchPage({
 }: {
   api: WorkbenchApi;
   initialSection: Section;
-  appearance: AppearanceStore;
+  /** Accepted for existing embedders; theme preferences are managed in Settings. */
+  appearance?: AppearanceStore;
   expertLibrary?: boolean;
   openWork?: () => void;
   nativeRun?: { api: NativeRunApi; spaceId: string };
@@ -443,7 +449,7 @@ export function WorkbenchPage({
     const task = {
       ...draft.value,
       goal,
-      title: draft.value.title.trim() || goal.split('\n')[0]!.slice(0, 60),
+      title: draft.value.title.trim() || goal.split('\n')[0]!.slice(0, AUTOMATIC_TASK_TITLE_LIMIT),
     };
     if (draft.planning === 'template' && !draft.template) {
       setDialogError('请选择要使用的工作流。');
@@ -653,7 +659,6 @@ export function WorkbenchPage({
     !activeProject && !expertLibrary && ['projects', 'tasks', 'assets'].includes(section);
   const pageActions = (
     <div className="zm-actions">
-      <Appearance store={appearance} />
       {!(memberAssets && section === 'assets') && (
         <Button variant="quiet" onClick={() => void refresh()}>
           刷新
@@ -707,7 +712,6 @@ export function WorkbenchPage({
             setInitialPlanning(null);
             setActiveTaskId(null);
           }}
-          appearance={appearance}
           progress={progressFor(activeTask.id)}
           refreshProgress={progress.refresh}
           backLabel={activeProject ? '项目' : '任务清单'}
@@ -719,7 +723,7 @@ export function WorkbenchPage({
       </div>
     );
   return (
-    <div className="zhuma">
+    <div className={`zhuma${section === 'assets' && memberAssets ? ' zm-assets-workbench' : ''}`}>
       {knowledgeLeave.dialog}
       <div className={`zm-page${activeProject ? ' zm-project-page' : ''}`}>
         {catalogHeading && (
@@ -783,6 +787,12 @@ export function WorkbenchPage({
                     onClick={() => {
                       if (s === section && !activeProject) return;
                       leaveKnowledge(() => {
+                        const filters = taskFiltersForNavigation(
+                          taskFilters,
+                          s,
+                          activeProject?.id ?? null,
+                        );
+                        if (filters !== taskFilters) setTaskFilters(filters);
                         setSection(s);
                         setSearch('');
                         setActiveProjectId(null);
@@ -1059,7 +1069,7 @@ export function WorkbenchPage({
                   }}
                 >
                   <span className="zm-directory-symbol" aria-hidden>
-                    ▱
+                    <ProjectIcon />
                   </span>
                   <div className="zm-directory-content">
                     <Button
@@ -1113,6 +1123,7 @@ export function WorkbenchPage({
                 projects={state.projects}
                 participants={state.participants}
                 progress={progressFor}
+                nodeTitles={(id) => confirmedNodeTitles(state.appliedPlans, progressFor(id))}
                 confirmed={(id) => state.appliedPlans.some((plan) => plan.taskId === id)}
                 openTask={setActiveTaskId}
               />
@@ -1127,7 +1138,7 @@ export function WorkbenchPage({
                 {tasks.map((t) => (
                   <button className="zm-task-row" key={t.id} onClick={() => setActiveTaskId(t.id)}>
                     <span>
-                      <strong>{t.title}</strong>
+                      <strong title={t.title || t.goal}>{taskHeading(t)}</strong>
                       <small>
                         {state.projects.find((p) => p.id === t.projectId)?.name}
                         <span className="zm-meta-dot">·</span>
@@ -1169,6 +1180,7 @@ export function WorkbenchPage({
                       <TaskProgressSummary
                         progress={progressFor(t.id)}
                         confirmed={state.appliedPlans.some((plan) => plan.taskId === t.id)}
+                        nodeTitles={confirmedNodeTitles(state.appliedPlans, progressFor(t.id))}
                         compact
                       />
                       <span className={`zm-status ${t.status}`}>
@@ -1655,6 +1667,39 @@ export function WorkbenchPage({
                       />
                     </Field>
                     <div className="zm-creation-context">
+                      <Field label="任务名称">
+                        <input
+                          maxLength={160}
+                          value={dialog.value.title}
+                          onChange={(e) =>
+                            setDialog({
+                              ...dialog,
+                              value: { ...dialog.value, title: e.target.value },
+                            })
+                          }
+                          placeholder="可选，留空时从目标生成"
+                        />
+                      </Field>
+                      <div className="zm-task-owner-choice">
+                        <ParticipantSelect
+                          label="任务负责人"
+                          members={state.participants.filter(
+                            (p) => p.kind === 'human' && dialog.value.participantIds.includes(p.id),
+                          )}
+                          selected={dialog.value.ownerId ? [dialog.value.ownerId] : []}
+                          change={(ids) =>
+                            setDialog({
+                              ...dialog,
+                              planning:
+                                member && ids[0] !== member.actorId ? 'manual' : dialog.planning,
+                              value: { ...dialog.value, ownerId: ids[0] ?? null },
+                            })
+                          }
+                        />
+                        {!dialog.value.ownerId && <small>确认工作流前需指定负责人。</small>}
+                      </div>
+                    </div>
+                    <div className="zm-creation-context">
                       <div className="zm-task-project-choice">
                         <div className="zm-creation-field-heading">
                           <span>所属项目</span>
@@ -1741,7 +1786,9 @@ export function WorkbenchPage({
                         )}
                       </>
                     )}
-                    {member && <PlanningReadiness value={planningReadiness} />}
+                    {member && dialog.planning === 'ai' && (
+                      <PlanningReadiness value={planningReadiness} />
+                    )}
                     <fieldset className="zm-create-modes">
                       <legend>规划方式</legend>
                       <label>
@@ -1813,6 +1860,7 @@ export function WorkbenchPage({
                         </div>
                         {dialog.template && selectedDefinition && (
                           <TemplateBindings
+                            key={dialog.template.assetId}
                             roles={selectedDefinition.roles}
                             resources={selectedDefinition.resources}
                             members={state.participants.filter((p) =>
@@ -1831,35 +1879,6 @@ export function WorkbenchPage({
                         )}
                       </section>
                     )}
-                    <Field label="任务名称">
-                      <input
-                        maxLength={160}
-                        value={dialog.value.title}
-                        onChange={(e) =>
-                          setDialog({
-                            ...dialog,
-                            value: { ...dialog.value, title: e.target.value },
-                          })
-                        }
-                        placeholder="可选，留空时从目标生成"
-                      />
-                    </Field>
-                    <ParticipantSelect
-                      label="任务负责人"
-                      members={state.participants.filter(
-                        (p) => p.kind === 'human' && dialog.value.participantIds.includes(p.id),
-                      )}
-                      selected={dialog.value.ownerId ? [dialog.value.ownerId] : []}
-                      change={(ids) =>
-                        setDialog({
-                          ...dialog,
-                          planning:
-                            member && ids[0] !== member.actorId ? 'manual' : dialog.planning,
-                          value: { ...dialog.value, ownerId: ids[0] ?? null },
-                        })
-                      }
-                    />
-                    {!dialog.value.ownerId && <small>确认工作流前需指定负责人。</small>}
                   </>
                 )}
               </fieldset>

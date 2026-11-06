@@ -3,8 +3,12 @@ import { z } from 'zod';
 import { AssetSchema, WorkbenchError, type TeamAsset } from '@zhuma/agent-core';
 
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
-export const ENGINEERING_WORKFLOW_SOURCE = '133276e2014bf1bcbd8410bab7bb339c929de46d';
+export const ENGINEERING_WORKFLOW_SOURCE = '583472338143c5d02f94ec97e0d9eb6dc8dfa76e';
 const pins = new Map([
+  [
+    'zhuma-eng-requirements-to-code',
+    'fe358749fcda1039d72c66cf4fa42aa7c73cef34757500f15c36de696a18b8ff',
+  ],
   [
     'zhuma-eng-requirements-to-test',
     '05889adea412b2bbbc2d8d1fbb728e5dda6e2de1fb8e9a66b3cb76c284282b4d',
@@ -18,7 +22,7 @@ const pins = new Map([
 ]);
 export const DefaultMemberTemplatesSchema = z.strictObject({
   sourceCommit: z.literal(ENGINEERING_WORKFLOW_SOURCE),
-  assets: z.array(AssetSchema).length(4),
+  assets: z.array(AssetSchema).length(5),
 });
 export type DefaultMemberTemplates = z.infer<typeof DefaultMemberTemplatesSchema>;
 
@@ -27,7 +31,7 @@ export function defaultMemberTemplates(raw: unknown): readonly TeamAsset[] {
   const parsed = DefaultMemberTemplatesSchema.safeParse(raw);
   if (
     !parsed.success ||
-    new Set(parsed.data.assets.map((asset) => asset.id)).size !== 4 ||
+    new Set(parsed.data.assets.map((asset) => asset.id)).size !== 5 ||
     parsed.data.assets.some(
       (asset) =>
         asset.kind !== 'template' ||

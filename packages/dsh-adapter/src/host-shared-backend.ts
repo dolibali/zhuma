@@ -35,7 +35,12 @@ import {
   TeamAssetCatalogQuerySchema,
   canonicalPayload,
 } from '@zhuma/agent-core';
-import { MemberWorkbenchCommandSchema, MemberWorkbenchPlanSchema } from './member-workbench-dto.js';
+import {
+  MemberPlanningModelSelectSchema,
+  MemberWorkbenchCommandSchema,
+  MemberWorkbenchPlanSchema,
+  MemberWorkbenchScopeSchema,
+} from './member-workbench-dto.js';
 import {
   identityRegistrationSchema,
   identityPasswordChangeSchema,
@@ -48,6 +53,7 @@ import { MEMBER_COOKIE_NAME } from './member-session.js';
 import { taskProgressQuerySchema } from './execution-task-progress-contract.js';
 import { projectArtifactsQuerySchema } from './execution-project-artifacts-contract.js';
 import { executionMemberRequestSchemas, fileReadSchema } from './execution-service.js';
+import { efficiencyExportSchema } from './efficiency-log.js';
 import { EXECUTION_BODY_BYTE_LIMIT } from './execution-plugin.js';
 import { hostRunOptionsQuerySchema } from './host-run-options.js';
 import { ARTIFACT_FILE_LIMITS, artifactUploadOptionsSchema } from './artifact-files.js';
@@ -76,6 +82,8 @@ export const SHARED_BACKEND_OPERATIONS = [
   'member.snapshot',
   'member.command',
   'member.plan',
+  'member.planning-models',
+  'member.select-planning-model',
   'member.asset-folder-list',
   'member.asset-folder-create',
   'member.asset-list',
@@ -112,6 +120,7 @@ export const SHARED_BACKEND_OPERATIONS = [
   'execution.local-run-options',
   'execution.local-review-options',
   'execution.review-outcome',
+  'efficiency.export',
 ] as const;
 export type SharedBackendOperation = (typeof SHARED_BACKEND_OPERATIONS)[number];
 export const sharedBackendRequestSchema = z.strictObject({
@@ -276,6 +285,18 @@ const descriptors = {
     verb: 'POST',
     auth: false,
   },
+  'member.planning-models': {
+    schema: MemberWorkbenchScopeSchema,
+    path: '/api/zhuma-member/planning-models',
+    verb: 'POST',
+    auth: false,
+  },
+  'member.select-planning-model': {
+    schema: MemberPlanningModelSelectSchema,
+    path: '/api/zhuma-member/select-planning-model',
+    verb: 'POST',
+    auth: false,
+  },
   'member.asset-folder-list': {
     schema: MemberAssetFolderListQuerySchema,
     path: '/api/zhuma-member/asset-folder-list',
@@ -406,7 +427,7 @@ const descriptors = {
     auth: false,
   },
   'execution.inbox': {
-    schema: z.strictObject({ spaceId: id }),
+    schema: z.strictObject({ spaceId: id, detail: z.literal('waiting').optional() }),
     path: '/api/zhuma-exec/inbox',
     verb: 'POST',
     auth: false,
@@ -483,6 +504,12 @@ const descriptors = {
   'execution.review-outcome': {
     schema: reviewOutcomeQuerySchema,
     path: '/api/zhuma-exec/review-outcome',
+    verb: 'POST',
+    auth: false,
+  },
+  'efficiency.export': {
+    schema: efficiencyExportSchema,
+    path: '/api/zhuma-efficiency/export',
     verb: 'POST',
     auth: false,
   },
