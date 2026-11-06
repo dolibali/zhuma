@@ -4961,6 +4961,52 @@ html[data-platform='darwin'] .zhuma .zm-space-bar {
   margin: 0 0 12px;
   font-size: 14px;
 }
+.zm-review-workspace h2 {
+  scroll-margin-block-start: 16px;
+}
+.zm-review-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 320px);
+  gap: 20px;
+  align-items: start;
+}
+.zm-review-layout > .zm-execution-artifact {
+  margin: 0;
+  min-width: 0;
+}
+.zm-review-scroll {
+  max-block-size: min(48vh, 32rem);
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.zm-review-description,
+.zm-review-comments {
+  max-block-size: 10rem;
+  overflow: auto;
+}
+.zm-review-diff {
+  margin-block-start: 16px;
+}
+.zm-review-diff > summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+.zm-review-decision {
+  position: sticky;
+  top: 16px;
+  min-width: 0;
+}
+.zm-review-decision .zm-actions {
+  flex-wrap: wrap;
+}
+@media (max-width: 760px) {
+  .zm-review-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .zm-review-decision {
+    position: static;
+  }
+}
 .zm-execution-text {
   display: block;
   white-space: pre-wrap;

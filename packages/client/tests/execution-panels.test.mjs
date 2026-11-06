@@ -43,6 +43,29 @@ const item = {
   action: 'submit',
 };
 
+test('review keeps the complete fixed body and diff in separate bounded reading areas', () => {
+  const text = '完整提交正文\n'.repeat(200) + '正文末尾';
+  const markup = renderToStaticMarkup(
+    createElement(ReviewWorkspace, {
+      api: {},
+      node: {
+        ...node,
+        artifacts: [
+          { id: 'previous', version: 1, text: '原文\n'.repeat(200) },
+          { id: 'artifact-1', version: 2, text },
+        ],
+      },
+      onSubmitted() {},
+    }),
+  );
+  assert(markup.includes(text));
+  assert.match(markup, /aria-label="提交正文" tabindex="0"/);
+  assert.match(markup, /<details class="zm-review-diff"><summary>与上一版的差异<\/summary>/);
+  assert.match(markup, /原文/);
+  assert.match(markup, /aria-label="评审意见与操作"/);
+  assert.match(markup, /填写评审意见/);
+});
+
 test('panels render delivery and review without an actor control', () => {
   const inbox = renderToStaticMarkup(
     createElement(InboxPanel, {
@@ -169,7 +192,9 @@ for (const mode of ['submit', 'revise', 'review'])
           : createElement(DeliveryPanel, { api, node: current, mode, onSubmitted() {} }),
       );
       assert.equal(markup.match(/<h2\b[^>]*>([\s\S]*?)<\/h2>/)?.[1], title);
-      const body = markup.match(/<p class="zm-execution-text">([\s\S]*?)<\/p>/)?.[1];
+      const body = markup.match(
+        /<p class="zm-execution-text(?: [^"]*)?"[^>]*>([\s\S]*?)<\/p>/,
+      )?.[1];
       if (goal !== title) {
         const escaped = renderToStaticMarkup(createElement('span', null, goal)).slice(6, -7);
         assert.equal(
