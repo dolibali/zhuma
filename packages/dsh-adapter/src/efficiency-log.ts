@@ -57,10 +57,52 @@ export interface EfficiencyPlanNode {
 }
 
 const TERMINAL = new Set(['completed', 'failed', 'cancelled']);
+const LOG_SCAN = new Set([
+  'every',
+  'filter',
+  'find',
+  'findIndex',
+  'flatMap',
+  'forEach',
+  'map',
+  'reduce',
+  'some',
+]);
 
-let log: readonly EfficiencyEvent[] = [];
+let entriesExamined = 0;
+let highSequence = 0;
+const seenIds = new Set<string>();
+const seenFacts = new Set<string>();
 let clock = (): string => new Date().toISOString();
 let attached: string | undefined;
+
+function factKey(kind: string, sourceId: string): string {
+  return `${kind}\0${sourceId}`;
+}
+
+function rememberFact(event: EfficiencyEvent): void {
+  seenIds.add(event.eventId);
+  seenFacts.add(factKey(event.kind, event.sourceId));
+  if (event.sequence > highSequence) highSequence = event.sequence;
+}
+
+function reindexFacts(events: readonly EfficiencyEvent[]): void {
+  seenIds.clear();
+  seenFacts.clear();
+  highSequence = 0;
+  for (const event of events) rememberFact(event);
+}
+
+/** 全量扫描才计数。下标读取、追加和去重命中不把历史再走一遍。 */
+const log: EfficiencyEvent[] = new Proxy<EfficiencyEvent[]>([], {
+  get(target, prop, receiver) {
+    if (prop === Symbol.iterator || (typeof prop === 'string' && LOG_SCAN.has(prop))) {
+      entriesExamined += target.length;
+    }
+    const value = Reflect.get(target, prop, receiver);
+    return typeof value === 'function' ? value.bind(target) : value;
+  },
+});
 
 export function efficiencyNow(): string {
   return clock();
@@ -72,9 +114,16 @@ export function setEfficiencyClockForTests(next: (() => string) | undefined): vo
 }
 
 export function resetEfficiencyLogForTests(): void {
-  log = [];
+  log.splice(0, log.length);
   attached = undefined;
   clock = () => new Date().toISOString();
+  reindexFacts([]);
+  entriesExamined = 0;
+}
+
+/** 测试观察全量扫描过的效率日志条目。写入热路径不应随历史增长。 */
+export function efficiencyLogEntriesExaminedForTests(): number {
+  return entriesExamined;
 }
 
 export function efficiencyTaskIds(): readonly string[] {
@@ -93,10 +142,15 @@ function snapshotHash(nodes: readonly EfficiencyPlanNode[]): string {
   return createHash('sha256').update(text).digest('hex').slice(0, 32);
 }
 
-/** 追加一条事实。重复或无效输入返回 false，不抛给业务命令。 */
+/**
+ * 追加一条事实。重复或无效输入返回 false，不抛给业务命令。
+ * 序号和同 key 去重走内存索引；校验只看日志尾部，不重扫整份历史。
+ */
 export function emitEfficiencyFact(fact: EfficiencyFact): boolean {
   try {
-    const sequence = log.reduce((max, event) => Math.max(max, event.sequence), 0) + 1;
+    const key = factKey(fact.kind, fact.sourceId);
+    if (seenFacts.has(key)) return false;
+    const sequence = highSequence + 1;
     const event: EfficiencyEvent = {
       eventId: `eff-${sequence}`,
       sequence,
@@ -108,12 +162,17 @@ export function emitEfficiencyFact(fact: EfficiencyFact): boolean {
       sourceId: fact.sourceId,
       ...(fact.nodeId === undefined ? {} : { nodeId: fact.nodeId }),
     };
-    const appended = appendEfficiencyEvent(log, event);
+    if (seenIds.has(event.eventId)) return false;
+    const tail = log.length === 0 ? [] : [log[log.length - 1]!];
+    const appended = appendEfficiencyEvent(tail, event);
     if (!appended.ok) return false;
-    log = appended.log;
+    const stored = appended.log[appended.log.length - 1];
+    if (!stored) return false;
+    log.push(stored);
+    rememberFact(stored);
     if (attached) {
       try {
-        appendFileSync(attached, `${JSON.stringify(event)}\n`, 'utf8');
+        appendFileSync(attached, `${JSON.stringify(stored)}\n`, 'utf8');
       } catch {
         // 内存里的事实已经记下。磁盘失败不回滚，也不阻断调用方。
       }
@@ -363,7 +422,7 @@ export function attachEfficiencyLogFile(filePath: string): void {
   mkdirSync(path.dirname(resolved), { recursive: true });
   if (existsSync(resolved)) {
     const text = readFileSync(resolved, 'utf8');
-    let next = log;
+    let next: readonly EfficiencyEvent[] = log.slice();
     for (const line of text.split('\n')) {
       if (line.trim() === '') continue;
       const event = JSON.parse(line) as EfficiencyEvent;
@@ -371,7 +430,8 @@ export function attachEfficiencyLogFile(filePath: string): void {
       if (!appended.ok) throw new Error(`效率日志无法续写：${appended.code}`);
       next = appended.log;
     }
-    log = next;
+    log.splice(0, log.length, ...next);
+    reindexFacts(log.slice());
   }
   attached = resolved;
 }

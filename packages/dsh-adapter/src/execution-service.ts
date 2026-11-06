@@ -1192,6 +1192,10 @@ function samePlan(record: ExecutionNodeRecord, taskId: string, planId: string, r
   return record.taskId === taskId && record.planId === planId && record.revision === revision;
 }
 
+function eventCount(record: ExecutionNodeRecord | undefined): number {
+  return record && Array.isArray(record.events) ? record.events.length : 0;
+}
+
 function rejectionDetails(
   code: string,
   current: ExecutionNodeRecord,
@@ -8113,20 +8117,67 @@ export class ExecutionService {
     return 'allow';
   }
 
-  /** 只从已经写进存储的节点戳派生。写盘失败的那次不会留下开始时间。 */
-  private rememberCommittedEfficiency(taskId: string): void {
-    this.projectEfficiencyFacts(new Set([taskId]));
+  /**
+   * 只记这次已经写进存储的新事件。写盘失败的那次不会留下开始时间。
+   * 不回读任务里的旧节点。同 key 再记一次会被效率日志丢掉。
+   * 返回本次新增终态事件的时间，供任务结束沿用落盘戳而不是另扫历史。
+   */
+  private rememberCommittedEfficiency(
+    committed: ExecutionNodeRecord,
+    priorEventCount: number,
+  ): string | undefined {
+    if (!intactNode(committed)) return undefined;
+    const events = Array.isArray(committed.events) ? committed.events : [];
+    const from = Math.min(Math.max(priorEventCount, 0), events.length);
+    let endedAt: string | undefined;
+    for (const event of events.slice(from)) {
+      const status = event.payload?.status;
+      const version = event.payload?.version;
+      if (typeof status !== 'string' || typeof version !== 'number') continue;
+      noteExecutionFact({
+        taskId: committed.taskId,
+        planId: committed.planId,
+        revision: committed.revision,
+        nodeId: committed.nodeId,
+        assigneeKind: committed.handoff.assignee.kind,
+        eventType: event.type,
+        occurredAt: event.occurredAt,
+        status,
+        version,
+      });
+      if (event.type === 'node-started') {
+        noteTaskStarted({
+          taskId: committed.taskId,
+          planId: committed.planId,
+          revision: committed.revision,
+          occurredAt: event.occurredAt,
+        });
+      }
+      if (
+        (status === 'completed' || status === 'failed' || status === 'cancelled') &&
+        (endedAt === undefined || event.occurredAt > endedAt)
+      ) {
+        endedAt = event.occurredAt;
+      }
+    }
+    return endedAt;
   }
 
-  private noteEfficiencyPlan(taskId: string, planId: string, revision: number): void {
+  private noteEfficiencyPlan(
+    taskId: string,
+    planId: string,
+    revision: number,
+    occurredAt?: string,
+  ): void {
     notePlanIfTerminal(
       this.storage
         .listNodes()
         .filter((record) => intactNode(record) && samePlan(record, taskId, planId, revision)),
+      occurredAt,
     );
   }
 
-  /** 用已经落盘的节点戳补齐效率日志。重复 sourceId 会被忽略。 */
+  /** 导出时用已经落盘的节点戳补齐效率日志。写入路径不走这里。重复 sourceId 会被忽略。 */
   private projectEfficiencyFacts(taskIds: ReadonlySet<string>): void {
     const groups = new Map<
       string,
@@ -8250,13 +8301,14 @@ export class ExecutionService {
     if (!started.ok) return fail(started.code);
     for (const record of started.records) {
       const key = nodeRecordKey(record);
-      if (this.storage.readNode(key) === record) continue;
+      const existing = this.storage.readNode(key);
+      if (existing === record) continue;
       const stamped = withExecutionEvent(record, 'node-started', actor.value.actorId);
       if (!stamped) return fail('unavailable');
       beforeWrite?.();
       const stored = await this.persist(() => this.writeNode(stamped));
       if (!stored.ok) return stored;
-      this.rememberCommittedEfficiency(taskId);
+      this.rememberCommittedEfficiency(stamped, eventCount(existing));
     }
     const compensated = await this.unlockCompleted(taskId, planId, revision);
     if (!compensated.ok) return compensated;
@@ -8365,8 +8417,8 @@ export class ExecutionService {
       }
       const stored = await this.persist(() => this.writeNode(record));
       if (!stored.ok) return stored;
-      this.rememberCommittedEfficiency(current.taskId);
-      this.noteEfficiencyPlan(current.taskId, current.planId, current.revision);
+      const endedAt = this.rememberCommittedEfficiency(record, eventCount(current));
+      this.noteEfficiencyPlan(current.taskId, current.planId, current.revision, endedAt);
     }
     if (record.command.status === 'completed') {
       const unlocked = await this.unlockFrom(record);
@@ -8432,7 +8484,10 @@ export class ExecutionService {
       if (!stamped) return fail('unavailable');
       const stored = await this.persist(() => this.writeNode(stamped));
       if (!stored.ok) return stored;
-      this.rememberCommittedEfficiency(completed.taskId);
+      const endedAt = this.rememberCommittedEfficiency(stamped, eventCount(latest));
+      if (endedAt !== undefined) {
+        this.noteEfficiencyPlan(completed.taskId, completed.planId, completed.revision, endedAt);
+      }
       unlocked += 1;
     }
     return { ok: true, value: unlocked };

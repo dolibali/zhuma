@@ -9,6 +9,7 @@ import { boundedProjectSpaces } from '../dist/project-space.js';
 import {
   attachEfficiencyLogFile,
   efficiencyDocument,
+  efficiencyLogEntriesExaminedForTests,
   noteAssistantToolCalls,
   noteExecutionFact,
   noteHumanIntervention,
@@ -433,5 +434,295 @@ describe('efficiency host log', { concurrency: false }, () => {
     });
     assert.equal(named.ok, false);
     assert.equal(named.error.code, 'not-found');
+  });
+
+  function countedEvents(events, counter) {
+    return new Proxy(events, {
+      get(target, prop, receiver) {
+        if (
+          prop === Symbol.iterator ||
+          prop === 'reduce' ||
+          prop === 'some' ||
+          prop === 'forEach' ||
+          prop === 'map' ||
+          prop === 'filter'
+        ) {
+          counter.reads += target.length;
+        }
+        const value = Reflect.get(target, prop, receiver);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+  }
+
+  function seedEfficiencyLog(count) {
+    for (let index = 0; index < count; index += 1) {
+      noteNativeToolCall(
+        { taskId: 'other', planId: 'other-plan', revision: 1, nodeId: 'other-node' },
+        'session',
+        { seq: index, type: 'tool/call', time: 1_700_000_000 },
+      );
+    }
+  }
+
+  test('starting a plan does not reread stored history as more nodes are committed', async () => {
+    const spaces = boundedProjectSpaces([{ projectId: 'project', spaceId: 'project' }]);
+    const chen = { member: { ok: true, memberId: 'chen', spaceIds: ['project'] } };
+
+    async function measure(nodeCount, historyNodes, historyEvents, priorFacts) {
+      resetEfficiencyLogForTests();
+      const { state, applied } = confirm(
+        Array.from({ length: nodeCount }, (_, index) =>
+          workflowNode({ id: `node-${index}`, title: `节点${index}` }),
+        ),
+      );
+      const nodes = new Map();
+      const plans = new Map();
+      const counter = { reads: 0, lists: 0 };
+      const template = structuredClone([...(await primedShape(state)).values()][0]);
+      for (let index = 0; index < historyNodes; index += 1) {
+        const record = structuredClone(template);
+        record.planId = 'history';
+        record.nodeId = `old-${index}`;
+        record.handoff = { ...record.handoff, nodeId: record.nodeId };
+        record.events = countedEvents(
+          Array.from({ length: historyEvents }, (_, eventIndex) => ({
+            eventId: `evt:old-${index}:${eventIndex + 1}`,
+            sequence: eventIndex + 1,
+            occurredAt: '2026-11-01T00:00:00.000Z',
+            actorId: 'chen',
+            object: { type: 'node', id: record.nodeId },
+            type: 'node-started',
+            payload: { status: 'ready', version: 1 },
+          })),
+          counter,
+        );
+        nodes.set(`${record.taskId}:${record.planId}:${record.revision}:${record.nodeId}`, record);
+      }
+      const service = new ExecutionService(
+        {
+          readNode: (key) => nodes.get(key),
+          writeNode: async (key, value) => {
+            const stored = structuredClone(value);
+            if (Array.isArray(stored.events)) stored.events = countedEvents(stored.events, counter);
+            nodes.set(key, stored);
+          },
+          listNodes: () => {
+            counter.lists += 1;
+            return [...nodes.values()];
+          },
+          readPlan: (key) => plans.get(key),
+          writePlan: async (key, value) => {
+            plans.set(key, structuredClone(value));
+          },
+          listPlans: () => [...plans.entries()].map(([key, receipt]) => ({ key, receipt })),
+        },
+        { readWorkbench: () => state },
+        spaces,
+      );
+      seedEfficiencyLog(priorFacts);
+      const examinedBefore = efficiencyLogEntriesExaminedForTests();
+      const started = await service.startPlan(chen, {
+        taskId: applied.taskId,
+        planId: applied.id,
+        revision: applied.revision,
+        idempotencyKey: 'start-bounded',
+      });
+      assert.equal(started.ok, true, started.ok ? '' : started.error.code);
+      const examined = efficiencyLogEntriesExaminedForTests() - examinedBefore;
+      const facts = readEfficiencyLog().filter((event) => event.taskId === applied.taskId);
+      return { counter, examined, facts, service, applied };
+    }
+
+    async function primedShape(state) {
+      const scratch = new Map();
+      const plans = new Map();
+      const scratchService = new ExecutionService(
+        {
+          readNode: (key) => scratch.get(key),
+          writeNode: async (key, value) => {
+            scratch.set(key, structuredClone(value));
+          },
+          listNodes: () => [...scratch.values()],
+          readPlan: (key) => plans.get(key),
+          writePlan: async (key, value) => {
+            plans.set(key, structuredClone(value));
+          },
+          listPlans: () => [],
+        },
+        { readWorkbench: () => state },
+        spaces,
+      );
+      const applied = state.appliedPlans.at(-1);
+      const started = await scratchService.startPlan(chen, {
+        taskId: applied.taskId,
+        planId: applied.id,
+        revision: applied.revision,
+        idempotencyKey: 'shape',
+      });
+      assert.equal(started.ok, true, started.ok ? '' : started.error.code);
+      resetEfficiencyLogForTests();
+      return scratch;
+    }
+
+    const one = await measure(1, 0, 0, 0);
+    const crowded = await measure(1, 40, 30, 400);
+    const many = await measure(12, 40, 30, 400);
+    assert.equal(one.counter.reads, 0);
+    assert.equal(crowded.counter.reads, 0);
+    assert.equal(many.counter.reads, 0);
+    assert.equal(one.examined, 0);
+    assert.equal(crowded.examined, 0);
+    assert.equal(many.examined, 0);
+    assert.equal(crowded.counter.lists, one.counter.lists);
+    assert.equal(many.counter.lists, one.counter.lists);
+    assert.equal(one.facts.filter((event) => event.kind === 'node-started').length, 1);
+    assert.equal(many.facts.filter((event) => event.kind === 'node-started').length, 12);
+    assert.equal(many.facts.filter((event) => event.kind === 'task-started').length, 1);
+    assert.ok(many.facts.every((event) => !String(event.nodeId ?? '').startsWith('old-')));
+    assert.ok(many.counter.lists < 12);
+
+    resetEfficiencyLogForTests();
+    const rebuilt = await many.service.exportEfficiency(chen, { format: 'json' });
+    assert.equal(rebuilt.ok, true, rebuilt.ok ? '' : rebuilt.error.code);
+    assert.ok(rebuilt.value.metricCount > 0);
+    assert.equal(
+      readEfficiencyLog().filter(
+        (event) => event.kind === 'node-started' && event.planId === many.applied.id,
+      ).length,
+      12,
+    );
+    assert.equal(
+      readEfficiencyLog().filter(
+        (event) => event.kind === 'node-started' && event.planId === 'history',
+      ).length,
+      40,
+    );
+  });
+
+  test('a single committed write does not reread a large task history', async () => {
+    const spaces = boundedProjectSpaces([{ projectId: 'project', spaceId: 'project' }]);
+    const chen = { member: { ok: true, memberId: 'chen', spaceIds: ['project'] } };
+
+    async function once(historyNodes, historyEvents, priorFacts) {
+      resetEfficiencyLogForTests();
+      const { state, applied } = confirm([workflowNode({ id: 'design', title: '设计' })]);
+      const { service, store } = serviceFor(state, spaces);
+      const started = await service.startPlan(chen, {
+        taskId: applied.taskId,
+        planId: applied.id,
+        revision: applied.revision,
+        idempotencyKey: 'start-1',
+      });
+      assert.equal(started.ok, true, started.ok ? '' : started.error.code);
+      const template = structuredClone([...store.nodes.values()][0]);
+      const counter = { reads: 0 };
+      for (let index = 0; index < historyNodes; index += 1) {
+        const record = structuredClone(template);
+        record.planId = 'history';
+        record.nodeId = `old-${index}`;
+        record.handoff = { ...record.handoff, nodeId: record.nodeId };
+        record.events = countedEvents(
+          Array.from({ length: historyEvents }, (_, eventIndex) => ({
+            eventId: `evt:old-${index}:${eventIndex + 1}`,
+            sequence: eventIndex + 1,
+            occurredAt: '2026-11-01T00:00:00.000Z',
+            actorId: 'chen',
+            object: { type: 'node', id: record.nodeId },
+            type: 'node-started',
+            payload: { status: 'ready', version: 1 },
+          })),
+          counter,
+        );
+        store.nodes.set(
+          `${record.taskId}:${record.planId}:${record.revision}:${record.nodeId}`,
+          record,
+        );
+      }
+      seedEfficiencyLog(priorFacts);
+      let lists = 0;
+      const listNodes = store.storage.listNodes;
+      store.storage.listNodes = () => {
+        lists += 1;
+        return listNodes();
+      };
+      const examinedBefore = efficiencyLogEntriesExaminedForTests();
+      const factsBefore = readEfficiencyLog().length;
+      const version = [...store.nodes.values()].find((record) => record.nodeId === 'design').command
+        .version;
+      const body = {
+        taskId: applied.taskId,
+        planId: applied.id,
+        revision: applied.revision,
+        nodeId: 'design',
+        expectedVersion: version,
+        idempotencyKey: 'deliver-1',
+        text: '初稿',
+      };
+      const submitted = await service.submit(chen, body);
+      assert.equal(submitted.ok, true, submitted.ok ? '' : submitted.error.code);
+      const examined = efficiencyLogEntriesExaminedForTests() - examinedBefore;
+      const factsDelta = readEfficiencyLog().length - factsBefore;
+      const replayed = await service.submit(chen, body);
+      assert.equal(replayed.ok, true, replayed.ok ? '' : replayed.error.code);
+      return {
+        reads: counter.reads,
+        lists,
+        examined,
+        factsDelta,
+        factsAfterReplay: readEfficiencyLog().length - factsBefore,
+      };
+    }
+
+    const small = await once(1, 2, 3);
+    const large = await once(40, 30, 400);
+    assert.equal(small.reads, 0);
+    assert.equal(large.reads, 0);
+    assert.equal(small.examined, 0);
+    assert.equal(large.examined, 0);
+    assert.equal(large.lists, small.lists);
+    assert.equal(large.factsDelta, small.factsDelta);
+    assert.ok(large.factsDelta >= 1);
+    assert.ok(large.factsDelta < 5);
+    assert.equal(large.factsAfterReplay, large.factsDelta);
+    assert.ok(large.lists < 20);
+  });
+
+  test('completing an upstream node records the downstream start from that write only', async () => {
+    const spaces = boundedProjectSpaces([{ projectId: 'project', spaceId: 'project' }]);
+    const chen = { member: { ok: true, memberId: 'chen', spaceIds: ['project'] } };
+    const { state, applied } = confirm([
+      workflowNode({ id: 'design', title: '设计', reviewRequired: false }),
+      workflowNode({ id: 'publish', title: '发布', dependsOn: ['design'], reviewRequired: false }),
+    ]);
+    const { service, store } = serviceFor(state, spaces);
+    const started = await service.startPlan(chen, {
+      taskId: applied.taskId,
+      planId: applied.id,
+      revision: applied.revision,
+      idempotencyKey: 'start-1',
+    });
+    assert.equal(started.ok, true, started.ok ? '' : started.error.code);
+    const before = readEfficiencyLog().map((event) => `${event.kind}:${event.nodeId ?? ''}`);
+    assert.ok(before.includes('node-started:design'));
+    assert.equal(before.includes('node-started:publish'), false);
+    const design = [...store.nodes.values()].find((record) => record.nodeId === 'design');
+    const submitted = await service.submit(chen, {
+      taskId: applied.taskId,
+      planId: applied.id,
+      revision: applied.revision,
+      nodeId: 'design',
+      expectedVersion: design.command.version,
+      idempotencyKey: 'deliver-1',
+      text: '初稿',
+    });
+    assert.equal(submitted.ok, true, submitted.ok ? '' : submitted.error.code);
+    const publish = [...store.nodes.values()].find((record) => record.nodeId === 'publish');
+    assert.equal(publish.command.status, 'ready');
+    const added = readEfficiencyLog()
+      .slice(before.length)
+      .map((event) => `${event.kind}:${event.nodeId ?? ''}`);
+    assert.ok(added.includes('node-started:publish'));
+    assert.equal(readEfficiencyLog().filter((event) => event.kind === 'task-started').length, 1);
   });
 });
