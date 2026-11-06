@@ -145,6 +145,169 @@ export function emitHostRunTerminalFailure(
   }
 }
 
+const localToolCodes = new Set([
+  'local-tools-unavailable',
+  'local-tools-denied',
+  'local-tools-mismatch',
+  'local-tools-budget',
+  'local-tools-timeout',
+]);
+export interface HostRunToolFailure {
+  readonly event: 'zhuma-native-tool-failed';
+  readonly correlation: string;
+  readonly stage:
+    'tool-history-read' | 'tool-history-write' | 'tool-history-edit' | 'tool-history-unknown';
+  readonly code: string;
+}
+const unclassifiedTool = {
+  stage: 'tool-history-unknown',
+  code: 'unclassified-error',
+} as const;
+
+/** Classify only the final original call/result pair. Body text and earlier
+ * failures cannot supply a missing identity, association or structured error. */
+function toolFailure(snapshot: unknown): Pick<HostRunToolFailure, 'stage' | 'code'> {
+  try {
+    const events = ownData(snapshot, 'events'),
+      asOf = ownData(snapshot, 'asOfSeq'),
+      inherited = ownData(snapshot, 'inheritedEventCount');
+    if (
+      !Array.isArray(events) ||
+      typeof asOf !== 'number' ||
+      !Number.isSafeInteger(asOf) ||
+      asOf < -1 ||
+      typeof inherited !== 'number' ||
+      !Number.isSafeInteger(inherited) ||
+      inherited < 0 ||
+      inherited > asOf + 1
+    )
+      return unclassifiedTool;
+    const length = ownData(events, 'length');
+    if (typeof length !== 'number' || !Number.isSafeInteger(length) || length > 10_000)
+      return unclassifiedTool;
+    const tools: {
+      seq: number;
+      type: 'tool/call' | 'tool/result';
+      event: unknown;
+      data: unknown;
+    }[] = [];
+    let previous = -1;
+    for (let index = 0; index < length; index++) {
+      const event = ownData(events, String(index)),
+        seq = ownData(event, 'seq'),
+        type = ownData(event, 'type');
+      if (
+        typeof seq !== 'number' ||
+        !Number.isSafeInteger(seq) ||
+        seq <= previous ||
+        seq > asOf ||
+        typeof type !== 'string'
+      )
+        return unclassifiedTool;
+      previous = seq;
+      if (type === 'tool/call' || type === 'tool/result')
+        tools.push({ seq, type, event, data: ownData(event, 'data') });
+    }
+    const result = tools.at(-1);
+    if (previous !== asOf || result?.type !== 'tool/result' || result.seq < inherited)
+      return unclassifiedTool;
+    const message = ownData(result.data, 'message'),
+      callId = ownData(message, 'toolCallId'),
+      source = ownData(message, 'source'),
+      seqs = ownData(result.event, 'sourceEventSeqs');
+    if (
+      typeof callId !== 'string' ||
+      callId.length === 0 ||
+      callId.length > 200 ||
+      ownData(message, 'role') !== 'tool' ||
+      ownData(source, 'kind') !== 'tool' ||
+      ownData(source, 'callId') !== callId ||
+      ownData(message, 'isError') !== true ||
+      !Array.isArray(seqs) ||
+      ownData(seqs, 'length') !== 1
+    )
+      return unclassifiedTool;
+    const callSeq = ownData(seqs, '0');
+    if (
+      typeof callSeq !== 'number' ||
+      !Number.isSafeInteger(callSeq) ||
+      callSeq < inherited ||
+      callSeq >= result.seq
+    )
+      return unclassifiedTool;
+    let call: (typeof tools)[number] | undefined,
+      calls = 0,
+      results = 0;
+    for (const item of tools) {
+      const id =
+        item.type === 'tool/call'
+          ? ownData(item.data, 'callId')
+          : ownData(ownData(item.data, 'message'), 'toolCallId');
+      if (typeof id !== 'string' || id.length === 0 || id.length > 200) return unclassifiedTool;
+      if (item.type === 'tool/call' && item.seq === callSeq) call = item;
+      if (id === callId) {
+        if (item.type === 'tool/call') calls++;
+        else results++;
+      }
+    }
+    if (!call || calls !== 1 || results !== 1 || ownData(call.data, 'callId') !== callId)
+      return unclassifiedTool;
+    const turn = ownData(result.data, 'turn'),
+      step = ownData(result.data, 'step'),
+      name = ownData(call.data, 'name');
+    if (
+      typeof turn !== 'number' ||
+      !Number.isSafeInteger(turn) ||
+      turn < 0 ||
+      typeof step !== 'number' ||
+      !Number.isSafeInteger(step) ||
+      step < 0 ||
+      ownData(call.data, 'turn') !== turn ||
+      ownData(call.data, 'step') !== step ||
+      (name !== 'read' && name !== 'write' && name !== 'edit')
+    )
+      return unclassifiedTool;
+    const error = ownData(result.data, 'error'),
+      errorName = ownData(error, 'name'),
+      code = ownData(error, 'code');
+    if (
+      typeof code !== 'string' ||
+      !(
+        (errorName === 'NativeRunLocalToolError' && localToolCodes.has(code)) ||
+        (errorName === 'ToolTimeoutError' && code === 'TOOL_TIMEOUT') ||
+        (errorName === 'AbortError' && (code === 'ABORTED' || code === 'ABORTED_BEFORE_DISPATCH'))
+      )
+    )
+      return unclassifiedTool;
+    return { stage: `tool-history-${name}`, code };
+  } catch {
+    // An accessor or hostile descriptor cannot turn missing facts into evidence.
+    return unclassifiedTool;
+  }
+}
+
+/** Same private opt-in and prevalidated snapshot as the terminal diagnostic. */
+export function emitHostRunToolFailure(
+  scope: NativeWorkScope,
+  snapshot: unknown,
+  emit: (failure: HostRunToolFailure) => unknown = (failure) =>
+    writeSync(1, `${JSON.stringify(failure)}\n`),
+): void {
+  if (!hostRunTerminalDiagnosticsEnabled()) return;
+  try {
+    const pending = emit(
+      Object.freeze({
+        event: 'zhuma-native-tool-failed',
+        correlation: scopeCorrelation(scope),
+        ...toolFailure(snapshot),
+      }),
+    );
+    void Promise.resolve(pending).catch(() => undefined);
+  } catch {
+    // Diagnostics never replace the original read or any cleanup proof.
+  }
+}
+
 /** Existing error sinks retain this at Cordis' default threshold. The private
  * acceptance flag mirrors only this safe record through desktop's stdout pipe. */
 export function emitHostRunStartupFailure(

@@ -21,6 +21,7 @@ import {
 import { canonicalPayload } from '@zhuma/agent-core';
 import {
   emitHostRunTerminalFailure,
+  emitHostRunToolFailure,
   hostRunTerminalDiagnosticsEnabled,
 } from './host-run-startup-diagnostics.js';
 
@@ -454,7 +455,8 @@ export function createHostRunReader(
         };
         if (
           hostRunTerminalDiagnosticsEnabled() &&
-          value.status === 'failed' &&
+          (value.status === 'failed' ||
+            (value.status === 'cancelled' && value.stopPhase === 'confirmed')) &&
           value.resources === 'settled' &&
           value.native
         ) {
@@ -476,7 +478,8 @@ export function createHostRunReader(
               latestNode?.command.version === value.nodeVersion &&
               latestState?.version === value.runVersion &&
               latestState.currentRunId === state.currentRunId &&
-              latestRun?.attempt.status === 'failed' &&
+              latestRun?.attempt.status === value.status &&
+              latestRun.attempt.stopPhase === value.stopPhase &&
               latestRun.resources === 'settled' &&
               latestRun.attempt.sessionId === run.attempt.sessionId &&
               canonicalPayload(scope) === expectedScope &&
@@ -485,7 +488,8 @@ export function createHostRunReader(
               snapshot.check();
               opened.grant.assertCurrent('history');
               signal.throwIfAborted();
-              emitHostRunTerminalFailure(scope, snapshot);
+              if (value.status === 'failed') emitHostRunTerminalFailure(scope, snapshot);
+              else emitHostRunToolFailure(scope, snapshot);
             }
           } catch {
             // Diagnostics never replace a normal read or certify native cleanup.
