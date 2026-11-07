@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { Button } from '../workbench/Button.js';
+import { ActionMenu } from '../workbench/ActionMenu.js';
 import { Modal } from '../workbench/controls.js';
 import { useLeaveConfirmation } from '../workbench/useLeaveConfirmation.js';
 import { NativeRunPanel } from './NativeRunPanel.js';
@@ -34,6 +35,10 @@ function Workspace({ api, target, onDirtyChange, onClose }: Props) {
   const [controller, setController] = useState<ReturnType<typeof createNativeRunController>>();
   const [approvalLocation, setApprovalLocation] = useState<WorkspaceApprovalLocation>();
   const [codeArtsOpen, setCodeArtsOpen] = useState(false);
+  const codeArtsOpener = useRef<HTMLButtonElement>();
+  useEffect(() => {
+    if (!codeArtsOpen && codeArtsOpener.current?.isConnected) codeArtsOpener.current.focus();
+  }, [codeArtsOpen]);
   const navigation = useRef<AbortController>();
   useEffect(() => {
     const lifetime = new AbortController();
@@ -69,9 +74,18 @@ function Workspace({ api, target, onDirtyChange, onClose }: Props) {
         error={state.error}
         configurationActions={
           api.codeArtsSetup ? (
-            <Button variant="quiet" onClick={() => setCodeArtsOpen(true)}>
-              配置码道
-            </Button>
+            <ActionMenu
+              label="更多"
+              items={[
+                {
+                  label: 'CLI 设置',
+                  onSelect: (opener) => {
+                    codeArtsOpener.current = opener;
+                    setCodeArtsOpen(true);
+                  },
+                },
+              ]}
+            />
           ) : undefined
         }
         reviewAction={

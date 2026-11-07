@@ -1590,8 +1590,25 @@ html[data-platform='darwin'] .zm-shared-backend .zm-backend-bar {
   overflow: auto;
   padding-top: 8px;
 }
-.zm-member-work > .zm-page > h1 {
-  margin: 0 0 20px;
+.zm-member-work .zm-my-work-heading {
+  margin-bottom: 20px;
+}
+.zm-member-work .zm-my-work-heading h1 {
+  margin: 0;
+}
+.zm-efficiency-export {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  max-width: 50%;
+}
+.zm-efficiency-export p {
+  margin: 0;
+  max-width: 280px;
+  font-size: 12px;
+  overflow-wrap: anywhere;
 }
 .zhuma .zm-catalog-heading {
   position: absolute;
@@ -4174,6 +4191,20 @@ html[data-platform='darwin'] .zhuma .zm-space-bar {
 }
 .zm-select-option[data-disabled] {
   color: var(--zm-disabled-ink);
+}
+.zhuma button.zm-action-menu-trigger,
+.zm-dialog button.zm-action-menu-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+.zm-action-menu-popup {
+  overflow-y: auto;
+}
+.zm-action-menu-item {
+  padding-inline: 12px;
 }
 .zm-select-check {
   position: absolute;

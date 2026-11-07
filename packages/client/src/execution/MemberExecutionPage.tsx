@@ -272,8 +272,10 @@ function MemberWork({
         </div>
       ) : (
         <main className="zm-page">
-          <h1>我的工作</h1>
-          <EfficiencyExportControls fetcher={fetcher} />
+          <header className="zm-page-heading zm-my-work-heading">
+            <h1>我的工作</h1>
+            <EfficiencyExportControls fetcher={fetcher} />
+          </header>
           <div className="zm-execution-workspace">
             <StartablePlansPanel api={api} onStarted={started} />
             <ExecutionWorkspace

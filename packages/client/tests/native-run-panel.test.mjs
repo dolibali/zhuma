@@ -634,6 +634,26 @@ test('SSR workspace: only supplied workspace names appear and an unavailable sav
   assert.doesNotMatch(html, /filesystem|grantId|deviceId/);
 });
 
+test('SSR: CLI captions are concise without changing the selection or disguising ordinary models', () => {
+  const cli = { provider: 'acp-zhuma-codearts', model: 'inherited', maxTokens: 4096 };
+  const selected = { ...selection, model: cli };
+  const models = {
+    kind: 'ready',
+    items: [{ id: 'cli', label: 'CodeArts · 继承码道当前配置（开始时解析）', value: cli }],
+  };
+  const before = JSON.stringify(selected);
+  for (const current of [
+    view({ selection: selected, models }),
+    running({ selection: selected, models }),
+  ]) {
+    const html = render({ view: current });
+    assert.match(html, /码道 CLI/);
+    assert.doesNotMatch(html, /CodeArts|继承码道当前配置/);
+  }
+  assert.equal(JSON.stringify(selected), before);
+  assert.match(render(), /已配置模型/);
+});
+
 test('SSR review: a delivered completed run shows the authoritative waiting reason without a disabled restart action', () => {
   const html = render({
     view: view({
