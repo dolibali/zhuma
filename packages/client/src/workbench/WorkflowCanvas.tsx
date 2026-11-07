@@ -107,9 +107,9 @@ export function WorkflowCanvas({
   const viewportMode = useRef<'overview' | 'manual' | 'located'>('overview');
   const handledLocate = useRef(0);
   const [size, setSize] = useState({ width: 0, height: 0 });
-  const [dimensions, setDimensions] = useState<Record<string, { width: number; height: number }>>(
-    {},
-  );
+  const [dimensions, setDimensions] = useState<
+    ReadonlyMap<string, { width: number; height: number }>
+  >(() => new Map());
   const [manualPositions, setManualPositions] = useState<string>();
   const [viewPositions, setViewPositions] = useState<{
     key: string;
@@ -132,7 +132,7 @@ export function WorkflowCanvas({
             id: node.id,
             x: 0,
             y: 0,
-            ...(dimensions[node.id] ?? { width: 200, height: 128 }),
+            ...(dimensions.get(node.id) ?? { width: 200, height: 128 }),
           })),
           availableWidth,
           size.height || 600,
@@ -164,7 +164,7 @@ export function WorkflowCanvas({
     }
     const original: CanvasNode[] = flows.flatMap((w) => {
       const result = w.nodes.map((node) => {
-        const measured = dimensions[node.id] ?? { width: 240, height: 164 };
+        const measured = dimensions.get(node.id) ?? { width: 240, height: 164 };
         const position =
           viewPositions?.key === geometryKey
             ? (viewPositions.positions.get(node.id) ?? node.position)
@@ -199,7 +199,7 @@ export function WorkflowCanvas({
         id: n.id,
         initialWidth: tree ? 200 : 240,
         initialHeight: tree ? 128 : 164,
-        ...(dimensions[n.id] ? { measured: dimensions[n.id] } : {}),
+        ...(dimensions.has(n.id) ? { measured: dimensions.get(n.id)! } : {}),
         position: positions.get(n.id)!,
         sourcePosition: Position.Right,
         targetPosition: Position.Left,
@@ -316,7 +316,7 @@ export function WorkflowCanvas({
     () => canvasOverview(routing.bounds, size.width, size.height),
     [routing.bounds, size],
   );
-  const measured = nodes.every((node) => dimensions[node.id]);
+  const measured = nodes.every((node) => dimensions.has(node.id));
   function connect(connection: Connection) {
     if (
       locked ||
@@ -342,8 +342,8 @@ export function WorkflowCanvas({
     if (!instance || !current) return;
     viewportMode.current = 'located';
     void instance.setViewport({
-      x: size.width / 2 - current.position.x - (dimensions[current.id]?.width ?? 240) / 2,
-      y: size.height / 2 - current.position.y - (dimensions[current.id]?.height ?? 164) / 2,
+      x: size.width / 2 - current.position.x - (dimensions.get(current.id)?.width ?? 240) / 2,
+      y: size.height / 2 - current.position.y - (dimensions.get(current.id)?.height ?? 164) / 2,
       zoom: 1,
     });
     setZoom(1);
@@ -465,16 +465,16 @@ export function WorkflowCanvas({
               const measured = changes.filter((c) => c.type === 'dimensions' && c.dimensions);
               if (measured.length)
                 setDimensions((current) => {
-                  const next = { ...current };
+                  const next = new Map(current);
                   let changed = false;
                   for (const change of measured)
                     if (
                       change.type === 'dimensions' &&
                       change.dimensions &&
-                      (next[change.id]?.width !== change.dimensions.width ||
-                        next[change.id]?.height !== change.dimensions.height)
+                      (next.get(change.id)?.width !== change.dimensions.width ||
+                        next.get(change.id)?.height !== change.dimensions.height)
                     ) {
-                      next[change.id] = change.dimensions;
+                      next.set(change.id, change.dimensions);
                       changed = true;
                     }
                   return changed ? next : current;

@@ -143,8 +143,9 @@ for (const width of [1320, 1060])
         .nodes.slice(0, 6)
         .map((node, i) => ({
           ...node,
+          id: i === 0 ? 'constructor' : node.id,
           position: { x: i * 220, y: 0 },
-          dependsOn: dependencies[i].map((id) => `node-${id}`),
+          dependsOn: dependencies[i].map((id) => (id === 0 ? 'constructor' : `node-${id}`)),
         })),
     };
     const child = {
