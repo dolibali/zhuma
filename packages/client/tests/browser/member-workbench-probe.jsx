@@ -2,10 +2,21 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { MemberExecutionPage } from '../../src/execution/MemberExecutionPage.js';
 import { createIdentityApi } from '../../src/identity/api.js';
 import { createMemberShell } from '../../src/identity/shell.js';
+import { createMemberNativeClient } from '../../src/run/member-native.js';
 
 /** Navigation contract fixture. The official patched LayoutController is tested separately. */
 export function MemberWorkbenchProbe({ appearance }) {
   const shell = useMemo(() => createMemberShell(createIdentityApi()), []);
+  const memberNative = useMemo(() => {
+    if (!new URL(location.href).searchParams.has('remote-native')) return undefined;
+    return createMemberNativeClient({
+      getSnapshot: () => ({
+        phase: 'ready',
+        selection: { origin: 'http://backend.invalid', connectionId: 'fixture-connection' },
+      }),
+      fetcher: (...args) => globalThis.fetch(...args),
+    });
+  }, []);
   const [view, setView] = useState('catalog');
   const navigation = useRef(new AbortController());
   useEffect(() => {
@@ -44,6 +55,7 @@ export function MemberWorkbenchProbe({ appearance }) {
         <MemberExecutionPage
           key={view}
           shell={shell}
+          memberNative={memberNative}
           view={view}
           workbenchAppearance={appearance}
           openWork={() => select('work')}
