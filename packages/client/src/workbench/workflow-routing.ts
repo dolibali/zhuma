@@ -1,4 +1,4 @@
-/** Presentation geometry only: never changes saved positions or dependencies. */
+/** Pure presentation geometry; callers decide whether an explicit edit saves positions. */
 export type CanvasPoint = Readonly<{ x: number; y: number }>;
 export type CanvasRect = Readonly<{ x: number; y: number; width: number; height: number }>;
 export type CanvasNode = CanvasRect & { readonly id: string };
@@ -20,6 +20,87 @@ const sorted = (values: number[]) => [...new Set(values)].sort((a, b) => a - b);
 const inside = (value: number, start: number, length: number) =>
   value > start + 1e-7 && value < start + length - 1e-7;
 const segmentKey = (a: number, b: number) => `${Math.min(a, b)}:${Math.max(a, b)}`;
+const crowded = (a: CanvasRect, b: CanvasRect, clearance: number) =>
+  a.x < b.x + b.width + clearance &&
+  b.x < a.x + a.width + clearance &&
+  a.y < b.y + b.height + clearance &&
+  b.y < a.y + a.height + clearance;
+
+/** Ports need a corridor too: disjoint cards with an 8px gap still cover the
+ * router's padded exit/entry. Healthy hand-positioned layouts pass unchanged. */
+export function canvasNeedsSpace(nodes: readonly CanvasNode[], clearance = 48): boolean {
+  return nodes.some((a, index) => nodes.slice(index + 1).some((b) => crowded(a, b, clearance)));
+}
+
+/** A drop that covers another card moves only the dropped card to the closest
+ * free side. Clear manual coordinates, including fractions, remain exact. */
+export function separateCanvasNode(
+  nodes: readonly CanvasNode[],
+  id: string,
+): readonly CanvasNode[] {
+  const node = nodes.find((n) => n.id === id);
+  const others = nodes.filter((n) => n.id !== id);
+  if (!node || !others.some((other) => crowded(node, other, 48))) return nodes;
+  const candidates = others
+    .flatMap((other) => [
+      { ...node, x: other.x - node.width - 72 },
+      { ...node, x: other.x + other.width + 72 },
+      { ...node, y: other.y - node.height - 72 },
+      { ...node, y: other.y + other.height + 72 },
+    ])
+    .filter((candidate) => others.every((other) => !crowded(candidate, other, 48)));
+  candidates.sort(
+    (a, b) =>
+      (a.x - node.x) ** 2 + (a.y - node.y) ** 2 - ((b.x - node.x) ** 2 + (b.y - node.y) ** 2),
+  );
+  const free = candidates[0];
+  return free ? nodes.map((n) => (n.id === id ? free : n)) : nodes;
+}
+
+/** Compact only an untrusted/colliding initial layout, or an explicit arrange
+ * action. Keep node order and identity; never infer or change dependencies. */
+export function compactCanvasLayout(
+  nodes: readonly CanvasNode[],
+  width: number,
+  height: number,
+  gap = 72,
+): readonly CanvasNode[] {
+  if (!nodes.length) return nodes;
+  const availableWidth = Math.max(1, (width || 900) - 64);
+  const availableHeight = Math.max(1, (height || 600) - 64);
+  const origin = { x: Math.min(...nodes.map((n) => n.x)), y: Math.min(...nodes.map((n) => n.y)) };
+  let best: CanvasNode[] = [],
+    bestScore = -Infinity;
+  for (let columns = 1; columns <= nodes.length; columns++) {
+    const rows = Math.ceil(nodes.length / columns);
+    const widths = Array.from({ length: columns }, () => 0);
+    const heights = Array.from({ length: rows }, () => 0);
+    nodes.forEach((node, index) => {
+      const column = index % columns,
+        row = Math.floor(index / columns);
+      widths[column] = Math.max(widths[column]!, node.width);
+      heights[row] = Math.max(heights[row]!, node.height);
+    });
+    const totalWidth = widths.reduce((a, b) => a + b, 0) + (columns - 1) * gap;
+    const totalHeight = heights.reduce((a, b) => a + b, 0) + (rows - 1) * gap;
+    // Prefer readable labels; among equally readable arrangements, fewer rows
+    // keep ordinary short workflows flowing left to right.
+    const score =
+      Math.min(1, availableWidth / totalWidth, availableHeight / totalHeight) - rows * 1e-5;
+    if (score <= bestScore) continue;
+    bestScore = score;
+    const xs = [origin.x],
+      ys = [origin.y];
+    for (let i = 1; i < columns; i++) xs.push(xs[i - 1]! + widths[i - 1]! + gap);
+    for (let i = 1; i < rows; i++) ys.push(ys[i - 1]! + heights[i - 1]! + gap);
+    best = nodes.map((node, index) => ({
+      ...node,
+      x: xs[index % columns]!,
+      y: ys[Math.floor(index / columns)]!,
+    }));
+  }
+  return best;
+}
 
 export function canvasBounds(
   nodes: readonly CanvasNode[],

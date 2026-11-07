@@ -22,8 +22,13 @@ import { NodeStatusMark } from './NodeStatusMark.js';
 import { transitiveDependencies } from './workflow-sequence.js';
 import {
   canvasBounds,
+  canvasNeedsSpace,
   canvasOverview,
+  compactCanvasLayout,
   routeCanvasLinks,
+  separateCanvasNode,
+  type CanvasNode,
+  type CanvasPoint,
   type CanvasRoute,
 } from './workflow-routing.js';
 
@@ -49,6 +54,11 @@ function DependencyEdge(props: EdgeProps<RoutedEdge>) {
   );
 }
 const edgeTypes = { dependency: DependencyEdge };
+const positionKey = (workflow: Workflow) =>
+  JSON.stringify([
+    workflow.id,
+    workflow.nodes.map((node) => [node.id, node.position.x, node.position.y]),
+  ]);
 
 export function WorkflowCanvas({
   workflow,
@@ -85,22 +95,99 @@ export function WorkflowCanvas({
   const [flow, setFlow] = useState<ReactFlowInstance<Node, RoutedEdge> | null>(null);
   const [zoom, setZoom] = useState(1);
   const [allDependencies, setAllDependencies] = useState(false);
-  const implied = useMemo(() => (tree ? null : transitiveDependencies(workflow)), [tree, workflow]);
+  const implied = useMemo(
+    () =>
+      new Map(
+        (tree ? visibleWorkflows(workTree, expanded) : [workflow]).flatMap((flow) => [
+          ...transitiveDependencies(flow),
+        ]),
+      ),
+    [tree, workflow, workTree, expanded],
+  );
   const viewportMode = useRef<'overview' | 'manual' | 'located'>('overview');
   const handledLocate = useRef(0);
   const [size, setSize] = useState({ width: 0, height: 0 });
   const [dimensions, setDimensions] = useState<Record<string, { width: number; height: number }>>(
     {},
   );
-  const columns = new Map<number, number>();
+  const [manualPositions, setManualPositions] = useState<string>();
+  const [viewPositions, setViewPositions] = useState<{
+    key: string;
+    positions: ReadonlyMap<string, CanvasPoint>;
+  }>();
   const path = workflowPath(workTree, workflow.id);
   const parentNodes = new Set(path.flatMap((w) => (w.parentNodeId ? [w.parentNodeId] : [])));
   const flows = tree ? visibleWorkflows(workTree, expanded) : [workflow];
+  const geometryKey = positionKey(workflow);
+  const geometry = useMemo(() => {
+    if (tree) {
+      // A workflow stays inside its hierarchy column. Compact its own nodes
+      // instead of making every root step another full-height tree row.
+      const depth = Math.max(1, ...flows.map((w) => workflowPath(workTree, w.id).length));
+      const availableWidth = Math.max(240, ((size.width || 900) - (depth - 1) * 80) / depth + 64);
+      const groups = flows.map((w) => ({
+        level: workflowPath(workTree, w.id).length - 1,
+        nodes: compactCanvasLayout(
+          w.nodes.map((node) => ({
+            id: node.id,
+            x: 0,
+            y: 0,
+            ...(dimensions[node.id] ?? { width: 200, height: 128 }),
+          })),
+          availableWidth,
+          size.height || 600,
+          48,
+        ),
+      }));
+      const widths = Array.from({ length: depth }, (_, level) =>
+        Math.max(
+          0,
+          ...groups
+            .filter((group) => group.level === level)
+            .flatMap((group) => group.nodes.map((node) => node.x + node.width)),
+        ),
+      );
+      const xs = [0],
+        offsets = Array.from({ length: depth }, () => 0);
+      for (let level = 1; level < depth; level++) xs.push(xs[level - 1]! + widths[level - 1]! + 80);
+      return groups.flatMap((group) => {
+        const offset = offsets[group.level]!;
+        const nodes = group.nodes.map((node) => ({
+          ...node,
+          x: node.x + xs[group.level]!,
+          y: node.y + offset,
+        }));
+        offsets[group.level] =
+          offset + Math.max(0, ...group.nodes.map((node) => node.y + node.height)) + 80;
+        return nodes;
+      });
+    }
+    const original: CanvasNode[] = flows.flatMap((w) => {
+      const result = w.nodes.map((node) => {
+        const measured = dimensions[node.id] ?? { width: 240, height: 164 };
+        const position =
+          viewPositions?.key === geometryKey
+            ? (viewPositions.positions.get(node.id) ?? node.position)
+            : node.position;
+        return {
+          id: node.id,
+          ...measured,
+          x: position.x,
+          y: position.y,
+        };
+      });
+      return result;
+    });
+    return !tree &&
+      manualPositions !== geometryKey &&
+      viewPositions?.key !== geometryKey &&
+      canvasNeedsSpace(original)
+      ? compactCanvasLayout(original, size.width, size.height)
+      : original;
+  }, [workflow, tree, workTree, expanded, dimensions, size, manualPositions, viewPositions]);
+  const positions = new Map(geometry.map((node) => [node.id, { x: node.x, y: node.y }]));
   const nodes: Node[] = flows.flatMap((w) => {
-    const level = tree ? workflowPath(workTree, w.id).length - 1 : 0;
-    const offset = columns.get(level) ?? 0;
-    columns.set(level, offset + w.nodes.length * 210 + 60);
-    return w.nodes.map((n, index) => {
+    return w.nodes.map((n) => {
       const member = members.find((m) => m.id === n.assigneeId);
       const mark = marks?.get(n.id);
       const statusLabel = mark
@@ -110,10 +197,10 @@ export function WorkflowCanvas({
         : '';
       return {
         id: n.id,
-        initialWidth: 240,
-        initialHeight: 164,
+        initialWidth: tree ? 200 : 240,
+        initialHeight: tree ? 128 : 164,
         ...(dimensions[n.id] ? { measured: dimensions[n.id] } : {}),
-        position: tree ? { x: level * 340, y: offset + index * 210 } : n.position,
+        position: positions.get(n.id)!,
         sourcePosition: Position.Right,
         targetPosition: Position.Left,
         ariaLabel: `${n.title}，${w.name}${statusLabel ? `，${statusLabel}` : ''}`,
@@ -160,7 +247,7 @@ export function WorkflowCanvas({
             </>
           ),
         },
-        className: `zm-flow-node${mark ? ' zm-flow-node-status' : ''} ${tree && parentNodes.has(n.id) ? 'zm-tree-ancestor' : ''}`,
+        className: `zm-flow-node${tree ? ' zm-flow-tree' : ''}${mark ? ' zm-flow-node-status' : ''} ${tree && parentNodes.has(n.id) ? 'zm-tree-ancestor' : ''}`,
         selected: n.id === selectedId,
       };
     });
@@ -217,15 +304,9 @@ export function WorkflowCanvas({
   const visibleEdges = allDependencies ? edges : sequenceEdges;
   // Selection/status labels do not change geometry; the view decides which links need routing.
   const routing = useMemo(() => {
-    const geometry = nodes.map((node) => ({
-      id: node.id,
-      ...node.position,
-      width: dimensions[node.id]?.width ?? 240,
-      height: dimensions[node.id]?.height ?? 164,
-    }));
     const routes = routeCanvasLinks(geometry, visibleEdges);
     return { routes, bounds: canvasBounds(geometry, routes.values()) };
-  }, [workflow, tree, workTree, expanded, dimensions, allDependencies]);
+  }, [geometry, workflow, tree, workTree, expanded, allDependencies]);
   const renderedEdges: RoutedEdge[] = visibleEdges.map((edge) => ({
     ...edge,
     type: 'dependency',
@@ -298,6 +379,25 @@ export function WorkflowCanvas({
     viewportMode.current = 'overview';
     if (flow && overview) void flow.setViewport(overview);
   }
+  function arrange() {
+    const arranged = compactCanvasLayout(geometry, size.width, size.height);
+    const arrangedPositions = new Map(arranged.map((node) => [node.id, { x: node.x, y: node.y }]));
+    viewportMode.current = 'overview';
+    if (locked) {
+      setViewPositions({ key: geometryKey, positions: arrangedPositions });
+    } else {
+      const next = {
+        ...workflow,
+        nodes: workflow.nodes.map((node) => ({
+          ...node,
+          position: arrangedPositions.get(node.id)!,
+        })),
+      };
+      setManualPositions(positionKey(next));
+      setViewPositions(undefined);
+      change(next);
+    }
+  }
   function zoomBy(direction: 'in' | 'out') {
     viewportMode.current = 'manual';
     if (direction === 'in') void flow?.zoomIn();
@@ -318,6 +418,11 @@ export function WorkflowCanvas({
       <button type="button" onClick={fitAll}>
         适应全图
       </button>
+      {!tree && (
+        <button type="button" onClick={arrange} disabled={!nodes.length}>
+          整理布局
+        </button>
+      )}
     </>
   );
   return (
@@ -375,19 +480,33 @@ export function WorkflowCanvas({
                   return changed ? next : current;
                 });
               if (locked || tree) return;
-              const positions = new Map(
+              const moved = new Map(
                 changes.flatMap((c) =>
                   c.type === 'position' && c.position ? [[c.id, c.position] as const] : [],
                 ),
               );
-              if (positions.size) viewportMode.current = 'manual';
-              if (positions.size)
-                change({
-                  ...workflow,
-                  nodes: workflow.nodes.map((n) =>
-                    positions.has(n.id) ? { ...n, position: positions.get(n.id)! } : n,
-                  ),
+              if (moved.size) {
+                viewportMode.current = 'manual';
+                let placed: readonly CanvasNode[] = geometry.map((node) => {
+                  const position = moved.get(node.id);
+                  return position ? { ...node, x: position.x, y: position.y } : node;
                 });
+                if (!changes.some((c) => c.type === 'position' && c.dragging))
+                  for (const id of moved.keys()) placed = separateCanvasNode(placed, id);
+                const dropped = new Map(placed.map((node) => [node.id, { x: node.x, y: node.y }]));
+                // A deliberate drag saves the geometry the user actually saw,
+                // including repaired peers, rather than hidden AI collisions.
+                const next = {
+                  ...workflow,
+                  nodes: workflow.nodes.map((n) => ({
+                    ...n,
+                    position: dropped.get(n.id)!,
+                  })),
+                };
+                setManualPositions(positionKey(next));
+                setViewPositions(undefined);
+                change(next);
+              }
             }}
             onConnect={connect}
             onEdgeDoubleClick={(_, edge) => {

@@ -2,8 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   canvasBounds,
+  canvasNeedsSpace,
   canvasOverview,
+  compactCanvasLayout,
   routeCanvasLinks,
+  separateCanvasNode,
 } from '../dist/workbench/workflow-routing.js';
 
 const dependencies = [[], [0], [0, 1], [0, 1, 2], [0, 2, 3], [0, 1, 3, 4]];
@@ -87,6 +90,66 @@ test('temporarily overlapping cards retain every addressable dependency', () => 
   const routes = routeCanvasLinks(nodes, links);
   assert.equal(routes.size, 13);
   assert.ok([...routes.values()].every((route) => !/NaN|Infinity/.test(route.path)));
+});
+
+test('untrusted 220px AI spacing is compacted using real card bounds; ports and paths remain outside every card', () => {
+  for (const spacing of [220, 0, 248]) {
+    const original = Object.freeze(
+      dependencies.map((_, i) =>
+        Object.freeze({
+          id: String(i),
+          x: i * spacing,
+          y: 0,
+          width: 240,
+          height: 149.59375 + (i % 2) * 42,
+        }),
+      ),
+    );
+    assert.equal(canvasNeedsSpace(original), true);
+    for (const [width, height] of [
+      [620, 510],
+      [1050, 600],
+    ]) {
+      const nodes = compactCanvasLayout(original, width, height);
+      assert.equal(canvasNeedsSpace(nodes), false);
+      assert.deepEqual(
+        nodes.map((n) => n.id),
+        original.map((n) => n.id),
+      );
+      const routes = routeCanvasLinks(nodes, links);
+      assert.equal(routes.size, 13);
+      assertAvoidsCards(nodes, routes);
+      for (const link of links) {
+        const source = nodes.find((n) => n.id === link.source),
+          target = nodes.find((n) => n.id === link.target);
+        const points = routes.get(link.id).points;
+        assert.deepEqual(points[0], {
+          x: source.x + source.width,
+          y: source.y + source.height / 2,
+        });
+        assert.deepEqual(points.at(-1), { x: target.x, y: target.y + target.height / 2 });
+        assert.ok(points[1].x >= points[0].x, 'exit points right');
+        assert.ok(points.at(-2).x <= points.at(-1).x, 'entry points right');
+      }
+    }
+    assert.equal(original[1].x, spacing, 'projection never changes source geometry');
+  }
+});
+
+test('clear manual coordinates remain exact; an overlapping drop moves only that node to a free side', () => {
+  const nodes = [
+    { id: 'a', x: 0.1, y: 0.2, width: 240, height: 150 },
+    { id: 'b', x: 350.3, y: 0.4, width: 240, height: 192 },
+    { id: 'c', x: 0.1, y: 260.7, width: 240, height: 150 },
+  ];
+  assert.equal(canvasNeedsSpace(nodes), false);
+  assert.equal(separateCanvasNode(nodes, 'b'), nodes);
+  const covered = nodes.map((n) => (n.id === 'b' ? { ...n, x: 40.2, y: 10.3 } : n));
+  const placed = separateCanvasNode(covered, 'b');
+  assert.equal(canvasNeedsSpace(placed), false);
+  assert.equal(placed[0], nodes[0]);
+  assert.equal(placed[2], nodes[2]);
+  assert.equal(separateCanvasNode(placed, 'b'), placed, 'stable after drop');
 });
 
 test('overview includes the full routed extent at narrow and wide inspector sizes', () => {
