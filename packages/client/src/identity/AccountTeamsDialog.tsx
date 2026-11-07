@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import { Button } from '../workbench/Button.js';
+import { Button, Spinner } from '../workbench/Button.js';
 import { Field, Modal } from '../workbench/controls.js';
 import type { MemberShell } from './shell.js';
 import { changePasswordAndInvalidate } from './password-change.js';
@@ -39,6 +39,7 @@ export function AccountTeamsDialog({
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [busy, setBusy] = useState(false);
+  const [listing, setListing] = useState(true);
   const [error, setError] = useState('');
   const active = useRef<AbortController>();
   const createRequest = useRef(crypto.randomUUID());
@@ -98,12 +99,30 @@ export function AccountTeamsDialog({
       close();
       return;
     }
-    void perform(async (signal) => {
-      await readTeams(signal);
-    });
+    const controller = new AbortController();
+    let cancelled = false;
+    setListing(true);
+    setError('');
+    void (async () => {
+      try {
+        await readTeams(controller.signal);
+      } catch (failure) {
+        if (controller.signal.aborted || !current()) return;
+        if (failure instanceof IdentityLifecycleError && failure.code === 'unauthenticated')
+          shell.session.invalidate(account!.epoch);
+        else
+          setError(
+            failure instanceof IdentityLifecycleError
+              ? failure.message
+              : '操作未确认，请重新连接后检查。',
+          );
+      } finally {
+        if (!cancelled && !controller.signal.aborted) setListing(false);
+      }
+    })();
     return () => {
-      active.current?.abort();
-      active.current = undefined;
+      cancelled = true;
+      controller.abort();
     };
   }, [api, account?.epoch]);
   if (!account || !sameAccount) return null;
@@ -165,12 +184,18 @@ export function AccountTeamsDialog({
                   }}
                 />
               </Field>
-              <Button type="submit" busy={busy}>
+              <Button type="submit" busy={busy} disabled={listing}>
                 创建团队
               </Button>
             </form>
             <div className="zm-team-directory">
               <div className="zm-team-list" aria-label="我的团队">
+                {listing && !teams.length && (
+                  <p role="status" className="zm-pending">
+                    <Spinner />
+                    正在读取团队…
+                  </p>
+                )}
                 {teams.map((team) => (
                   <button
                     key={team.id}
@@ -182,7 +207,7 @@ export function AccountTeamsDialog({
                     <small>{team.role === 'administrator' ? '管理员' : '成员'}</small>
                   </button>
                 ))}
-                {!teams.length && !busy && <p className="zm-muted">尚未加入团队</p>}
+                {!teams.length && !listing && !busy && <p className="zm-muted">尚未加入团队</p>}
               </div>
               <section className="zm-team-members" aria-label="团队成员">
                 {members ? (
