@@ -34,6 +34,8 @@ interface KnownCounts {
   /** Null when node detail was not returned. */
   readonly workflow: TaskProgressWorkflow | null;
   readonly assigneeCounts: { readonly human: number; readonly expert: number };
+  /** Human assignees whose node status is `ready`: delivery is waiting on that person. */
+  readonly humanReady: number;
   readonly resources: TaskProgressResources;
 }
 export type TaskProgressUnknownReason =
@@ -63,6 +65,7 @@ export type TaskProgressRow =
       readonly nodeStatuses: null;
       readonly workflow: null;
       readonly assigneeCounts: null;
+      readonly humanReady: null;
       readonly resources: null;
     };
 export interface TaskProgressValue {
@@ -122,6 +125,7 @@ function row(raw: unknown, expected: TaskProgressTarget): TaskProgressRow {
     'nodeStatuses',
     'workflow',
     'assigneeCounts',
+    'humanReady',
     'resources',
   ]);
   const received = target(value.target);
@@ -133,6 +137,7 @@ function row(raw: unknown, expected: TaskProgressTarget): TaskProgressRow {
       value.byStatus !== null ||
       value.assigneeCounts !== null ||
       value.resources !== null ||
+      (Object.hasOwn(value, 'humanReady') && value.humanReady !== null) ||
       (detailPair(value) && (value.nodeStatuses !== null || value.workflow !== null))
     )
       invalid();
@@ -156,6 +161,7 @@ function row(raw: unknown, expected: TaskProgressTarget): TaskProgressRow {
       nodeStatuses: null,
       workflow: null,
       assigneeCounts: null,
+      humanReady: null,
       resources: null,
     };
   }
@@ -206,10 +212,12 @@ function row(raw: unknown, expected: TaskProgressTarget): TaskProgressRow {
           value.nodeStatuses.length > 0))
     )
       invalid();
+    const nodeStatuses = detailed ? [] : null;
     return {
       ...common,
-      nodeStatuses: detailed ? [] : null,
+      nodeStatuses,
       workflow: null,
+      humanReady: readHumanReady(value, byStatus, assigneeCounts.human, nodeStatuses),
       facts,
       delivery: 'pending',
     };
@@ -248,10 +256,30 @@ function row(raw: unknown, expected: TaskProgressTarget): TaskProgressRow {
     ...common,
     nodeStatuses,
     workflow,
+    humanReady: readHumanReady(value, byStatus, assigneeCounts.human, nodeStatuses),
     facts,
     delivery,
     ...(value.reason === 'upstream-affected' ? { reason: value.reason } : {}),
   };
+}
+function readHumanReady(
+  value: Record<string, unknown>,
+  byStatus: Readonly<Record<NodeStatus, number>>,
+  humans: number,
+  nodeStatuses:
+    | readonly {
+        readonly status: NodeStatus;
+        readonly assignee: 'human' | 'expert';
+      }[]
+    | null,
+): number {
+  if (!Object.hasOwn(value, 'humanReady')) {
+    return (
+      nodeStatuses?.filter((node) => node.status === 'ready' && node.assignee === 'human').length ??
+      0
+    );
+  }
+  return count(value.humanReady, Math.min(byStatus.ready, humans));
 }
 function readNodeStatuses(
   raw: unknown,

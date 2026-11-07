@@ -42,6 +42,14 @@ test('task progress codec: exact current refs, metadata, concurrent execution/re
       byStatus: { ...counts, running: 0, 'in-review': 0, completed: 0 },
       resources: { authorHeld: 0, reviewHeld: 0, stopRequested: 0 },
     }),
+    row({
+      expectedNodes: 1,
+      acceptedNodes: 0,
+      byStatus: { ...counts, running: 0, 'in-review': 0, completed: 0, ready: 1 },
+      assigneeCounts: { human: 1, expert: 0 },
+      humanReady: 1,
+      resources: { authorHeld: 0, reviewHeld: 0, stopRequested: 0 },
+    }),
   ]) {
     reply = value([item]);
     assert.deepEqual(await api.read(query, signal()), reply);
@@ -71,6 +79,13 @@ test('task progress codec: malformed/partial facts, wrong refs and out-of-scope 
     row({ byStatus: { ...row().byStatus, running: 9 } }),
     row({ assigneeCounts: { human: 0, expert: 2 } }),
     row({ resources: { ...row().resources, authorHeld: -1 } }),
+    row({ humanReady: 1 }),
+    row({
+      byStatus: { ...row().byStatus, ready: 2, running: 0 },
+      assigneeCounts: { human: 1, expert: 4 },
+      humanReady: 2,
+    }),
+    { ...unknown(), humanReady: 0 },
     row({ delivery: 'all-accepted' }),
     { ...unknown(), acceptedNodes: 0 },
     { ...unknown(), reason: 'unverified-new-reason' },
@@ -183,7 +198,7 @@ function legacyRow(raw) {
     throw new ExecutionError('validation', '任务进度与当前计划不一致，请刷新后重试。');
 }
 function summaryItem(item) {
-  const { nodeStatuses: _nodes, workflow: _workflow, ...rest } = item;
+  const { nodeStatuses: _nodes, workflow: _workflow, humanReady: _humanReady, ...rest } = item;
   return rest;
 }
 test('task progress codec: old summary and node detail work in both cross-version directions', async () => {
