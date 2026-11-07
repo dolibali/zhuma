@@ -9,8 +9,13 @@ import {
 } from './ExecutionApi.js';
 import { StartPlanPanel } from './StartPlanPanel.js';
 import { useFormKey } from './interaction.js';
+import {
+  recallMemberPlans,
+  rememberMemberPlans,
+  type MemberViewScope,
+} from './member-view-memory.js';
 
-type Props = { api: ExecutionApi; onStarted(): void };
+type Props = { api: ExecutionApi; onStarted(): void; viewScope?: MemberViewScope };
 type Choice = { key: string; token: object };
 type Catalog =
   | { kind: 'loading' | 'ready'; plans: readonly StartablePlanWire[] }
@@ -22,41 +27,59 @@ export function StartablePlansPanel(props: Props) {
   const key = useFormKey(props.api, 'startable-plans');
   return <CatalogPanel key={key} {...props} />;
 }
-function CatalogPanel({ api, onStarted }: Props) {
+function CatalogPanel({ api, onStarted, viewScope }: Props) {
   const heading = useId();
-  const [catalog, setCatalog] = useState<Catalog>({ kind: 'loading', plans: [] });
+  const scope = useRef(viewScope);
+  scope.current = viewScope;
+  const recalled = viewScope
+    ? recallMemberPlans(viewScope.accountId, viewScope.spaceId)
+    : undefined;
+  const known = useRef(recalled !== undefined);
+  const [catalog, setCatalog] = useState<Catalog>(
+    recalled !== undefined ? { kind: 'ready', plans: recalled } : { kind: 'loading', plans: [] },
+  );
+  const [reading, setReading] = useState(false);
   const [choice, setChoice] = useState<Choice>();
   const selection = useRef(choice);
   const [notice, setNotice] = useState('');
   const alive = useRef(false);
   const read = useRef<AbortController | undefined>(undefined);
-  const reload = useCallback(async () => {
-    if (!alive.current) return;
-    read.current?.abort();
-    const request = new AbortController();
-    read.current = request;
-    const current = () => alive.current && read.current === request && !request.signal.aborted;
-    setCatalog((previous) => ({ kind: 'loading', plans: previous.plans }));
-    try {
-      const value = await api.startable(request.signal);
-      if (!current()) return;
-      if (
-        selection.current &&
-        !value.plans.some((plan) => planKey(plan) === selection.current?.key)
-      ) {
-        selection.current = undefined;
-        setChoice(undefined);
-      }
-      setCatalog({ kind: 'ready', plans: value.plans });
-    } catch (error) {
-      if (current())
+  const reload = useCallback(
+    async (manual = false) => {
+      if (!alive.current) return;
+      read.current?.abort();
+      const request = new AbortController();
+      read.current = request;
+      const current = () => alive.current && read.current === request && !request.signal.aborted;
+      if (!known.current) setCatalog((previous) => ({ kind: 'loading', plans: previous.plans }));
+      else if (manual) setReading(true);
+      try {
+        const value = await api.startable(request.signal);
+        if (!current()) return;
+        if (
+          selection.current &&
+          !value.plans.some((plan) => planKey(plan) === selection.current?.key)
+        ) {
+          selection.current = undefined;
+          setChoice(undefined);
+        }
+        known.current = true;
+        const selected = scope.current;
+        if (selected) rememberMemberPlans(selected.accountId, selected.spaceId, value.plans);
+        setCatalog({ kind: 'ready', plans: value.plans });
+      } catch (error) {
+        if (!current() || (error instanceof DOMException && error.name === 'AbortError')) return;
         setCatalog((previous) => ({
           kind: 'error',
           plans: previous.plans,
           message: executionErrorMessage(error),
         }));
-    }
-  }, [api]);
+      } finally {
+        if (current()) setReading(false);
+      }
+    },
+    [api],
+  );
   useEffect(() => {
     alive.current = true;
     void reload();
@@ -78,7 +101,7 @@ function CatalogPanel({ api, onStarted }: Props) {
     selection.current = undefined;
     setChoice(undefined);
     setNotice(`「${title}」第 ${revision} 版已开始执行`);
-    void reload();
+    void reload(true);
     onStarted();
   }
   const label = (plan: StartablePlanWire) => `${plan.title} · 第 ${plan.revision} 版`;
@@ -100,9 +123,9 @@ function CatalogPanel({ api, onStarted }: Props) {
         </h2>
         <Button
           variant="quiet"
-          busy={catalog.kind === 'loading'}
+          busy={reading || catalog.kind === 'loading'}
           busyLabel="正在读取…"
-          onClick={() => void reload()}
+          onClick={() => void reload(true)}
         >
           刷新计划
         </Button>
@@ -127,7 +150,7 @@ function CatalogPanel({ api, onStarted }: Props) {
             <SingleSelect
               label="已确认计划"
               value={choice?.key ?? ''}
-              disabled={catalog.kind !== 'ready'}
+              disabled={catalog.kind !== 'ready' || reading}
               options={[{ value: '', label: '选择一个计划' }, ...options]}
               onValueChange={select}
             />

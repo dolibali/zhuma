@@ -40,6 +40,7 @@ export function InboxPanel({
   places,
   error,
   pending = false,
+  refreshing = false,
   reload,
   open,
   renderAgentAction,
@@ -49,6 +50,7 @@ export function InboxPanel({
   places?: readonly InboxPlaceWire[];
   error?: string;
   pending?: boolean;
+  refreshing?: boolean;
   reload(): void;
   open(item: InboxItem): void;
   renderAgentAction?: ((node: ExecutionNodeWire) => ReactNode) | undefined;
@@ -84,7 +86,12 @@ export function InboxPanel({
           </div>
           <p className="zm-muted">分配给你或由你负责的工作都在这里，等待前置的事项会标成等待中。</p>
         </div>
-        <Button variant="secondary" busy={pending} busyLabel="正在读取…" onClick={reload}>
+        <Button
+          variant="secondary"
+          busy={pending || refreshing}
+          busyLabel="正在读取…"
+          onClick={reload}
+        >
           刷新
         </Button>
       </div>

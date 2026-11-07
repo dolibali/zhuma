@@ -14,6 +14,7 @@ import { createMemberSessionController, type MemberSessionState } from './sessio
 import { RegistrationForm } from './RegistrationForm.js';
 import type { RegisterAccount } from './lifecycle-api.js';
 import type { MemberSessionController } from './shell.js';
+import { forgetMemberViews } from '../execution/member-view-memory.js';
 
 export interface MemberSessionBoundaryProps {
   readonly api: IdentityApi;
@@ -221,6 +222,7 @@ export function MemberSessionBoundary({
     controller.getSnapshot,
     controller.getSnapshot,
   );
+  if (state.status === 'signed-out' || state.status === 'signing-out') forgetMemberViews();
   useEffect(() => {
     if (provided) return;
     void controller.restore();

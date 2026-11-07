@@ -10,7 +10,7 @@ export interface AppearanceStore {
 
 /** The official host owns this preference, persistence and OS theme resolution. */
 export function Appearance({ store }: { store: AppearanceStore }) {
-  const preference = useSyncExternalStore(store.subscribe, store.getSnapshot);
+  const preference = useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot);
   // Hover/focus tip must name the control purpose; current mode stays in the menu.
   // Keep aria-label stable as 外观 so scaffold getByLabel('外观') still finds it.
   const tip = '外观切换（浅色／深色／跟随系统）';
