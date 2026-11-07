@@ -103,7 +103,7 @@ export function WorkbenchPage({
         readonly spaceId: string;
         readonly api: Pick<
           import('../execution/ExecutionApi.js').ExecutionApi,
-          'files' | 'projectArtifacts' | 'taskProgress'
+          'files' | 'projectArtifacts' | 'taskProgress' | 'startPlan'
         >;
       }
     | undefined;
@@ -717,6 +717,9 @@ export function WorkbenchPage({
           backLabel={activeProject ? '项目' : '任务清单'}
           {...(initialPlanning ? { initialPlanning } : {})}
           {...(openWork ? { openWork } : {})}
+          {...(projectExecution?.api.startPlan
+            ? { startPlan: projectExecution.api.startPlan }
+            : {})}
           {...(nativeRun ? { nativeRun } : {})}
           {...(memberAssets ? { memberAssets } : {})}
         />
