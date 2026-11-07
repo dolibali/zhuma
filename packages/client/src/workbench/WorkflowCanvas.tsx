@@ -19,6 +19,7 @@ import { NODE_STATUS_LABELS } from '../execution-view.js';
 import type { FlowNodeMark } from '../execution/progress-focus.js';
 import { visibleWorkflows, workflowPath, type WorkTree } from './navigation.js';
 import { NodeStatusMark } from './NodeStatusMark.js';
+import { transitiveDependencies } from './workflow-sequence.js';
 import {
   canvasBounds,
   canvasOverview,
@@ -83,6 +84,8 @@ export function WorkflowCanvas({
   const canvas = useRef<HTMLDivElement>(null);
   const [flow, setFlow] = useState<ReactFlowInstance<Node, RoutedEdge> | null>(null);
   const [zoom, setZoom] = useState(1);
+  const [allDependencies, setAllDependencies] = useState(false);
+  const implied = useMemo(() => (tree ? null : transitiveDependencies(workflow)), [tree, workflow]);
   const viewportMode = useRef<'overview' | 'manual' | 'located'>('overview');
   const handledLocate = useRef(0);
   const [size, setSize] = useState({ width: 0, height: 0 });
@@ -208,7 +211,11 @@ export function WorkflowCanvas({
             labelStyle: { fill: 'var(--zm-muted)', fontSize: 12 },
             labelBgStyle: { fill: 'var(--zm-paper)' },
           });
-  // Selection/status labels do not change the geometry of this workflow.
+  const sequenceEdges = implied?.size
+    ? edges.filter((edge) => !implied.get(edge.target)?.has(edge.source))
+    : edges;
+  const visibleEdges = allDependencies ? edges : sequenceEdges;
+  // Selection/status labels do not change geometry; the view decides which links need routing.
   const routing = useMemo(() => {
     const geometry = nodes.map((node) => ({
       id: node.id,
@@ -216,10 +223,10 @@ export function WorkflowCanvas({
       width: dimensions[node.id]?.width ?? 240,
       height: dimensions[node.id]?.height ?? 164,
     }));
-    const routes = routeCanvasLinks(geometry, edges);
+    const routes = routeCanvasLinks(geometry, visibleEdges);
     return { routes, bounds: canvasBounds(geometry, routes.values()) };
-  }, [workflow, tree, workTree, expanded, dimensions]);
-  const renderedEdges: RoutedEdge[] = edges.map((edge) => ({
+  }, [workflow, tree, workTree, expanded, dimensions, allDependencies]);
+  const renderedEdges: RoutedEdge[] = visibleEdges.map((edge) => ({
     ...edge,
     type: 'dependency',
     data: { route: routing.routes.get(edge.id) },
@@ -238,6 +245,8 @@ export function WorkflowCanvas({
       connection.source === connection.target
     )
       return;
+    // Keep a newly drawn explicit edge visible even if there is already an indirect path.
+    setAllDependencies(true);
     change({
       ...workflow,
       nodes: workflow.nodes.map((n) =>
@@ -399,7 +408,28 @@ export function WorkflowCanvas({
         <div className="zm-canvas-controls zm-canvas-dock" role="toolbar" aria-label="工作流视图">
           <div className="zm-canvas-actions">
             {controls}
-            <span>{edges.length} 条连线</span>
+            {sequenceEdges.length < edges.length ? (
+              <div className="zm-dependency-views" role="group" aria-label="显示连线">
+                <button
+                  type="button"
+                  aria-pressed={!allDependencies}
+                  title="显示决定执行先后的连线，保留分支与汇合"
+                  onClick={() => setAllDependencies(false)}
+                >
+                  执行顺序 <span>{sequenceEdges.length}</span>
+                </button>
+                <button
+                  type="button"
+                  aria-pressed={allDependencies}
+                  title="显示每个节点明确指定的所有前置依赖"
+                  onClick={() => setAllDependencies(true)}
+                >
+                  全部依赖 <span>{edges.length}</span>
+                </button>
+              </div>
+            ) : (
+              <span>{edges.length} 条连线</span>
+            )}
           </div>
           {!fitInitially && (
             <div

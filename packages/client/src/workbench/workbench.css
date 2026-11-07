@@ -3547,6 +3547,23 @@ html[data-platform='darwin'] .zhuma .zm-space-bar {
   text-align: center;
   color: var(--zm-muted);
 }
+.zm-dependency-views {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  margin-inline-start: 4px;
+  padding-inline-start: 6px;
+  border-inline-start: 1px solid var(--zm-line);
+}
+.zm-dependency-views button[aria-pressed='true'] {
+  background: var(--zm-soft);
+  color: var(--zm-text);
+  font-weight: 600;
+}
+.zm-dependency-views button span {
+  font-variant-numeric: tabular-nums;
+  color: var(--zm-muted);
+}
 
 @container (max-width: 980px) {
   .zm-editor-layout {
