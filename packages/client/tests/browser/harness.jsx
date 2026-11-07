@@ -1,6 +1,7 @@
 import { createRoot } from 'react-dom/client';
 import { StrictMode, useState } from 'react';
 import { SelectProbe } from './select-probe.jsx';
+import { RunConfigProbe } from './run-config-probe.jsx';
 import { StartableProbe } from './startable-probe.jsx';
 import { ExecutionProbe } from './execution-probe.jsx';
 import { RevisionProbe } from './revision-probe.jsx';
@@ -69,7 +70,9 @@ function MountProbe() {
     </>
   );
 }
-const content = new URL(location.href).searchParams.has('member-profile') ? (
+const content = new URL(location.href).searchParams.has('run-config-probe') ? (
+  <RunConfigProbe />
+) : new URL(location.href).searchParams.has('member-profile') ? (
   <MemberProfileProbe appearance={appearance} />
 ) : new URL(location.href).searchParams.has('member-account') ? (
   createMemberAccountProbe()

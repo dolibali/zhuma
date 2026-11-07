@@ -8,6 +8,7 @@ import { useUnsavedChanges } from '../workbench/UnsavedChanges.js';
 import type {
   NativeRunAction,
   NativeRunMessage,
+  NativeRunModelChoice,
   NativeRunPanelProps,
   NativeRunPanelView,
   NativeRunSelection,
@@ -43,6 +44,8 @@ const modelKey = (selection: NativeRunSelection['model']) =>
     selection.maxTokens,
     selection.reasoningEffort ?? null,
   ]);
+const modelLabel = (choice: NativeRunModelChoice) =>
+  choice.value.provider === 'acp-zhuma-codearts' ? '码道 CLI' : choice.label;
 const expertKey = (selection: NativeRunSelection['executor']) =>
   selection.kind === 'builtin'
     ? 'builtin'
@@ -313,6 +316,12 @@ function Selection({
           (item) => chosenExecutor && expertKey(item.value) === expertKey(chosenExecutor),
         )
       : undefined;
+  const selectedModelLabel =
+    chosenModel?.provider === 'acp-zhuma-codearts'
+      ? '码道 CLI'
+      : model
+        ? modelLabel(model)
+        : undefined;
   return (
     <details
       className="zm-native-run__config"
@@ -321,7 +330,7 @@ function Selection({
     >
       <summary>
         <span className="zm-native-run__config-values">
-          {model?.label ?? '未选模型'}
+          {selectedModelLabel ?? '未选模型'}
           <span aria-hidden="true"> · </span>
           {expert?.label ?? '未选执行者'}
         </span>
@@ -334,7 +343,7 @@ function Selection({
         <div className="zm-native-run__choice">
           <span>模型</span>
           {disabled ? (
-            <strong>{model?.label ?? selected?.model.model ?? '未提供'}</strong>
+            <strong>{selectedModelLabel ?? selected?.model.model ?? '未提供'}</strong>
           ) : (
             <SingleSelect
               label="选择模型"
@@ -344,14 +353,18 @@ function Selection({
               triggerContent={
                 <>
                   <span>
-                    {model?.label ?? (view.models.kind === 'loading' ? '加载中…' : '选择模型')}
+                    {selectedModelLabel ??
+                      (view.models.kind === 'loading' ? '加载中…' : '选择模型')}
                   </span>
                   <ControlIcon direction="down" />
                 </>
               }
               options={
                 view.models.kind === 'ready'
-                  ? view.models.items.map(({ id, label }) => ({ value: id, label }))
+                  ? view.models.items.map((choice) => ({
+                      value: choice.id,
+                      label: modelLabel(choice),
+                    }))
                   : []
               }
               onValueChange={(id) => {
@@ -372,7 +385,6 @@ function Selection({
           {!disabled && view.models.kind === 'ready' && !view.models.items.length && (
             <small>暂无可用模型</small>
           )}
-          {!disabled && actions}
         </div>
         <div className="zm-native-run__choice">
           <span>执行者</span>
@@ -525,6 +537,7 @@ function Selection({
         )}
         {disabled && <span className="zm-native-run__fixed">本轮配置已固定</span>}
       </div>
+      {!disabled && actions && <div className="zm-native-run__config-actions">{actions}</div>}
       {perRunPublication && (
         <details className="zm-native-run__resources zm-native-run__disclosure">
           <summary>
