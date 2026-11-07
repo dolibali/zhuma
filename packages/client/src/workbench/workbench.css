@@ -3395,11 +3395,18 @@ html[data-platform='darwin'] .zhuma .zm-space-bar {
   border-radius: 6px;
 }
 
-/* Keep node text readable; zoom-to-fit is an explicit overview action. */
+/* Graph controls have their own space; fitting includes the routed dependencies. */
 .zm-canvas {
+  display: flex;
+  flex-direction: column;
   flex: 1;
   min-height: 0;
   background: var(--zm-canvas);
+}
+.zm-canvas-surface {
+  flex: 1;
+  min-height: 0;
+  position: relative;
 }
 .zm-flow-node.react-flow__node {
   width: 240px;
@@ -3502,12 +3509,21 @@ html[data-platform='darwin'] .zhuma .zm-space-bar {
   color: var(--zm-muted);
 }
 .zm-canvas .react-flow__minimap {
-  width: 130px;
-  height: 86px;
+  position: relative;
+  inset: auto;
   border: 1px solid var(--zm-line);
   border-radius: 6px;
   overflow: hidden;
-  margin: 12px 12px 28px;
+  margin: 0;
+}
+.zm-canvas-map {
+  flex: none;
+}
+.zm-canvas-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
 }
 .zm-canvas-controls {
   display: flex;
@@ -3525,7 +3541,7 @@ html[data-platform='darwin'] .zhuma .zm-space-bar {
   padding: 4px 7px;
   font-size: 12px;
 }
-.zm-canvas-controls > span {
+.zm-canvas-actions > span {
   font-size: 12px;
   min-width: 38px;
   text-align: center;
@@ -4261,11 +4277,13 @@ html[data-platform='darwin'] .zhuma .zm-space-bar {
   display: flex;
   flex-direction: column;
 }
-.zm-canvas-overview > .react-flow {
+.zm-canvas-overview > .zm-canvas-surface {
   flex: 1;
   min-height: 0;
 }
 .zm-canvas-dock {
+  justify-content: space-between;
+  gap: 8px;
   flex-shrink: 0;
   border: 0;
   border-top: 1px solid var(--zm-line);
