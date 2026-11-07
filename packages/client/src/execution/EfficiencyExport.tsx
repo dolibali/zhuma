@@ -28,7 +28,7 @@ export function EfficiencyExportControls({
     }
   }
   return (
-    <div className="zm-actions">
+    <div className="zm-actions zm-efficiency-export">
       <Button variant="quiet" busy={busy === 'json'} onClick={() => void download('json')}>
         导出效率 JSON
       </Button>

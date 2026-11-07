@@ -99,6 +99,55 @@ test('formal member entry remains behind login and never falls back to owner rou
   expect(state.legacy).toHaveLength(0);
 });
 
+test('efficiency export sits at the bottom of my work and still downloads', async ({ page }) => {
+  const seen = [];
+  await routes(page, 'chen');
+  await page.route('**/api/zhuma-efficiency/export', async (route) => {
+    const body = route.request().postDataJSON();
+    seen.push(body);
+    const format = body.payload.format;
+    return json(route, 200, {
+      type: 'server-response',
+      rpcId: body.rpcId,
+      result: {
+        ok: true,
+        value: {
+          format,
+          filename: format === 'json' ? 'efficiency-metrics.json' : 'efficiency-metrics.csv',
+          document: format === 'json' ? '{"metrics":[]}\n' : 'taskId\n',
+          metricCount: 0,
+        },
+      },
+    });
+  });
+  await page.goto('/?member-execution&strict');
+  const heading = page.getByRole('heading', { name: '我的工作', exact: true });
+  const workspace = page.locator('.zm-member-work > main.zm-page > .zm-execution-workspace');
+  const jsonButton = page.getByRole('button', { name: '导出效率 JSON', exact: true });
+  const csvButton = page.getByRole('button', { name: '导出效率 CSV', exact: true });
+  await expect(heading).toBeVisible();
+  await expect(jsonButton).toBeVisible();
+  await expect(csvButton).toBeVisible();
+  const headingBox = await heading.boundingBox();
+  const workspaceBox = await workspace.boundingBox();
+  const jsonBox = await jsonButton.boundingBox();
+  const csvBox = await csvButton.boundingBox();
+  expect(jsonBox.y).toBeGreaterThan(headingBox.y + headingBox.height);
+  expect(jsonBox.y).toBeGreaterThanOrEqual(workspaceBox.y + workspaceBox.height - 1);
+  expect(csvBox.y).toBeGreaterThanOrEqual(workspaceBox.y + workspaceBox.height - 1);
+  const [download] = await Promise.all([page.waitForEvent('download'), jsonButton.click()]);
+  expect(download.suggestedFilename()).toBe('efficiency-metrics.json');
+  await expect(page.locator('.zm-efficiency-export').getByRole('status')).toHaveText(
+    '已导出 JSON。',
+  );
+  const [csvDownload] = await Promise.all([page.waitForEvent('download'), csvButton.click()]);
+  expect(csvDownload.suggestedFilename()).toBe('efficiency-metrics.csv');
+  await expect(page.locator('.zm-efficiency-export').getByRole('status')).toHaveText(
+    '已导出 CSV。',
+  );
+  expect(seen.map((body) => body.payload.format)).toEqual(['json', 'csv']);
+});
+
 test('execution HTTP401 unmounts old input; another member never sees the previous draft', async ({
   page,
 }) => {
