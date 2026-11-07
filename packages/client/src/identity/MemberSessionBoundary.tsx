@@ -147,11 +147,12 @@ export function MemberSessionView({
           {showAccountHeader && (
             <header className="zm-current-account">
               <span className="zm-account-mark" aria-hidden>
-                {state.session.accountId.slice(0, 1)}
+                {(state.session.displayName ?? state.session.accountId).slice(0, 1)}
               </span>
               <span>
                 <small>当前账号</small>
-                <strong>{state.session.accountId}</strong>
+                <strong>{state.session.displayName ?? state.session.accountId}</strong>
+                {state.session.displayName && <small>{state.session.accountId}</small>}
               </span>
               <Button variant="quiet" onClick={logout}>
                 退出登录

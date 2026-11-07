@@ -35,6 +35,7 @@ function MemberWork({
   fetcher,
   accountId,
   spaceId,
+  spaceKind,
   spaceUnavailable,
   lifetime,
   appearance,
@@ -50,6 +51,7 @@ function MemberWork({
   fetcher: typeof fetch;
   accountId: string;
   spaceId: string;
+  spaceKind: 'personal' | 'team';
   spaceUnavailable(): void;
   lifetime: MemberSpaceLifetime;
   appearance?: AppearanceStore;
@@ -122,6 +124,37 @@ function MemberWork({
     [fetcher, accountId, spaceId, view],
   );
   const [refreshKey, setRefreshKey] = useState(0);
+  const [memberNames, setMemberNames] = useState<{
+    api: typeof api;
+    names: Readonly<Record<string, string>>;
+  }>();
+  useEffect(() => {
+    if (view !== 'work' || spaceKind !== 'team') return;
+    const controller = new AbortController();
+    const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(8000)]);
+    const current = () => !signal.aborted && alive.current && currentLifetime.current.isCurrent();
+    void createIdentityLifecycleApi(fetcher)
+      .members(spaceId, signal)
+      .then(
+        (value) => {
+          if (current())
+            setMemberNames({
+              api,
+              names: Object.fromEntries(
+                (value.members ?? []).map((member) => [
+                  member.accountId,
+                  member.displayName ?? member.accountId,
+                ]),
+              ),
+            });
+        },
+        () => {
+          // Optional public labels never authorize or block an execution action.
+          if (current()) setMemberNames({ api, names: {} });
+        },
+      );
+    return () => controller.abort();
+  }, [fetcher, accountId, spaceId, spaceKind, view, api, refreshKey]);
   const memberAssets = useMemo(
     () =>
       createMemberAssetApi(
@@ -246,6 +279,7 @@ function MemberWork({
             <ExecutionWorkspace
               api={api}
               refreshKey={refreshKey}
+              names={memberNames?.api === api ? memberNames.names : undefined}
               {...(nativeExecution ? { nativeRun } : {})}
             />
           </div>
@@ -356,6 +390,7 @@ export function MemberExecutionPage({
                 fetcher={fetcher}
                 accountId={session.accountId}
                 spaceId={space.id}
+                spaceKind={space.kind}
                 spaceUnavailable={spaceUnavailable}
                 lifetime={lifetime}
                 view={view ?? (workbenchAppearance ? 'catalog' : 'work')}

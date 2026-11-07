@@ -44,6 +44,7 @@ import {
 import {
   identityRegistrationSchema,
   identityPasswordChangeSchema,
+  identityProfileCommandSchema,
   identityTeamCreationSchema,
   identityTeamMembersSchema,
   identityTeamMemberCommandSchema,
@@ -75,6 +76,8 @@ export const SHARED_BACKEND_OPERATIONS = [
   'identity.logout',
   'identity.register',
   'identity.password',
+  'identity.profile.read',
+  'identity.profile.save',
   'identity.teams.read',
   'identity.teams.create',
   'identity.members.read',
@@ -249,6 +252,13 @@ const descriptors = {
     auth: true,
   },
   'identity.teams.read': { schema: empty, path: '/zhuma-id/teams', verb: 'GET', auth: false },
+  'identity.profile.read': { schema: empty, path: '/zhuma-id/profile', verb: 'GET', auth: false },
+  'identity.profile.save': {
+    schema: identityProfileCommandSchema,
+    path: '/zhuma-id/profile',
+    verb: 'POST',
+    auth: false,
+  },
   'identity.teams.create': {
     schema: identityTeamCreationSchema,
     path: '/zhuma-id/teams',

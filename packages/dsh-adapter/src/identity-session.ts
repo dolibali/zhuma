@@ -35,6 +35,7 @@ import { canonicalPayload, WorkbenchError } from '@zhuma/agent-core';
 import {
   createIdentityMemberLifecycle,
   identityLifecycleOperationSchema,
+  identityProfileSchema,
   type IdentityMemberLifecycleOptions,
 } from './identity-member-lifecycle.js';
 import { localSetupPackIds } from './host-local-setup-http.js';
@@ -269,6 +270,7 @@ export const identityDomainSpec = defineDomain({
   global: { schema: GlobalSchema, initial: identityInitialState },
   tables: {
     accounts: { valueSchema: AccountSchema },
+    profiles: { valueSchema: identityProfileSchema },
     sessions: { valueSchema: SessionSchema },
     notes: { valueSchema: NoteSchema },
     member_operations: { valueSchema: identityLifecycleOperationSchema },
@@ -1308,6 +1310,7 @@ export async function applyIdentity(
         await domain.global.set({ ...global, importComplete: true });
       },
       accounts: domain.table('accounts'),
+      profiles: domain.table('profiles'),
       operations: {
         get: (id) => domain.table('member_operations').get(id),
         put: (id, value) => domain.table('member_operations').put(id, value),
@@ -1589,9 +1592,11 @@ async function handle(
       // personal and team spaces appear here even when they hold no project
       // or note yet, and a revoked membership disappears on the next read.
       const spaces = spaceDirectoryFor(ctx)?.spacesForMember(actor.accountId) ?? [];
+      const displayName = domain.table('profiles').get(actor.accountId)?.displayName;
       send(res, 200, {
         ok: true,
         accountId: actor.accountId,
+        ...(displayName ? { displayName } : {}),
         principal: actor.principal,
         peerId: actor.peerId,
         spaces,

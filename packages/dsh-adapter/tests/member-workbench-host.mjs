@@ -24,7 +24,7 @@ export const password = 'isolated-contract-password';
 const accounts = people.map((id) => ({ id, passwordHash: hashPassword(password) }));
 export async function startMemberWorkbenchHost(
   directory,
-  { faultStage, catalog, beforeWorkbenchWrite } = {},
+  { faultStage, catalog, beforeWorkbenchWrite, lifecycle } = {},
 ) {
   const ctx = new Context();
   const fibers = [];
@@ -61,7 +61,26 @@ export async function startMemberWorkbenchHost(
       },
     );
     const identityFiber = await load(
-      { inject: [...identityInject], apply: applyIdentity },
+      {
+        inject: [...identityInject],
+        apply: lifecycle
+          ? (ctx, config) => {
+              const directory = spaceDirectoryFor(ctx);
+              const binding = {
+                directory,
+                signal: directory.signal,
+                isCurrent: () => spaceDirectoryFor(ctx) === directory,
+              };
+              return applyIdentity(
+                ctx,
+                config,
+                { currentDirectoryBinding: () => binding },
+                undefined,
+                lifecycle,
+              );
+            }
+          : applyIdentity,
+      },
       { accounts },
     );
     const trusted = spaceDirectoryFor(ctx);

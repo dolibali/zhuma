@@ -71,6 +71,26 @@ test('project results entry: normal materials tab mounts one lazy panel; overvie
   assert.match(html, /正在读取成果/);
   const overview = renderToStaticMarkup(createElement(ProjectHub, { ...props, tab: 'overview' }));
   assert.doesNotMatch(overview, /正在读取成果|成果查询尚未接通/);
+  const withFiles = {
+    ...props,
+    project: {
+      ...props.project,
+      fileRefs: [
+        {
+          spaceId: 'north',
+          assetId: 'project-file',
+          kind: 'file',
+          versionId: 'fixed-version',
+          sha256: 'a'.repeat(64),
+        },
+      ],
+    },
+  };
+  const fileOverview = renderToStaticMarkup(
+    createElement(ProjectHub, { ...withFiles, tab: 'overview' }),
+  );
+  assert.match(fileOverview, /1 项资料文件/);
+  assert.match(renderToStaticMarkup(createElement(ProjectHub, withFiles)), /资料文件/);
 });
 test('project results Client: list stays metadata-only; explicit exact version content uses original guarded member transport', async () => {
   const calls = [];

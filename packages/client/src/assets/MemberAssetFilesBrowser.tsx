@@ -256,11 +256,11 @@ export function MemberAssetFilesBrowser({
                       </td>
                       <td>{bytes === undefined ? '—' : size(bytes)}</td>
                       <td>
-                        {asset.hasDraft
-                          ? version
-                            ? `有草稿 · v${version.number}`
-                            : '草稿'
-                          : `v${version?.number ?? ''}`}
+                        {version
+                          ? `已发布 v${version.number}${asset.hasDraft ? ' · 有草稿' : ''}`
+                          : asset.hasDraft
+                            ? '草稿'
+                            : '未发布'}
                       </td>
                       <td>
                         {version ? (

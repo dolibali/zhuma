@@ -32,6 +32,37 @@ const fileRequest = (selection, query = fileQuery) =>
   );
 const fileHash = (bytes) => createHash('sha256').update(bytes).digest('hex');
 
+test('shared profile uses exact public GET/POST routes without revoking the existing member/native connection', async (t) => {
+  let name = null;
+  const h = await fixture(t, undefined, async (url, init) => {
+    assert.equal(url.pathname, '/zhuma-id/profile');
+    assert.equal(url.search, '');
+    assert.match(new Headers(init.headers).get('cookie'), /^zhuma-member=synthetic-/u);
+    if (init.method === 'POST') {
+      assert.deepEqual(JSON.parse(init.body), { displayName: '张宁' });
+      name = '张宁';
+    } else assert.equal(init.method, 'GET');
+    return Response.json({ ok: true, value: { accountId: 'ann', displayName: name } });
+  });
+  const selection = await h.selected();
+  await h.request(selection, 'identity.login', { accountId: 'ann', password: 'synthetic-only' });
+  const native = await h.owner.nativeConnection(new AbortController().signal);
+  const before = await native.authentication(new AbortController().signal);
+  assert.equal((await h.request(selection, 'identity.profile.read')).body.value.displayName, null);
+  assert.equal(
+    (await h.request(selection, 'identity.profile.save', { displayName: '张宁' })).body.value
+      .displayName,
+    '张宁',
+  );
+  assert.deepEqual(await native.authentication(new AbortController().signal), before);
+  assert.equal((await h.owner.status()).actorId, 'ann');
+  const count = h.calls.length;
+  await assert.rejects(
+    h.request(selection, 'identity.profile.save', { displayName: '伪造', accountId: 'bob' }),
+  );
+  assert.equal(h.calls.length, count);
+});
+
 test('shared member import transport retains member identity and the full bounded package without task or owner credentials', async (t) => {
   const h = await fixture(t, undefined, async (url, init) => {
     assert.equal(url.pathname, '/api/zhuma-member/asset-preview-import');
