@@ -17,6 +17,12 @@ async function openGraph(page, replay) {
   await page.goto('/');
   await page.getByRole('button', { name: /^订单协作改进/ }).click();
   await expect(page.locator('.react-flow__node')).toHaveCount(6);
+  await expect(page.getByRole('button', { name: '执行顺序 5' })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
+  await expect(page.locator('.react-flow__edge')).toHaveCount(5);
+  await page.getByRole('button', { name: '全部依赖 13' }).click();
   await expect(page.locator('.react-flow__edge')).toHaveCount(13);
 }
 
@@ -76,7 +82,14 @@ test('十三条真实依赖避开卡片，全图与侧栏及独立控件不遮�
   const surface = await page.locator('.zm-canvas-surface').boundingBox();
   const dock = await page.getByRole('toolbar', { name: '工作流视图', exact: true }).boundingBox();
   expect(dock.y).toBeGreaterThanOrEqual(surface.y + surface.height - 1);
-  await expect(page.getByText('13 条连线', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '全部依赖 13' })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
+  const full = page.getByRole('button', { name: '全部依赖 13' });
+  await page.getByRole('button', { name: '执行顺序 5' }).press('Enter');
+  await expect(page.locator('.react-flow__edge-path[marker-end]')).toHaveCount(5);
+  await full.press('Enter');
   // Selection emphasizes incident edges without dropping the other dependencies.
   await page.locator('.react-flow__node[data-id="node-2"]').click();
   await expect(page.locator('.react-flow__edge-path[style*="stroke-width: 2.5"]')).toHaveCount(4);
