@@ -11,7 +11,7 @@ const submitButton = (page, mode = 'submit') =>
   button(page, submitLabel(mode)).and(page.locator('.zm-execution-detail button'));
 async function open(page, mode) {
   await page.goto(`/?upstream-client&strict&upstream-mode=${mode}`);
-  await button(page, mode === 'revise' ? '提交新版本' : '提交产物').click();
+  await button(page, mode === 'revise' ? '提交新版本' : '打开提交').click();
   await expect(panel(page)).toContainText('确认订单接口与错误码');
   await expect(page.locator('.zm-draft-status')).toHaveText('尚未保存草稿');
 }
@@ -155,7 +155,7 @@ test('upstream a held refresh from an old API cannot leak source data into the r
     c.replaceSession();
   });
   await expect(panel(page)).toHaveCount(0);
-  await button(page, '提交产物').click();
+  await button(page, '打开提交').click();
   await expect(panel(page)).toContainText('确认订单接口与错误码');
   await expect(input(page)).toHaveValue('');
   await input(page).fill('新会话内容');

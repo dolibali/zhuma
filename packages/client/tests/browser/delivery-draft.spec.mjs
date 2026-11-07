@@ -93,7 +93,8 @@ test('draft explicit save has an independent version and one operation lane shar
     window.deliveryDraftProbe.holdSave = true;
   });
   await button(page, '保存草稿').dblclick({ force: true });
-  await expect(button(page, '提交产物')).toBeDisabled();
+  await expect(button(page, '提交产物')).toBeEnabled();
+  await expect(button(page, '提交产物')).not.toHaveAttribute('aria-busy', 'true');
   await expect(input(page)).toBeDisabled();
   await expect(status(page)).toHaveText('正在保存草稿…');
   expect(await count(page, 'save')).toBe(1);
@@ -106,6 +107,56 @@ test('draft explicit save has an independent version and one operation lane shar
   await expect(status(page)).toHaveText('已保存 · 草稿版本 8');
   await expect(input(page)).toHaveValue('已补充边界说明');
   await expect(button(page, '保存草稿')).toBeDisabled();
+});
+
+test('draft submit during an in-flight save waits for that save, then submits the same text once', async ({
+  page,
+}) => {
+  await open(page, 'draft-direct');
+  await input(page).fill('排队提交的正文');
+  await page.evaluate(() => {
+    window.deliveryDraftProbe.holdSave = true;
+    window.deliveryDraftProbe.holdSubmit = true;
+  });
+  await button(page, '保存草稿').click();
+  const submit = button(page, '提交产物');
+  await expect(submit).toBeEnabled();
+  await submit.click();
+  await expect(submit).toHaveAttribute('aria-busy', 'true');
+  await expect(submit).toContainText('正在保存后提交…');
+  await expect(submit.locator('.zm-spinner')).toBeVisible();
+  expect(await count(page, 'save')).toBe(1);
+  expect(await count(page, 'submit')).toBe(0);
+  await finish(page, 'save');
+  await expect.poll(() => count(page, 'submit')).toBe(1);
+  await expect(status(page)).toHaveText('正在提交…');
+  await expect(submit).toContainText('正在提交…');
+  expect(
+    await page.evaluate(
+      () => window.deliveryDraftProbe.calls.find((call) => call.kind === 'submit').payload,
+    ),
+  ).toMatchObject({ text: '排队提交的正文', expectedVersion: 2 });
+  await finish(page, 'submit');
+  await expect(status(page)).toHaveText('已提交，等待待办更新。');
+  expect(await count(page, 'submit')).toBe(1);
+});
+
+test('draft save failure drops a queued submit and keeps the edited text', async ({ page }) => {
+  await open(page, 'draft-direct');
+  await input(page).fill('保存失败不应提交');
+  await page.evaluate(() => {
+    window.deliveryDraftProbe.holdSave = true;
+  });
+  await button(page, '保存草稿').click();
+  await button(page, '提交产物').click();
+  await expect(button(page, '提交产物')).toContainText('正在保存后提交…');
+  await finish(page, 'save', 'failure');
+  await expect(page.getByRole('alert')).toBeVisible();
+  await expect(input(page)).toHaveValue('保存失败不应提交');
+  await expect(status(page)).toHaveText('有未保存的修改');
+  await expect(button(page, '提交产物')).toBeEnabled();
+  await expect(button(page, '提交产物')).not.toHaveAttribute('aria-busy', 'true');
+  expect(await count(page, 'submit')).toBe(0);
 });
 
 test('draft lost response retries the same key; changed text rotates the key and keeps inputs on error', async ({

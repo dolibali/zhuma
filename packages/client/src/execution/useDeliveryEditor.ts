@@ -60,6 +60,9 @@ export function useDeliveryEditor(
   const [failure, setFailure] = useState<{ context: string; message: string; conflict: boolean }>();
   const [completed, setCompleted] = useState<string>();
   const retry = useRef({ fingerprint: '', key: '' });
+  const submitAfterSave = useRef(false);
+  const [submitQueued, setSubmitQueued] = useState(false);
+  const writeRef = useRef<(kind: 'save' | 'submit') => Promise<void>>(async () => undefined);
   const saved = stored?.context === context ? stored.value : undefined;
   const candidate = proposal?.context === context ? proposal.value : undefined;
   const error = failure?.context === context ? failure.message : '';
@@ -251,6 +254,7 @@ export function useDeliveryEditor(
     return payload;
   }
   const canWrite = available && !submitted && !!saved && !pending && !candidate && !conflict;
+  const upstreamBlocked = node.inputs?.some((input) => input.blocking) === true;
   function addFile(receipt: FileUploadReceipt): boolean {
     if (
       !mounted.current ||
@@ -271,10 +275,18 @@ export function useDeliveryEditor(
     return true;
   }
   const incompleteFiles = values.files.some((file) => !file.uploadComplete);
+  const canSubmit =
+    available &&
+    !submitted &&
+    !!saved &&
+    !candidate &&
+    !conflict &&
+    !incompleteFiles &&
+    !upstreamBlocked &&
+    (pending === '' || pending === 'save');
   async function write(kind: 'save' | 'submit') {
     if (!canWrite || !saved || active.current?.context === context) return;
-    if (kind === 'submit' && (node.inputs?.some((input) => input.blocking) || incompleteFiles))
-      return;
+    if (kind === 'submit' && (upstreamBlocked || incompleteFiles)) return;
     const payload = validate(kind === 'submit');
     if (!payload) return;
     const op = begin(kind);
@@ -289,6 +301,7 @@ export function useDeliveryEditor(
     if (retry.current.fingerprint !== fingerprint)
       retry.current = { fingerprint, key: crypto.randomUUID() };
     const body = { ...request, idempotencyKey: retry.current.key };
+    let savedOk = false;
     try {
       if (kind === 'save') {
         const value = await api.saveDeliveryDraft(body, op.abort.signal);
@@ -296,6 +309,7 @@ export function useDeliveryEditor(
         setStored({ context, value });
         removedFiles.current.clear();
         touched.current.files = false;
+        savedOk = true;
       } else {
         const next = await api.submit(body, op.abort.signal);
         if (!current(op)) return;
@@ -311,8 +325,32 @@ export function useDeliveryEditor(
     } catch (error) {
       fail(op, error);
     } finally {
+      // A failed or superseded save must not continue into submit.
+      const keepQueue = kind === 'save' && savedOk && submitAfterSave.current && current(op);
+      if (kind === 'save' && !keepQueue) {
+        submitAfterSave.current = false;
+        setSubmitQueued(false);
+      }
       finish(op);
     }
+  }
+  writeRef.current = write;
+  useEffect(() => {
+    if (!submitAfterSave.current || pending || !canWrite) return;
+    submitAfterSave.current = false;
+    setSubmitQueued(false);
+    void writeRef.current('submit');
+  }, [pending, canWrite]);
+  function submit() {
+    if (!canSubmit) return;
+    if (active.current?.context === context && active.current.kind === 'save') {
+      if (!submitAfterSave.current) {
+        submitAfterSave.current = true;
+        setSubmitQueued(true);
+      }
+      return;
+    }
+    return write('submit');
   }
   return {
     values,
@@ -329,8 +367,10 @@ export function useDeliveryEditor(
     dirty,
     submitted,
     canWrite,
+    canSubmit,
+    submitQueued,
     read: () => read(true),
     save: () => write('save'),
-    submit: () => write('submit'),
+    submit,
   };
 }

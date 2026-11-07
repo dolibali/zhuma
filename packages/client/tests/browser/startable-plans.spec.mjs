@@ -46,7 +46,7 @@ test('normal member entry discovers and selects without executing; explicit star
 }) => {
   await setup(page, true);
   await expect(page.getByRole('heading', { name: '我的工作', exact: true })).toBeVisible();
-  await button(page, '提交产物').click();
+  await button(page, '打开提交').click();
   await page.getByLabel('补充说明（选填）', { exact: true }).fill('正在处理的交付草稿');
   await choose(page, base);
   await button(page, '刷新计划').click();
