@@ -850,9 +850,10 @@ export function TaskEditor({
       {nativeRun?.api.workflow &&
         api.member &&
         (api.member.actorId === task.ownerId ||
-          task.workflows.some((flow) =>
-            flow.nodes.some((node) => node.assigneeId === api.member?.actorId),
-          )) &&
+          (nativeRun.api.workflow.controlScope === 'member-nodes' &&
+            task.workflows.some((flow) =>
+              flow.nodes.some((node) => node.assigneeId === api.member?.actorId),
+            ))) &&
         task.status === 'ready' &&
         applied &&
         !dirty && (

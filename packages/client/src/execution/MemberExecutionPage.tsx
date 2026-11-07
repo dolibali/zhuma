@@ -182,6 +182,10 @@ function MemberWork({
     const { workspaceApprovals: _approvals, ...localNativeApi } = api;
     return {
       ...localNativeApi,
+      // This transport binds remote membership and controls only this member's nodes.
+      ...(api.workflow
+        ? { workflow: { ...api.workflow, controlScope: 'member-nodes' as const } }
+        : {}),
       review: createNativeReviewApi(
         nativeFetcher,
         accountId,

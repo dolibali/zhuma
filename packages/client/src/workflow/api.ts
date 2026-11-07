@@ -70,6 +70,8 @@ export type WorkflowControl = WorkflowTarget & {
   readonly generation: number;
 };
 export interface WorkflowApi {
+  /** Bound transport's presentation scope, not a grant; every call is still authorized by Host. */
+  readonly controlScope?: 'task-owner' | 'member-nodes';
   options(target: WorkflowTarget, signal: AbortSignal): Promise<WorkflowOptions>;
   read(target: WorkflowTarget, signal: AbortSignal): Promise<WorkflowView>;
   start(input: WorkflowStart, signal: AbortSignal): Promise<WorkflowView>;
@@ -289,6 +291,7 @@ export function createWorkflowApi(
     generation: input.generation,
   });
   return {
+    controlScope: 'task-owner',
     async options(target, signal) {
       return options(await call('options', location(target), signal), location(target));
     },
