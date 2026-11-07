@@ -133,6 +133,7 @@ function Workspace({ api, plan, refreshKey, nativeRun, names }: Props) {
       <InboxPanel
         items={items}
         nodes={nodes}
+        names={names}
         {...(places === undefined ? {} : { places })}
         error={error}
         pending={pending}

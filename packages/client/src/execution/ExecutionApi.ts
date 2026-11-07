@@ -107,6 +107,7 @@ export interface InboxPlaceWire {
   readonly itemId: string;
   readonly taskPath: string;
   readonly ownerName: string;
+  readonly ownerId?: string;
 }
 
 export function readInboxPlaces(value: unknown): readonly InboxPlaceWire[] | undefined {
@@ -118,6 +119,7 @@ export function readInboxPlaces(value: unknown): readonly InboxPlaceWire[] | und
       itemId: text(item.itemId, '工作项'),
       taskPath: typeof item.taskPath === 'string' ? item.taskPath.trim() : '',
       ownerName: typeof item.ownerName === 'string' ? item.ownerName.trim() : '',
+      ...(item.ownerId === undefined ? {} : { ownerId: text(item.ownerId, '任务负责人') }),
     };
   });
 }

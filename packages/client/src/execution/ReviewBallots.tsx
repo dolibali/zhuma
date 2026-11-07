@@ -1,4 +1,5 @@
 import type { ExecutionBallotWire } from './ExecutionApi.js';
+import { memberName } from './member-name.js';
 
 /** Shared read-only presentation for persisted review ballots. */
 export function ReviewBallots({
@@ -13,7 +14,7 @@ export function ReviewBallots({
     <div className="zm-execution-ballots" aria-label="本轮意见">
       {ballots.map((ballot, index) => (
         <p key={index}>
-          <strong>{names?.[ballot.reviewerId] || ballot.reviewerId}</strong> ·{' '}
+          <strong>{memberName(names, ballot.reviewerId)}</strong> ·{' '}
           {ballot.action === 'approve'
             ? '通过'
             : ballot.action === 'request-changes'

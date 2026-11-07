@@ -8,6 +8,7 @@ import {
 } from '../execution-view.js';
 import { Button } from '../workbench/Button.js';
 import type { ExecutionNodeWire, InboxPlaceWire } from './ExecutionApi.js';
+import { memberName } from './member-name.js';
 
 function statusLabel(status: string): string {
   return status in NODE_STATUS_LABELS ? NODE_STATUS_LABELS[status as NodeStatus] : status;
@@ -38,6 +39,7 @@ export function InboxPanel({
   items,
   nodes,
   places,
+  names,
   error,
   pending = false,
   reload,
@@ -47,6 +49,7 @@ export function InboxPanel({
   items: readonly InboxItem[];
   nodes: readonly ExecutionNodeWire[];
   places?: readonly InboxPlaceWire[];
+  names?: Readonly<Record<string, string>> | undefined;
   error?: string;
   pending?: boolean;
   reload(): void;
@@ -132,7 +135,12 @@ export function InboxPanel({
                             {statusLabel(node.status)}
                           </span>
                         )}
-                        <span>任务负责人：{place?.ownerName || '未提供'}</span>
+                        <span>
+                          任务负责人：
+                          {place?.ownerId
+                            ? memberName(names, place.ownerId)
+                            : place?.ownerName || '未提供'}
+                        </span>
                       </div>
                       {view.detail && <p className="zm-inbox-detail">{view.detail}</p>}
                       {node?.blockReason && <small>{node.blockReason}</small>}
