@@ -996,6 +996,7 @@ export interface InboxPlace {
   readonly itemId: string;
   readonly taskPath: string;
   readonly ownerName: string;
+  readonly ownerId?: string;
 }
 
 export interface InboxCounts {
@@ -1040,7 +1041,12 @@ function inboxPlace(workbench: Workbench, item: InboxItem): InboxPlace {
   const owner = task?.ownerId
     ? workbench.participants.find((person) => person.id === task.ownerId)
     : undefined;
-  return { itemId: item.id, taskPath: titles.join(' / '), ownerName: owner?.name.trim() ?? '' };
+  return {
+    itemId: item.id,
+    taskPath: titles.join(' / '),
+    ownerName: owner?.name.trim() ?? '',
+    ...(task?.ownerId ? { ownerId: task.ownerId } : {}),
+  };
 }
 
 function countInbox(

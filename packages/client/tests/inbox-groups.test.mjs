@@ -6,6 +6,8 @@ import { InboxPanel } from '../dist/execution/InboxPanel.js';
 import { inboxItemGroup, INBOX_GROUPS } from '../dist/execution-view.js';
 import { createExecutionApi, readInboxPlaces } from '../dist/execution/ExecutionApi.js';
 import { groupedInbox } from './inbox-groups-fixture.mjs';
+import { ReviewBallots } from '../dist/execution/ReviewBallots.js';
+import { memberName } from '../dist/execution/member-name.js';
 
 const render = (props = {}) =>
   renderToStaticMarkup(
@@ -111,6 +113,49 @@ test('places projection: missing fields remain unknown, extra identities never b
   assert.ok(html.includes('服务给出的路径'));
   assert.ok(!html.includes('private-'));
   assert.equal(readInboxPlaces(undefined), undefined);
+});
+
+test('inbox stable owner uses current public names; legacy labels and unknown identities never infer a person', () => {
+  const places = groupedInbox().places.map((p) => ({
+    ...p,
+    ownerId: 'chen',
+    ownerName: '旧显示标签',
+  }));
+  const names = { chen: '陈嘉宁', 旧显示标签: '不能反推的姓名' };
+  const html = render({ places: readInboxPlaces(places), names });
+  assert.ok(html.includes('任务负责人：陈嘉宁'));
+  assert.ok(!html.includes('旧显示标签'));
+  assert.ok(
+    render({ places: places.map((p) => ({ ...p, ownerId: 'departed' })), names }).includes(
+      '任务负责人：departed',
+    ),
+  );
+  const legacy = render({ places: places.map(({ ownerId, ...p }) => p), names });
+  assert.ok(legacy.includes('任务负责人：旧显示标签'));
+  assert.ok(!legacy.includes('不能反推的姓名'));
+  for (const ownerId of [null, '', 123])
+    assert.throws(() => readInboxPlaces([{ itemId: 'item', ownerId }]));
+});
+
+test('public name labels use only own strings, including legitimate constructor and prototype-looking IDs', () => {
+  for (const id of ['constructor', '__proto__', 'toString', 'unknown']) {
+    assert.equal(memberName({}, id), id);
+    assert.equal(memberName(Object.create({ [id]: 'inherited person' }), id), id);
+    assert.equal(memberName({ [id]: () => 'not a name' }, id), id);
+    assert.equal(memberName({ [id]: '当前真实姓名' }, id), '当前真实姓名');
+  }
+  const html = renderToStaticMarkup(
+    createElement(ReviewBallots, {
+      names: {},
+      ballots: [{ reviewerId: 'constructor', action: 'comment' }],
+    }),
+  );
+  assert.ok(html.includes('<strong>constructor</strong>'));
+  const inbox = render({
+    places: groupedInbox().places.map((p) => ({ ...p, ownerId: 'constructor' })),
+    names: {},
+  });
+  assert.ok(inbox.includes('任务负责人：constructor'));
 });
 
 for (const value of [null, {}, [null], [{ taskPath: 'no item identifier' }], [{ itemId: '' }]])

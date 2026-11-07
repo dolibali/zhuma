@@ -312,6 +312,7 @@ export interface InboxPlace {
   readonly itemId: string;
   readonly taskPath: string;
   readonly ownerName: string;
+  readonly ownerId?: string;
 }
 export interface InboxCounts {
   readonly actorId: string;

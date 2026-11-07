@@ -81,6 +81,12 @@ async function replay(page) {
       ];
       result = { ...inbox([node]), actorId: control.actor, spaceId: request.payload.spaceId };
       result.items = result.items.map((item) => ({ ...item, actorId: control.actor }));
+      result.places = result.items.map((item) => ({
+        itemId: item.id,
+        taskPath: '产品团队 / 接口确认',
+        ownerId: 'outside',
+        ownerName: 'outside',
+      }));
     } else if (request.method === 'zhuma-exec/ballot') {
       control.ballots = [...(control.ballots ?? []), request.payload];
       result = { node: reviewNode };
@@ -352,6 +358,9 @@ for (const unavailable of [false, true])
     control.profiles.set('outside', '林子涵');
     control.directoryFailure = unavailable;
     await page.goto('/?member-profile&profile-work&strict');
+    await expect(
+      page.getByRole('article', { name: '确认订单状态接口', exact: true }),
+    ).toContainText(`任务负责人：${unavailable ? 'outside' : '林子涵'}`);
     await page
       .getByRole('article', { name: '确认订单状态接口', exact: true })
       .getByRole('button')

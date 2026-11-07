@@ -3755,6 +3755,31 @@ html[data-platform='darwin'] .zhuma .zm-space-bar {
   border-color: var(--zm-accent);
   border-left-width: 3px;
 }
+/* The whole work tree is a navigation overview; detailed node configuration
+   remains in its local workflow and the existing side panel. */
+.zm-flow-node.zm-flow-tree {
+  width: 200px;
+  padding: 10px 12px;
+}
+.zm-flow-tree strong {
+  min-height: 0;
+  -webkit-line-clamp: 2;
+}
+.zm-flow-tree .zm-flow-context {
+  font-size: 11px;
+  margin-bottom: 6px;
+}
+.zm-flow-tree .zm-flow-assignee {
+  margin-top: 8px;
+}
+.zm-flow-tree .zm-avatar {
+  width: 22px;
+  height: 22px;
+}
+.zm-flow-tree .zm-flow-footer,
+.zm-flow-tree .zm-flow-assignee small {
+  display: none;
+}
 .zm-flow-context {
   display: flex;
   gap: 8px;
