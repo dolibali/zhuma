@@ -28,7 +28,11 @@ export function AccountTeamsDialog({
     account.epoch === initialAccount.current.epoch &&
     account.session.accountId === initialAccount.current.session.accountId;
   const api = useMemo(() => createIdentityLifecycleApi(fetcher), [fetcher]);
-  const [tab, setTab] = useState<'teams' | 'password'>('teams');
+  const [tab, setTab] = useState<'profile' | 'teams' | 'password'>('teams');
+  const [displayName, setDisplayName] = useState('');
+  const [savedName, setSavedName] = useState('');
+  const [profileLoaded, setProfileLoaded] = useState(false);
+  const [profileNotice, setProfileNotice] = useState('');
   const [teams, setTeams] = useState<readonly MemberTeam[]>([]);
   const [selected, setSelected] = useState<string>();
   const [members, setMembers] = useState<TeamMembers>();
@@ -106,6 +110,18 @@ export function AccountTeamsDialog({
       active.current = undefined;
     };
   }, [api, account?.epoch]);
+  const readProfile = () =>
+    perform(async (signal) => {
+      const value = await api.profile(account!.session.accountId, signal);
+      if (!current() || signal.aborted) return;
+      setDisplayName(value.displayName ?? '');
+      setSavedName(value.displayName ?? '');
+      setProfileLoaded(true);
+      setProfileNotice('');
+    });
+  useEffect(() => {
+    if (sameAccount && tab === 'profile') void readProfile();
+  }, [tab, api, account?.epoch]);
   if (!account || !sameAccount) return null;
   const administrator = members?.administratorId === account.session.accountId;
   const controlsDisabled = busy || !administrator;
@@ -114,12 +130,21 @@ export function AccountTeamsDialog({
       <div className="zhuma zm-form-body zm-account-management">
         <nav className="zm-tabs" aria-label="账号管理">
           <button
+            disabled={busy}
+            aria-current={tab === 'profile' ? 'page' : undefined}
+            onClick={() => setTab('profile')}
+          >
+            个人资料
+          </button>
+          <button
+            disabled={busy}
             aria-current={tab === 'teams' ? 'page' : undefined}
             onClick={() => setTab('teams')}
           >
             团队
           </button>
           <button
+            disabled={busy}
             aria-current={tab === 'password' ? 'page' : undefined}
             onClick={() => setTab('password')}
           >
@@ -131,7 +156,61 @@ export function AccountTeamsDialog({
             {error}
           </p>
         )}
-        {tab === 'teams' ? (
+        {tab === 'profile' ? (
+          <form
+            className="zm-password-change"
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (!profileLoaded) return;
+              void perform(async (signal) => {
+                const value = await api.setProfile(
+                  account.session.accountId,
+                  { displayName },
+                  signal,
+                );
+                if (signal.aborted || !current()) return;
+                if (!shell.session.profileUpdated(account.epoch, value)) return;
+                setDisplayName(value.displayName ?? '');
+                setSavedName(value.displayName ?? '');
+                setProfileNotice('姓名已保存');
+              });
+            }}
+          >
+            <fieldset disabled={busy || !profileLoaded}>
+              <legend className="zm-sr-only">个人资料</legend>
+              <Field label="登录账号">
+                <input value={account.session.accountId} readOnly />
+              </Field>
+              <Field label="显示姓名">
+                <input
+                  autoComplete="name"
+                  maxLength={80}
+                  value={displayName}
+                  placeholder={account.session.accountId}
+                  onChange={(event) => {
+                    setDisplayName(event.target.value);
+                    setProfileNotice('');
+                  }}
+                />
+              </Field>
+            </fieldset>
+            <p className="zm-muted">留空时显示登录账号。</p>
+            {profileNotice && <p role="status">{profileNotice}</p>}
+            <div className="zm-actions">
+              <Button
+                type="submit"
+                variant="primary"
+                busy={busy}
+                disabled={!profileLoaded || displayName.trim() === savedName}
+              >
+                保存姓名
+              </Button>
+              <Button disabled={busy} onClick={() => void readProfile()}>
+                重新读取
+              </Button>
+            </div>
+          </form>
+        ) : tab === 'teams' ? (
           <>
             <form
               className="zm-team-create"
@@ -194,7 +273,10 @@ export function AccountTeamsDialog({
                     {members.accountIds.map((id) => (
                       <div className="zm-team-member" key={id}>
                         <span>
-                          {id}
+                          {members.members?.find((m) => m.accountId === id)?.displayName ?? id}
+                          {members.members?.find((m) => m.accountId === id)?.displayName && (
+                            <small>{id}</small>
+                          )}
                           {id === members.administratorId && <small>管理员</small>}
                         </span>
                         {administrator &&

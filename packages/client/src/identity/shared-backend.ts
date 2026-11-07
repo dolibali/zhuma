@@ -102,6 +102,8 @@ const targets = {
   '/api/zhuma-efficiency/export': ['POST', 'efficiency.export'],
 } as const;
 function target(path: string, method: string): readonly [string, string] {
+  if (path === '/zhuma-id/profile' && (method === 'GET' || method === 'POST'))
+    return [method, method === 'GET' ? 'identity.profile.read' : 'identity.profile.save'];
   if (path === '/zhuma-id/teams')
     return [method, method === 'GET' ? 'identity.teams.read' : 'identity.teams.create'];
   if (path === '/zhuma-id/team-members')

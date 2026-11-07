@@ -1,6 +1,7 @@
 import type { Context } from '@deepseek-ai/cordis';
 import { WorkbenchError } from '@zhuma/agent-core';
 import { identityDomainSpec } from './identity-session.js';
+import { identityProfileSchema } from './identity-member-lifecycle.js';
 import { spaceDirectoryFor } from './space-directory.js';
 import type { MemberWorkbenchDirectory } from './member-workbench-dto.js';
 
@@ -59,9 +60,14 @@ export function memberWorkbenchDirectoryFor(ctx: Context): MemberWorkbenchDirect
       membersForSpace: (spaceId) =>
         read(() => {
           if (!spaces.space(spaceId)) unavailable();
-          const members: { id: string }[] = [];
+          const members: { id: string; name?: string }[] = [];
           for (const id of identity.table('accounts').keys()) {
-            if (spaces.isMember(spaceId, id)) members.push({ id });
+            if (spaces.isMember(spaceId, id)) {
+              const raw = identity.table('profiles').get(id);
+              const name =
+                raw === undefined ? undefined : identityProfileSchema.parse(raw).displayName;
+              members.push({ id, ...(name ? { name } : {}) });
+            }
           }
           return members.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
         }),

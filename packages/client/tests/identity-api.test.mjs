@@ -10,6 +10,21 @@ const session = {
   spaces: [],
 };
 
+test('session name is optional public metadata; it never replaces the original principal or account ID', async () => {
+  const value = await createIdentityApi(async () =>
+    Response.json({ ...session, displayName: '张宁', passwordHash: 'PRIVATE' }),
+  ).session();
+  assert.equal(value.displayName, '张宁');
+  assert.equal(value.accountId, session.accountId);
+  assert.deepEqual(value.principal, session.principal);
+  assert.equal(JSON.stringify(value).includes('PRIVATE'), false);
+  for (const displayName of [null, '', 'x'.repeat(81), 'line\nbreak', { name: 'PRIVATE' }])
+    await assert.rejects(
+      createIdentityApi(async () => Response.json({ ...session, displayName })).session(),
+      { code: 'invalid-response' },
+    );
+});
+
 test('identity HTTP contract: same-origin exact routes, explicit credential fields and no owner RPC', async () => {
   const requests = [];
   const api = createIdentityApi(async (url, init) => {

@@ -19,6 +19,7 @@ type Props = {
   api: ExecutionApi;
   plan?: ExecutionPlan;
   refreshKey?: number;
+  names?: Readonly<Record<string, string>> | undefined;
   nativeRun?: { api: NativeRunApi; spaceId: string };
 };
 type Selection = { item: InboxItem; identity: string; token: object };
@@ -26,7 +27,7 @@ export function ExecutionWorkspace(props: Props) {
   const key = useFormKey(props.api, 'workspace');
   return <Workspace key={key} {...props} />;
 }
-function Workspace({ api, plan, refreshKey, nativeRun }: Props) {
+function Workspace({ api, plan, refreshKey, nativeRun, names }: Props) {
   const [items, setItems] = useState<readonly InboxItem[]>([]);
   const [nodes, setNodes] = useState<readonly ExecutionNodeWire[]>([]);
   const [places, setPlaces] = useState<readonly InboxPlaceWire[]>();
@@ -144,6 +145,7 @@ function Workspace({ api, plan, refreshKey, nativeRun }: Props) {
         <ReviewWorkspace
           api={api}
           node={node}
+          names={names}
           focusRequest={selected.token}
           {...(nativeRun?.api.review
             ? { nativeReview: { api: nativeRun.api.review, spaceId: nativeRun.spaceId } }

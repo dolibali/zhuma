@@ -32,6 +32,18 @@ export const identityPasswordChangeSchema = z.strictObject({
   oldPassword: z.string().min(1).max(200),
   newPassword: password,
 });
+const displayName = z
+  .string()
+  .trim()
+  .max(80)
+  .refine((value) => !/[\u0000-\u001f\u007f-\u009f]/u.test(value));
+export const identityProfileCommandSchema = z.strictObject({ displayName });
+/** Public metadata only; credentials remain in the original accounts table. */
+export const identityProfileSchema = z.strictObject({ displayName: displayName.min(1) });
+export interface IdentityPublicProfile {
+  readonly accountId: string;
+  readonly displayName: string | null;
+}
 
 /** Private recovery intents live in the ORIGINAL identity domain, never a read grant. */
 export const identityLifecycleOperationSchema = z.discriminatedUnion('kind', [
@@ -64,6 +76,8 @@ export interface IdentityTeamView {
 }
 export interface IdentityMemberLifecycleHandle {
   readonly signal: AbortSignal;
+  profile(request: MemberRequest): Promise<IdentityPublicProfile>;
+  setProfile(request: MemberRequest, input: unknown): Promise<IdentityPublicProfile>;
   register(
     request: MemberRequest,
     input: unknown,
@@ -93,6 +107,7 @@ export interface IdentityMemberLifecycleHandle {
     readonly spaceId: string;
     readonly administratorId: string | null;
     readonly accountIds: readonly string[];
+    readonly members?: readonly IdentityPublicProfile[];
   }>;
   setMember(
     request: MemberRequest,
@@ -118,9 +133,15 @@ export interface IdentityMemberLifecycleSource {
   exclusive<T>(work: () => Promise<T>): Promise<T>;
   prepareRegistration(): Promise<void>;
   accounts: {
+    keys(): Iterable<string>;
     get(id: string): IdentityLifecycleAccount | undefined;
     put(id: string, account: IdentityLifecycleAccount): Promise<void>;
     readonly size: number;
+  };
+  profiles: {
+    get(id: string): z.infer<typeof identityProfileSchema> | undefined;
+    put(id: string, value: z.infer<typeof identityProfileSchema>): Promise<void>;
+    delete(id: string): Promise<boolean>;
   };
   operations: {
     get(id: string): Operation | undefined;
@@ -143,6 +164,11 @@ const parse = <T>(schema: z.ZodType<T>, raw: unknown): T => {
 export function createIdentityMemberLifecycle(
   source: IdentityMemberLifecycleSource,
 ): IdentityMemberLifecycleHandle {
+  const accountExists = (id: string) => [...source.accounts.keys()].includes(id);
+  const profile = (id: string): IdentityPublicProfile => ({
+    accountId: id,
+    displayName: source.profiles.get(id)?.displayName ?? null,
+  });
   function check(request: MemberRequest) {
     if (source.signal.aborted) return fail('unavailable');
     source.check(request);
@@ -166,23 +192,26 @@ export function createIdentityMemberLifecycle(
       dir: OpenedSpaceDirectoryHandle,
       assert: (space?: string) => void,
     ) => Promise<T>,
+    requireSpace = true,
   ) {
     check(request);
     const lease = await source.lease(request).catch(() => fail('unauthenticated'));
     try {
       const dir = directory();
       const anchor = dir.spacesForMember(lease.memberId)[0]?.id;
-      if (!anchor) return fail('not-found');
-      const assert = (space = anchor) => {
+      if (requireSpace && !anchor) return fail('not-found');
+      const assert = (space = requireSpace ? anchor : undefined) => {
         check(request);
         if (directory() !== dir) return fail('unavailable');
-        if (!dir.space(space) || !dir.isMember(space, lease.memberId)) return fail('not-found');
+        if (lease.signal.aborted || lease.expiresAt <= Date.now()) return fail('unauthenticated');
+        if (space !== undefined && (!dir.space(space) || !dir.isMember(space, lease.memberId)))
+          return fail('not-found');
         try {
-          lease.assertCurrent(space);
+          if (space !== undefined) lease.assertCurrent(space);
         } catch {
           return fail('unauthenticated');
         }
-        if (!source.accounts.get(lease.memberId)) return fail('unauthenticated');
+        if (!accountExists(lease.memberId)) return fail('unauthenticated');
       };
       assert();
       return await source.exclusive(async () => {
@@ -199,6 +228,32 @@ export function createIdentityMemberLifecycle(
   }
   return Object.freeze<IdentityMemberLifecycleHandle>({
     signal: source.signal,
+    async profile(request) {
+      return member(
+        request,
+        async (lease, _dir, assert) => {
+          const value = profile(lease.memberId);
+          assert();
+          return value;
+        },
+        false,
+      );
+    },
+    async setProfile(request, raw) {
+      const input = parse(identityProfileCommandSchema, raw);
+      return member(
+        request,
+        async (lease, _dir, assert) => {
+          assert();
+          if (input.displayName)
+            await source.profiles.put(lease.memberId, { displayName: input.displayName });
+          else await source.profiles.delete(lease.memberId);
+          assert();
+          return profile(lease.memberId);
+        },
+        false,
+      );
+    },
     async register(request, raw) {
       check(request);
       const input = parse(identityRegistrationSchema, raw);
@@ -339,12 +394,11 @@ export function createIdentityMemberLifecycle(
       return member(request, async (_lease, dir, assert) => {
         assert(input.spaceId);
         if (dir.space(input.spaceId)?.kind !== 'team') return fail('not-found');
-        const accountIds = dir
-          .memberIdsForSpace(input.spaceId)
-          .filter((id) => source.accounts.get(id) !== undefined);
+        const accountIds = dir.memberIdsForSpace(input.spaceId).filter(accountExists);
+        const members = accountIds.map(profile);
         const administratorId = dir.administratorForSpace(input.spaceId) ?? null;
         assert(input.spaceId);
-        return { spaceId: input.spaceId, administratorId, accountIds };
+        return { spaceId: input.spaceId, administratorId, accountIds, members };
       });
     },
     async setMember(request, raw) {

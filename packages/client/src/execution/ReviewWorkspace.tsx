@@ -28,13 +28,14 @@ type Props = {
   node: ExecutionNodeWire;
   nativeReview?: { api: NativeReviewApi; spaceId: string };
   focusRequest?: object;
+  names?: Readonly<Record<string, string>> | undefined;
   onSubmitted(node: ExecutionNodeWire): void;
 };
 export function ReviewWorkspace(props: Props) {
   const key = useFormKey(props.api, reviewIdentity(props.node));
   return <ReviewForm key={key} {...props} />;
 }
-function ReviewForm({ api, node, onSubmitted, nativeReview, focusRequest }: Props) {
+function ReviewForm({ api, node, onSubmitted, nativeReview, focusRequest, names }: Props) {
   const titleId = useId();
   const panel = useRef<HTMLElement>(null);
   const heading = useRef<HTMLHeadingElement>(null);
@@ -220,7 +221,7 @@ function ReviewForm({ api, node, onSubmitted, nativeReview, focusRequest }: Prop
             aria-label="已有评审意见"
             tabIndex={round?.ballots.length ? 0 : undefined}
           >
-            <ReviewBallots ballots={round?.ballots ?? []} />
+            <ReviewBallots ballots={round?.ballots ?? []} names={names} />
           </div>
           <Field label="评审意见">
             <textarea

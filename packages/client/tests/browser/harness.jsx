@@ -9,6 +9,7 @@ import { DeliveryDraftProbe } from './delivery-draft-probe.jsx';
 import { InboxGroupsProbe } from './inbox-groups-probe.jsx';
 import { MemberExecutionPage } from '../../src/execution/MemberExecutionPage.js';
 import { MemberWorkbenchProbe } from './member-workbench-probe.jsx';
+import { MemberProfileProbe } from './member-profile-probe.jsx';
 import { MemberLoginProbe } from './member-login-probe.jsx';
 import { MemberSpacesProbe } from './member-spaces-probe.jsx';
 import { MemberExecutionSpacesProbe } from './member-execution-spaces-probe.jsx';
@@ -68,7 +69,9 @@ function MountProbe() {
     </>
   );
 }
-const content = new URL(location.href).searchParams.has('member-account') ? (
+const content = new URL(location.href).searchParams.has('member-profile') ? (
+  <MemberProfileProbe appearance={appearance} />
+) : new URL(location.href).searchParams.has('member-account') ? (
   createMemberAccountProbe()
 ) : new URL(location.href).searchParams.has('startable-plans') ? (
   <StartableProbe />

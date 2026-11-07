@@ -9,7 +9,16 @@ export const MEMBER_ROUTE_TUPLES = Object.freeze(
       ['HEAD', path],
     ]),
     ['GET', '/zhuma-id/session'],
-    ...post('/zhuma-id', ['login', 'logout', 'register', 'password', 'teams', 'team-members']),
+    ...post('/zhuma-id', [
+      'login',
+      'logout',
+      'register',
+      'password',
+      'teams',
+      'team-members',
+      'profile',
+    ]),
+    ['GET', '/zhuma-id/profile'],
     ['GET', '/zhuma-id/teams'],
     ['GET', '/zhuma-id/team-members'],
     ...post('/api/zhuma-member', [

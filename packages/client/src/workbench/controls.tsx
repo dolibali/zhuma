@@ -99,7 +99,7 @@ export function MemberPicker({
   const [search, setSearch] = useState('');
   const groupId = useId();
   const matching = members.filter((member) =>
-    `${member.name} ${member.role} ${member.capabilities.join(' ')}`
+    `${member.name} ${member.id} ${member.role} ${member.capabilities.join(' ')}`
       .toLowerCase()
       .includes(search.toLowerCase()),
   );
@@ -150,6 +150,9 @@ export function MemberPicker({
                   </span>
                   <span>
                     <strong>{m.name}</strong>
+                    {!roleMode && !m.placeholder && m.kind === 'human' && m.name !== m.id && (
+                      <small>{m.id}</small>
+                    )}
                     <small title={m.role || m.capabilities.join(' · ')}>
                       {m.role || m.capabilities.join(' · ') || '尚未填写职责'}
                       {!m.available && (m.placeholder ? ' · 待绑定' : ' · 不可用')}

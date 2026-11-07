@@ -10,6 +10,7 @@ const endpoints = [
   '/zhuma-id/password',
   '/zhuma-id/teams',
   '/zhuma-id/team-members',
+  '/zhuma-id/profile',
 ] as const;
 const statusFor = (code: string): number => {
   if (code === 'validation') return 400;
@@ -74,7 +75,10 @@ export function openIdentityMemberHttp(
       const url = new URL(req.url ?? path, 'http://dsh.internal');
       const method = req.method ?? 'GET';
       const get =
-        method === 'GET' && (path === '/zhuma-id/teams' || path === '/zhuma-id/team-members');
+        method === 'GET' &&
+        (path === '/zhuma-id/teams' ||
+          path === '/zhuma-id/team-members' ||
+          path === '/zhuma-id/profile');
       if (!get && method !== 'POST') {
         send(res, 405, { ok: false, error: 'method-not-allowed' });
         return;
@@ -111,17 +115,21 @@ export function openIdentityMemberHttp(
       signal.throwIfAborted();
       // Pass the original request, including its actual socket address for admission budgets.
       const value =
-        path === '/zhuma-id/register'
-          ? await handle.register(req, payload)
-          : path === '/zhuma-id/password'
-            ? await handle.changePassword(req, payload)
-            : path === '/zhuma-id/teams'
-              ? get
-                ? await handle.teams(req)
-                : await handle.createTeam(req, payload)
-              : get
-                ? await handle.members(req, payload)
-                : await handle.setMember(req, payload);
+        path === '/zhuma-id/profile'
+          ? get
+            ? await handle.profile(req)
+            : await handle.setProfile(req, payload)
+          : path === '/zhuma-id/register'
+            ? await handle.register(req, payload)
+            : path === '/zhuma-id/password'
+              ? await handle.changePassword(req, payload)
+              : path === '/zhuma-id/teams'
+                ? get
+                  ? await handle.teams(req)
+                  : await handle.createTeam(req, payload)
+                : get
+                  ? await handle.members(req, payload)
+                  : await handle.setMember(req, payload);
       // Disconnect ends waiting, not an admitted durable identity operation.
       if (!signal.aborted && !res.destroyed) send(res, 200, { ok: true, value });
     } catch (error) {
