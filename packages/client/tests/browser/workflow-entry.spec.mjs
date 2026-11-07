@@ -129,7 +129,7 @@ async function open(page, { actor = 'outside', remote = false, error } = {}) {
       });
     throw Error('Unexpected fixture route: ' + path);
   });
-  await page.goto('/?member-workbench&workflow-native' + (remote ? '&remote-native' : ''));
+  await page.goto('/?member-workbench' + (remote ? '&remote-native' : ''));
   await expect(page.locator('.zm-task-row')).toHaveCount(1);
   await page.locator('.zm-task-row').filter({ hasText: task.title }).click();
   await expect(page.getByText('产物全部已接受 6/6', { exact: true })).toBeVisible();

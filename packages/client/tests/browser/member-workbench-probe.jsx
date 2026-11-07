@@ -55,7 +55,6 @@ export function MemberWorkbenchProbe({ appearance }) {
         <MemberExecutionPage
           key={view}
           shell={shell}
-          nativeExecution={new URL(location.href).searchParams.has('workflow-native')}
           memberNative={memberNative}
           view={view}
           workbenchAppearance={appearance}
