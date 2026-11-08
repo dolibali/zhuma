@@ -50,6 +50,8 @@ const categories: readonly [Category, string][] = [
 ];
 const labels = { file: '文件', template: '工作流', expert: 'Agent 专家', skill: 'Skill' };
 const formKey = (form: Form) => JSON.stringify(form);
+const memberName = (members: Workbench['participants'], id: string) =>
+  members.find((member) => member.id === id)?.name ?? id;
 const formOf = (value: MemberAssetReadValue | MemberAssetLegacySourceValue): Form => ({
   definition: value.definition,
   dependencies: 'dependencies' in value ? value.dependencies : [],
@@ -688,7 +690,7 @@ export function MemberAssetsPanel({
                     .reverse()
                     .map((version) => ({
                       value: version.reference.versionId,
-                      label: `v${version.number} · ${version.publishedBy}`,
+                      label: `v${version.number} · ${memberName(authoringState?.participants ?? [], version.publishedBy)}`,
                     })),
                 ]}
                 onValueChange={(value) =>
@@ -1006,9 +1008,11 @@ export function MemberAssetsPanel({
                       </span>
                       <span className="zm-member-asset-state">
                         {row.source === 'asset'
-                          ? row.asset.hasDraft
-                            ? '草稿'
-                            : `v${row.asset.versions.at(-1)?.number ?? ''}`
+                          ? row.asset.versions.length
+                            ? `已发布 v${row.asset.versions.at(-1)!.number}${row.asset.hasDraft ? ' · 有草稿' : ''}`
+                            : row.asset.hasDraft
+                              ? '草稿'
+                              : '未发布'
                           : row.source === 'knowledge'
                             ? `v${row.page.reference.version}`
                             : '只读'}
@@ -1080,7 +1084,7 @@ function AssetProvenance({
   members: Workbench['participants'];
 }) {
   const source = detail.value.source;
-  const person = (id: string) => members.find((member) => member.id === id)?.name ?? id;
+  const person = (id: string) => memberName(members, id);
   const owner =
     detail.kind === 'owned'
       ? detail.value.asset.ownerId

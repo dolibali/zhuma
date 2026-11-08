@@ -36,7 +36,7 @@ test('requests the efficiency export and checks the document shape', async () =>
   assert.match(exported.document, /^taskId,/);
 });
 
-test('shows two export actions and no dashboard', () => {
+test('shows one closed export menu without requesting data or displaying a dashboard', () => {
   const html = renderToStaticMarkup(
     createElement(EfficiencyExportControls, {
       fetcher: async () => {
@@ -44,7 +44,10 @@ test('shows two export actions and no dashboard', () => {
       },
     }),
   );
-  assert.match(html, /导出效率 JSON/);
-  assert.match(html, /导出效率 CSV/);
+  assert.match(html, /aria-label="导出"/);
+  assert.match(html, /aria-haspopup="menu"/);
+  assert.match(html, /aria-expanded="false"/);
+  assert.equal((html.match(/<button/g) ?? []).length, 1);
+  assert.doesNotMatch(html, /导出效率 JSON|导出效率 CSV/);
   assert.equal(html.includes('看板'), false);
 });

@@ -61,6 +61,21 @@ function transport(value = initial(), hooks = {}) {
   return { api, calls };
 }
 const signal = () => new AbortController().signal;
+test('run-id allocation alone never broadens the owner workflow presentation scope or requests authority', () => {
+  for (const serverAllocatedRunIds of [false, true]) {
+    const api = createNativeRunApi(
+      () => assert.fail('Constructing an API never requests or grants authority'),
+      'chen',
+      { spaceId: 'north', onUnavailable() {} },
+      () => {},
+      undefined,
+      undefined,
+      undefined,
+      serverAllocatedRunIds,
+    );
+    assert.equal(api.workflow.controlScope, 'task-owner');
+  }
+});
 test('workflow publication wire: explicit start and Resume carry only selected relative ranges; ordinary Continue does not change defaults', async () => {
   const workspace = {
     kind: 'local',

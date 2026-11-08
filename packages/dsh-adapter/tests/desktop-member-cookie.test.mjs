@@ -57,6 +57,39 @@ async function sentCookie(bridge, path = '/zhuma-id/session', host = HOST, owner
   return sent;
 }
 
+test('profile carrier only attaches the original member to exact GET/POST, never aliases or other methods', async () => {
+  const bridge = createDesktopMemberCookieBridge();
+  await login(bridge);
+  for (const method of ['GET', 'POST']) {
+    let carried;
+    const response = await bridge.forward(
+      request('/zhuma-id/profile', { method }),
+      HOST,
+      OWNER,
+      async (cookie) => {
+        carried = cookie;
+        return new Response('{}');
+      },
+    );
+    assert.equal(response.status, 200);
+    assert.equal(carried, `${OWNER}; zhuma-member=${COOKIE_A}`);
+  }
+  for (const [path, method] of [
+    ['/zhuma-id/profile', 'DELETE'],
+    ['/zhuma-id/profile', 'PUT'],
+    ['/zhuma-id/profile/extra', 'POST'],
+    ['/zhuma-id/%70rofile', 'GET'],
+  ]) {
+    let carried;
+    await bridge.forward(request(path, { method }), HOST, OWNER, async (cookie) => {
+      carried = cookie;
+      return new Response('{}');
+    });
+    assert.equal(carried, OWNER);
+  }
+  assert.equal(await sentCookie(bridge), `${OWNER}; zhuma-member=${COOKIE_A}`);
+});
+
 test('desktop lookup carrier: only the exact POST carries an available member without requiring one for owner navigation', async () => {
   const bridge = createDesktopMemberCookieBridge();
   const lookup = '/api/zhuma-member-native/lookup';

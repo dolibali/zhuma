@@ -243,7 +243,7 @@ export function TaskEditor({
     if (location.workflowId !== workflowId || location.nodeId !== selectedId) {
       setWorkflowId(location.workflowId);
       setSelectedId(location.nodeId);
-      setLocateRequest((request) => request + 1);
+      if (!previewTask) setLocateRequest((request) => request + 1);
       if (selectedId || workflowId !== location.workflowId)
         setNavigationNotice('原定位在当前版本中不可用，已返回可见工作流。');
     }
@@ -850,9 +850,10 @@ export function TaskEditor({
       {nativeRun?.api.workflow &&
         api.member &&
         (api.member.actorId === task.ownerId ||
-          task.workflows.some((flow) =>
-            flow.nodes.some((node) => node.assigneeId === api.member?.actorId),
-          )) &&
+          (nativeRun.api.workflow.controlScope === 'member-nodes' &&
+            task.workflows.some((flow) =>
+              flow.nodes.some((node) => node.assigneeId === api.member?.actorId),
+            ))) &&
         task.status === 'ready' &&
         applied &&
         !dirty && (

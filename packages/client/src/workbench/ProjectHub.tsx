@@ -336,6 +336,7 @@ export function ProjectHub({
                   </Button>
                 </header>
                 <p className="zm-project-muted">
+                  {!!project.fileRefs?.length && `${project.fileRefs.length} 项资料文件 · `}
                   {references.length} 个参考链接 · {assets.length} 项关联资产
                 </p>
                 {!!references.length && (
@@ -386,6 +387,18 @@ export function ProjectHub({
       {tab === 'materials' && (
         <div className="zm-project-materials">
           {knowledge && <ProjectKnowledgePanel {...knowledge} />}
+          {!!project.fileRefs?.length && (
+            <section className="zm-project-panel">
+              <header>
+                <h2>
+                  资料文件 <small>{project.fileRefs.length}</small>
+                </h2>
+                <Button disabled={!canEdit} onClick={edit}>
+                  管理资料
+                </Button>
+              </header>
+            </section>
+          )}
           {projectExecution?.projectArtifacts && spaceId ? (
             <ProjectArtifactsPanel
               spaceId={spaceId}

@@ -136,6 +136,19 @@ export function createMemberExecutionSpacesReplay() {
         data.holdSessions,
       );
     }
+    if (String(url).startsWith('/zhuma-id/team-members?')) {
+      const spaceId = new URL(url, 'http://fixture.invalid').searchParams.get('spaceId');
+      return Response.json({
+        ok: true,
+        value: {
+          spaceId,
+          administratorId: null,
+          accountIds: Object.entries(data.directory)
+            .filter(([, spaces]) => spaces.some((space) => space.id === spaceId))
+            .map(([id]) => id),
+        },
+      });
+    }
     const envelope = JSON.parse(options.body);
     const method = envelope.method.replace('zhuma-exec/', '');
     const payload = envelope.payload;

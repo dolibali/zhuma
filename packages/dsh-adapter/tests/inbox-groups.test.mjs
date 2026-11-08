@@ -131,7 +131,7 @@ test('inbox groups carry the task path and owner, and counts follow status', asy
   assert.equal(detailPlace.ownerName, '陈宁');
   assert.equal(detailPlace.taskPath.includes('chen'), false);
   assert.equal(detailPlace.ownerName.includes('chen'), false);
-  assert.equal(Object.hasOwn(detailPlace, 'ownerId'), false);
+  assert.equal(detailPlace.ownerId, 'chen');
   const before = await service.inboxCounts(session('chen'), {});
   assert.deepEqual(before.value, { actorId: 'chen', deliver: 2, review: 0, confirm: 0 });
   assert.equal(Object.hasOwn(before.value, 'spaceId'), false);

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Button } from '../workbench/Button.js';
+import { ActionMenu } from '../workbench/ActionMenu.js';
 import {
   readEfficiencyExport,
   saveEfficiencyFile,
@@ -15,6 +15,7 @@ export function EfficiencyExportControls({
   const [busy, setBusy] = useState<EfficiencyExportFormat | null>(null);
   const [message, setMessage] = useState('');
   async function download(format: EfficiencyExportFormat) {
+    if (busy) return;
     setBusy(format);
     setMessage('');
     try {
@@ -28,13 +29,16 @@ export function EfficiencyExportControls({
     }
   }
   return (
-    <div className="zm-actions">
-      <Button variant="quiet" busy={busy === 'json'} onClick={() => void download('json')}>
-        导出效率 JSON
-      </Button>
-      <Button variant="quiet" busy={busy === 'csv'} onClick={() => void download('csv')}>
-        导出效率 CSV
-      </Button>
+    <div className="zm-efficiency-export">
+      <ActionMenu
+        label="导出"
+        busy={busy !== null}
+        busyLabel="正在导出…"
+        items={[
+          { label: '导出 JSON', onSelect: () => void download('json') },
+          { label: '导出 CSV', onSelect: () => void download('csv') },
+        ]}
+      />
       {message ? <p role="status">{message}</p> : null}
     </div>
   );

@@ -125,7 +125,7 @@ test('first setup form SSR contract: real labels and explicit expert choices, no
   );
   assert(html.includes('创建并进入工作台'));
   assert(html.includes('账号与团队'));
-  assert(html.includes('团队基础专家'));
+  assert(html.includes('基础 Agent 专家'));
   assert(html.includes('type="checkbox"'));
   assert(html.includes('autoComplete="new-password"'));
   assert.equal(html.includes(input.password), false);

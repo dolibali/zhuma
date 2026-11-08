@@ -16,6 +16,11 @@ export interface TeamMembers {
   readonly spaceId: string;
   readonly administratorId: string | null;
   readonly accountIds: readonly string[];
+  readonly members?: readonly MemberProfile[];
+}
+export interface MemberProfile {
+  readonly accountId: string;
+  readonly displayName: string | null;
 }
 const messages: Readonly<Record<string, string>> = {
   validation: '请检查账号、密码和输入内容。',
@@ -55,6 +60,22 @@ function disposition(raw: unknown): 'created' | 'replayed' {
   if (raw !== 'created' && raw !== 'replayed') throw new IdentityLifecycleError('unavailable');
   return raw;
 }
+function profile(raw: unknown, expectedAccountId?: string): MemberProfile {
+  const value = object(raw, ['accountId', 'displayName']);
+  const accountId = id(value.accountId, 64);
+  const displayName = value.displayName;
+  if (
+    (expectedAccountId !== undefined && accountId !== expectedAccountId) ||
+    (displayName !== null &&
+      (typeof displayName !== 'string' ||
+        !displayName.trim() ||
+        displayName !== displayName.trim() ||
+        displayName.length > 80 ||
+        /[\u0000-\u001f\u007f-\u009f]/u.test(displayName)))
+  )
+    throw new IdentityLifecycleError('unavailable');
+  return { accountId, displayName };
+}
 export function createIdentityLifecycleApi(fetcher: typeof fetch = globalThis.fetch) {
   async function call<T>(
     path: string,
@@ -73,7 +94,10 @@ export function createIdentityLifecycleApi(fetcher: typeof fetch = globalThis.fe
         ...(input === undefined ? {} : { body: JSON.stringify(input) }),
         signal,
       });
-      const envelope = object(await response.json(), ['ok', 'value', 'error']);
+      signal.throwIfAborted();
+      const raw = await response.json();
+      signal.throwIfAborted();
+      const envelope = object(raw, ['ok', 'value', 'error']);
       if (!response.ok || envelope.ok !== true)
         throw new IdentityLifecycleError(
           typeof envelope.error === 'string' ? envelope.error : 'unavailable',
@@ -105,6 +129,12 @@ export function createIdentityLifecycleApi(fetcher: typeof fetch = globalThis.fe
     );
   return {
     register,
+    profile: (accountId: string, signal: AbortSignal) =>
+      call('profile', 'GET', undefined, signal, (raw) => profile(raw, accountId)),
+    setProfile: (accountId: string, input: { displayName: string }, signal: AbortSignal) =>
+      call('profile', 'POST', { displayName: input.displayName }, signal, (raw) =>
+        profile(raw, accountId),
+      ),
     teams: (signal: AbortSignal) =>
       call('teams', 'GET', undefined, signal, (raw) => {
         const value = object(raw, ['accountId', 'teams']);
@@ -135,16 +165,31 @@ export function createIdentityLifecycleApi(fetcher: typeof fetch = globalThis.fe
         undefined,
         signal,
         (raw): TeamMembers => {
-          const value = object(raw, ['spaceId', 'administratorId', 'accountIds']);
+          const value = object(raw, ['spaceId', 'administratorId', 'accountIds', 'members']);
           if (value.spaceId !== spaceId || !Array.isArray(value.accountIds))
             throw new IdentityLifecycleError('unavailable');
           const accountIds = value.accountIds.map((value) => id(value, 64));
           if (new Set(accountIds).size !== accountIds.length)
             throw new IdentityLifecycleError('unavailable');
+          const members =
+            value.members === undefined
+              ? undefined
+              : Array.isArray(value.members)
+                ? value.members.map((raw) => profile(raw))
+                : undefined;
+          if (
+            value.members !== undefined &&
+            (!members ||
+              members.length !== accountIds.length ||
+              new Set(members.map((m) => m.accountId)).size !== members.length ||
+              members.some((m) => !accountIds.includes(m.accountId)))
+          )
+            throw new IdentityLifecycleError('unavailable');
           return {
             spaceId,
             administratorId: value.administratorId === null ? null : id(value.administratorId, 64),
             accountIds,
+            ...(members ? { members } : {}),
           };
         },
       ),

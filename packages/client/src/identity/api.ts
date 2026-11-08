@@ -12,6 +12,7 @@ export interface MemberSpace {
 
 export interface MemberSession {
   readonly accountId: string;
+  readonly displayName?: string;
   readonly principal: { readonly kind: 'zhuma-member'; readonly memberId: string };
   readonly peerId: string;
   readonly spaces: readonly MemberSpace[];
@@ -69,6 +70,14 @@ function sessionReply(value: unknown): MemberSession {
   )
     throw new IdentityApiError('invalid-response');
   if (!Array.isArray(value.spaces)) throw new IdentityApiError('invalid-response');
+  if (
+    value.displayName !== undefined &&
+    (typeof value.displayName !== 'string' ||
+      !value.displayName.trim() ||
+      value.displayName.length > 80 ||
+      /[\u0000-\u001f\u007f-\u009f]/u.test(value.displayName))
+  )
+    throw new IdentityApiError('invalid-response');
   const ids = new Set<string>();
   const spaces = value.spaces.map((space: unknown): MemberSpace => {
     if (
@@ -84,6 +93,7 @@ function sessionReply(value: unknown): MemberSession {
   });
   return Object.freeze({
     accountId,
+    ...(typeof value.displayName === 'string' ? { displayName: value.displayName } : {}),
     principal: Object.freeze({ kind: 'zhuma-member', memberId: accountId }),
     peerId: value.peerId,
     spaces: Object.freeze(spaces),

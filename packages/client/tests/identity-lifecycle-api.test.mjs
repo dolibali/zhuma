@@ -2,6 +2,55 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createIdentityLifecycleApi } from '../dist/identity/lifecycle-api.js';
 
+test('profile client rejects a late response when its transport ignores cancellation', async () => {
+  const gate = Promise.withResolvers();
+  const controller = new AbortController();
+  const api = createIdentityLifecycleApi(() => gate.promise);
+  const pending = api.profile('ann', controller.signal);
+  controller.abort();
+  gate.resolve(Response.json({ ok: true, value: { accountId: 'ann', displayName: '旧账号' } }));
+  await assert.rejects(pending, { name: 'AbortError' });
+});
+
+test('profile client sends only self metadata and rejects wrong-account/private replies', async () => {
+  const calls = [];
+  let value = { accountId: 'ann', displayName: '张宁' };
+  const api = createIdentityLifecycleApi(async (path, init) => {
+    calls.push({ path, init });
+    return Response.json({ ok: true, value });
+  });
+  const signal = new AbortController().signal;
+  assert.deepEqual(await api.profile('ann', signal), value);
+  await api.setProfile('ann', { displayName: '张宁', accountId: 'bob', actorId: 'bob' }, signal);
+  assert.equal(calls[0].path, '/zhuma-id/profile');
+  assert.equal(calls[0].init.method, 'GET');
+  assert.equal(calls[0].init.body, undefined);
+  assert.deepEqual(JSON.parse(calls[1].init.body), { displayName: '张宁' });
+  for (value of [
+    { accountId: 'bob', displayName: '其他成员' },
+    { accountId: 'ann', displayName: '张宁', passwordHash: 'PRIVATE' },
+    { accountId: 'ann', displayName: '' },
+    { accountId: 'ann', displayName: 'x'.repeat(81) },
+  ])
+    await assert.rejects(
+      api.profile('ann', signal),
+      (e) => e.code === 'unavailable' && !e.message.includes('PRIVATE'),
+    );
+  value = { accountId: 'ann', displayName: null };
+  assert.deepEqual(await api.setProfile('ann', { displayName: '' }, signal), value);
+});
+
+test('team names are optional legacy-compatible and cannot introduce an outside account', async () => {
+  let value = { spaceId: 'north', administratorId: 'ann', accountIds: ['ann'] };
+  const api = createIdentityLifecycleApi(async () => Response.json({ ok: true, value }));
+  const signal = new AbortController().signal;
+  assert.deepEqual(await api.members('north', signal), value);
+  value = { ...value, members: [{ accountId: 'ann', displayName: '张宁' }] };
+  assert.deepEqual(await api.members('north', signal), value);
+  value.members = [{ accountId: 'bob', displayName: 'OTHER_SPACE' }];
+  await assert.rejects(api.members('north', signal), (e) => e.code === 'unavailable');
+});
+
 test('member lifecycle HTTP client projects exact input and never accepts actor overrides or private replies', async () => {
   const calls = [];
   const api = createIdentityLifecycleApi(async (path, init) => {

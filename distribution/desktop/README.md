@@ -4,11 +4,11 @@ Zhuma 使用固定的官方 DSH Electron 实现，自有工作台通过插件预
 
 ## 安装与首发边界
 
-当前源码版本为 `1.5.0`，发行目标为新 tag `v1.5.0`，范围与实际验收见[v1.5.0 说明](../../docs/release-v1.5.0.md)和 [#394](https://github.com/dolibali/zhuma/issues/394)。已发布的 [v1.4.0](https://github.com/dolibali/zhuma/releases/tag/v1.4.0) 与原资产保留；工程包或候选产物不等于新版本已公开。平台为 macOS arm64（Apple Silicon）、Windows x64 客户端及 Linux amd64 服务。macOS 为 ad-hoc、未公证，Windows 未签名；Developer ID、公证、Authenticode 和自动更新尚未提供，不认证 Intel Mac、Windows arm64 或 Linux 桌面。
+当前源码版本为 `1.5.1`，发行目标为新 tag `v1.5.1`，范围与实际验收见[v1.5.1 说明](../../docs/release-v1.5.1.md)和 [#449](https://github.com/dolibali/zhuma/issues/449)。已发布的 [v1.5.0](https://github.com/dolibali/zhuma/releases/tag/v1.5.0) 与原资产保留；工程包或候选产物不等于新版本已公开。平台为 macOS arm64（Apple Silicon）、Windows x64 客户端及 Linux amd64 服务。macOS 为 ad-hoc、未公证，Windows 未签名；Developer ID、公证、Authenticode 和自动更新尚未提供，不认证 Intel Mac、Windows arm64 或 Linux 桌面。
 
 安装时打开已核对来源的候选 DMG，将 Zhuma 拖入 Applications 后运行。正常首次账号／团队、模型与交付入口见[工作台正常操作](../workbench/README.md#正常操作)。已有 profile 不因安装新包而自动迁移或更改部署模式。
 
-源码／服务契约、历史安装操作与最终候选验收分别留证。正常界面、真实模型＋Skill、独立 Agent 评审、下游及安装／恢复按准确候选验证；实时结果见 [#25](https://github.com/dolibali/zhuma/issues/25) 和 [#310](https://github.com/dolibali/zhuma/issues/310)，不从构建成功或既往记录推定全链路通过。本轮增量与必要验收见 [v1.3.0 说明](../../docs/release-v1.3.md)；[v1.2.0 说明](../../docs/release-v1.2.md)保留原范围与证据。
+源码／服务契约、历史安装操作与最终候选验收分别留证。正常界面、真实模型＋Skill、独立 Agent 评审、下游及安装／恢复按准确候选验证；实时结果见 [#25](https://github.com/dolibali/zhuma/issues/25) 和 [#310](https://github.com/dolibali/zhuma/issues/310)，不从构建成功或既往记录推定全链路通过。本轮增量与必要验收见 [v1.5.1 说明](../../docs/release-v1.5.1.md)；[v1.3.0](../../docs/release-v1.3.md)与[v1.2.0](../../docs/release-v1.2.md)说明保留原范围与证据。
 
 ## 前置条件
 

@@ -8,11 +8,54 @@ import { createMemberWorkbenchApi } from '../dist/workbench/member-api.js';
 import { createExecutionHttpApi } from '../dist/execution/http.js';
 import { createProjectKnowledgeApi } from '../dist/knowledge/project-knowledge-api.js';
 import { reviewNode } from './browser/execution-fixture.mjs';
+import { createIdentityLifecycleApi } from '../dist/identity/lifecycle-api.js';
 const remote = () => ({
   origin: 'http://backend.example:3080',
   connectionId: crypto.randomUUID(),
   backendId: crypto.randomUUID(),
   actorId: 'ann',
+});
+
+test('public profile routes use exact shared operations and preserve current connection and account', async () => {
+  const selection = remote(),
+    calls = [];
+  const client = createSharedBackendClient(
+    {
+      async call(_channel, endpoint, payload) {
+        if (endpoint === 'zhuma-backend/status') return { ok: true, value: selection };
+        calls.push(payload);
+        return {
+          ok: true,
+          value: {
+            connectionId: selection.connectionId,
+            status: 200,
+            body: { ok: true, value: { accountId: 'ann', displayName: '张宁' } },
+          },
+        };
+      },
+    },
+    () => assert.fail('Name metadata must not change the connection'),
+  );
+  await client.refresh();
+  const api = createIdentityLifecycleApi(client.fetcher);
+  await api.profile('ann', new AbortController().signal);
+  await api.setProfile('ann', { displayName: '张宁' }, new AbortController().signal);
+  assert.deepEqual(
+    calls.map(({ operation, payload }) => ({ operation, payload })),
+    [
+      { operation: 'identity.profile.read', payload: {} },
+      { operation: 'identity.profile.save', payload: { displayName: '张宁' } },
+    ],
+  );
+  for (const [path, method] of [
+    ['/zhuma-id/profile?accountId=bob', 'GET'],
+    ['/zhuma-id/profile/extra', 'POST'],
+    ['/zhuma-id/profile', 'DELETE'],
+  ])
+    await assert.rejects(client.fetcher(path, { method }));
+  assert.equal(calls.length, 2);
+  assert.deepEqual(client.getSnapshot().selection, selection);
+  client.close();
 });
 
 test('connection checks read the original member session, distinguish reachability from login and never infer it from saved settings', async () => {

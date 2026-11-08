@@ -1590,8 +1590,25 @@ html[data-platform='darwin'] .zm-shared-backend .zm-backend-bar {
   overflow: auto;
   padding-top: 8px;
 }
-.zm-member-work > .zm-page > h1 {
-  margin: 0 0 20px;
+.zm-member-work .zm-my-work-heading {
+  margin-bottom: 20px;
+}
+.zm-member-work .zm-my-work-heading h1 {
+  margin: 0;
+}
+.zm-efficiency-export {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  max-width: 50%;
+}
+.zm-efficiency-export p {
+  margin: 0;
+  max-width: 280px;
+  font-size: 12px;
+  overflow-wrap: anywhere;
 }
 .zhuma .zm-catalog-heading {
   position: absolute;
@@ -3395,11 +3412,18 @@ html[data-platform='darwin'] .zhuma .zm-space-bar {
   border-radius: 6px;
 }
 
-/* Keep node text readable; zoom-to-fit is an explicit overview action. */
+/* Graph controls have their own space; fitting includes the routed dependencies. */
 .zm-canvas {
+  display: flex;
+  flex-direction: column;
   flex: 1;
   min-height: 0;
   background: var(--zm-canvas);
+}
+.zm-canvas-surface {
+  flex: 1;
+  min-height: 0;
+  position: relative;
 }
 .zm-flow-node.react-flow__node {
   width: 240px;
@@ -3502,12 +3526,21 @@ html[data-platform='darwin'] .zhuma .zm-space-bar {
   color: var(--zm-muted);
 }
 .zm-canvas .react-flow__minimap {
-  width: 130px;
-  height: 86px;
+  position: relative;
+  inset: auto;
   border: 1px solid var(--zm-line);
   border-radius: 6px;
   overflow: hidden;
-  margin: 12px 12px 28px;
+  margin: 0;
+}
+.zm-canvas-map {
+  flex: none;
+}
+.zm-canvas-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
 }
 .zm-canvas-controls {
   display: flex;
@@ -3525,10 +3558,27 @@ html[data-platform='darwin'] .zhuma .zm-space-bar {
   padding: 4px 7px;
   font-size: 12px;
 }
-.zm-canvas-controls > span {
+.zm-canvas-actions > span {
   font-size: 12px;
   min-width: 38px;
   text-align: center;
+  color: var(--zm-muted);
+}
+.zm-dependency-views {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  margin-inline-start: 4px;
+  padding-inline-start: 6px;
+  border-inline-start: 1px solid var(--zm-line);
+}
+.zm-dependency-views button[aria-pressed='true'] {
+  background: var(--zm-soft);
+  color: var(--zm-text);
+  font-weight: 600;
+}
+.zm-dependency-views button span {
+  font-variant-numeric: tabular-nums;
   color: var(--zm-muted);
 }
 
@@ -3721,6 +3771,31 @@ html[data-platform='darwin'] .zhuma .zm-space-bar {
 .zm-flow-node.zm-tree-ancestor {
   border-color: var(--zm-accent);
   border-left-width: 3px;
+}
+/* The whole work tree is a navigation overview; detailed node configuration
+   remains in its local workflow and the existing side panel. */
+.zm-flow-node.zm-flow-tree {
+  width: 200px;
+  padding: 10px 12px;
+}
+.zm-flow-tree strong {
+  min-height: 0;
+  -webkit-line-clamp: 2;
+}
+.zm-flow-tree .zm-flow-context {
+  font-size: 11px;
+  margin-bottom: 6px;
+}
+.zm-flow-tree .zm-flow-assignee {
+  margin-top: 8px;
+}
+.zm-flow-tree .zm-avatar {
+  width: 22px;
+  height: 22px;
+}
+.zm-flow-tree .zm-flow-footer,
+.zm-flow-tree .zm-flow-assignee small {
+  display: none;
 }
 .zm-flow-context {
   display: flex;
@@ -4117,6 +4192,20 @@ html[data-platform='darwin'] .zhuma .zm-space-bar {
 .zm-select-option[data-disabled] {
   color: var(--zm-disabled-ink);
 }
+.zhuma button.zm-action-menu-trigger,
+.zm-dialog button.zm-action-menu-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+.zm-action-menu-popup {
+  overflow-y: auto;
+}
+.zm-action-menu-item {
+  padding-inline: 12px;
+}
 .zm-select-check {
   position: absolute;
   left: 8px;
@@ -4261,11 +4350,13 @@ html[data-platform='darwin'] .zhuma .zm-space-bar {
   display: flex;
   flex-direction: column;
 }
-.zm-canvas-overview > .react-flow {
+.zm-canvas-overview > .zm-canvas-surface {
   flex: 1;
   min-height: 0;
 }
 .zm-canvas-dock {
+  justify-content: space-between;
+  gap: 8px;
   flex-shrink: 0;
   border: 0;
   border-top: 1px solid var(--zm-line);

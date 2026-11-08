@@ -4,6 +4,7 @@ import {
   type LoginCredentials,
   type MemberSession,
 } from './api.js';
+import type { MemberProfile } from './lifecycle-api.js';
 
 export type MemberSessionState =
   | { readonly status: 'restoring' }
@@ -79,6 +80,24 @@ export function createMemberSessionController(api: IdentityApi) {
     }
   }
   return {
+    /** Apply only acknowledged public metadata to this login; never replace its authority or epoch. */
+    profileUpdated(expectedEpoch: number, profile: MemberProfile) {
+      if (
+        state.status !== 'authenticated' ||
+        state.epoch !== expectedEpoch ||
+        state.session.accountId !== profile.accountId
+      )
+        return false;
+      const { displayName: _oldName, ...session } = state.session;
+      publish({
+        ...state,
+        session: Object.freeze({
+          ...session,
+          ...(profile.displayName ? { displayName: profile.displayName } : {}),
+        }),
+      });
+      return true;
+    },
     getSnapshot: () => state,
     subscribe(listener: () => void) {
       listeners.add(listener);

@@ -54,8 +54,10 @@ export function SidebarAccountFooter({
   }, [wide]);
   const caption = spaceCaption(snapshot.space);
   const accountId = state.status === 'authenticated' ? state.session.accountId : undefined;
+  const accountName =
+    state.status === 'authenticated' ? (state.session.displayName ?? accountId) : undefined;
   const label = accountId
-    ? `账号与空间：${accountId}`
+    ? `账号与空间：${accountName}`
     : state.status === 'restoring'
       ? '正在连接账号'
       : state.status === 'signing-in'
@@ -69,12 +71,12 @@ export function SidebarAccountFooter({
   const contents = (
     <>
       <span className="zm-account-avatar" aria-hidden="true">
-        {accountId ? Array.from(accountId)[0]?.toLocaleUpperCase() : <PersonIcon />}
+        {accountName ? Array.from(accountName)[0]?.toLocaleUpperCase() : <PersonIcon />}
       </span>
       {wide && (
         <>
           <span className="zm-account-caption">
-            <strong>{accountId ?? label}</strong>
+            <strong>{accountName ?? label}</strong>
             {accountId && <small>{caption}</small>}
           </span>
           {accountId && <ControlIcon direction="down" />}
@@ -117,11 +119,12 @@ export function SidebarAccountFooter({
                 <Popover.Title className="zm-account-popup-title">账号与空间</Popover.Title>
                 <div className="zm-account-identity">
                   <span className="zm-account-avatar" aria-hidden="true">
-                    {Array.from(accountId ?? '')[0]?.toLocaleUpperCase()}
+                    {Array.from(accountName ?? '')[0]?.toLocaleUpperCase()}
                   </span>
                   <div className="zm-account-identity-text">
                     <small>当前账号</small>
-                    <strong>{accountId}</strong>
+                    <strong>{accountName}</strong>
+                    {accountName !== accountId && <small>{accountId}</small>}
                   </div>
                 </div>
                 <div className="zm-account-space">

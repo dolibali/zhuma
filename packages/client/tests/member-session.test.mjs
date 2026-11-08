@@ -28,6 +28,41 @@ function apiWith(overrides = {}) {
   };
 }
 
+test('confirmed profile changes only this epoch public name; stale/account-switched metadata grants nothing', async () => {
+  let current = member('member-a');
+  const controller = createMemberSessionController(apiWith({ session: async () => current }));
+  await controller.restore();
+  const before = controller.getSnapshot();
+  assert.equal(
+    controller.profileUpdated(before.epoch, { accountId: 'member-a', displayName: '张宁' }),
+    true,
+  );
+  const after = controller.getSnapshot();
+  assert.equal(after.epoch, before.epoch);
+  assert.equal(after.status, 'authenticated');
+  assert.deepEqual(after.session, { ...before.session, displayName: '张宁' });
+  assert.equal(after.session.principal, before.session.principal);
+  assert.equal(after.session.spaces, before.session.spaces);
+  assert.equal(
+    controller.profileUpdated(before.epoch, { accountId: 'member-b', displayName: 'WRONG' }),
+    false,
+  );
+  assert.equal(
+    controller.profileUpdated(before.epoch - 1, { accountId: 'member-a', displayName: 'LATE' }),
+    false,
+  );
+  controller.profileUpdated(before.epoch, { accountId: 'member-a', displayName: null });
+  assert.deepEqual(controller.getSnapshot().session, before.session);
+  await controller.logout();
+  current = member('member-b');
+  await controller.login({ accountId: 'member-b', password: 'synthetic' });
+  assert.equal(
+    controller.profileUpdated(before.epoch, { accountId: 'member-a', displayName: 'LATE' }),
+    false,
+  );
+  assert.deepEqual(controller.getSnapshot().session, current);
+});
+
 test('session contract: explicit restore only, no password in state, login rechecks the server session', async () => {
   const calls = [];
   let authenticated = false;

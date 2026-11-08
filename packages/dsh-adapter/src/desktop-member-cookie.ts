@@ -2,7 +2,7 @@
 const MEMBER = 'zhuma-member';
 const APP_ORIGIN = 'dsh-app://app';
 const MEMBER_PATH =
-  /^\/(?:zhuma-id\/(?:login|logout|session|teams|team-members|password|(?:spaces|notes)\/[a-z0-9-]{1,64})|api\/zhuma-member\/(?:snapshot|command|plan|planning-models|select-planning-model|asset-folder-list|asset-folder-create|asset-list|asset-read|asset-reference|asset-command|asset-sources|asset-source|asset-catalog|asset-preview-import|asset-import-drafts|asset-file-upload|asset-file-read|asset-file-text)|api\/zhuma-exec\/(?:start-plan|inbox-counts|inbox|startable|submit|ballot|settle|report|revision|review-outcome|draft|events|upstream-content|project-artifacts|task-progress|upload-file|file)|api\/zhuma-efficiency\/export|api\/zhuma-run\/(?:begin|send|stop|read|history|options|inbox|observe)|api\/zhuma-workflow\/(?:options|read|start|resume|stop)|api\/zhuma-workspaces\/(?:options|approve|revoke)|api\/zhuma-knowledge\/(?:libraries|list|search|read|drafts|draft|save-draft|propose-draft|publish|project-links|save-project-links))$/;
+  /^\/(?:zhuma-id\/(?:login|logout|session|teams|team-members|password|profile|(?:spaces|notes)\/[a-z0-9-]{1,64})|api\/zhuma-member\/(?:snapshot|command|plan|planning-models|select-planning-model|asset-folder-list|asset-folder-create|asset-list|asset-read|asset-reference|asset-command|asset-sources|asset-source|asset-catalog|asset-preview-import|asset-import-drafts|asset-file-upload|asset-file-read|asset-file-text)|api\/zhuma-exec\/(?:start-plan|inbox-counts|inbox|startable|submit|ballot|settle|report|revision|review-outcome|draft|events|upstream-content|project-artifacts|task-progress|upload-file|file)|api\/zhuma-efficiency\/export|api\/zhuma-run\/(?:begin|send|stop|read|history|options|inbox|observe)|api\/zhuma-workflow\/(?:options|read|start|resume|stop)|api\/zhuma-workspaces\/(?:options|approve|revoke)|api\/zhuma-knowledge\/(?:libraries|list|search|read|drafts|draft|save-draft|propose-draft|publish|project-links|save-project-links))$/;
 // Local task lookup also reads member-authorized Run facts. Remote/ordinary
 // lookup retains its owner path when there is no local member credential.
 const OPTIONAL_MEMBER_LOOKUP_PATH =
@@ -99,7 +99,11 @@ export function createDesktopMemberCookieBridge(now: () => number = Date.now) {
         owner = ownerCookie;
       }
       if (member && member.expiresAt <= now()) clear();
-      const product = MEMBER_PATH.test(source.pathname);
+      const product =
+        MEMBER_PATH.test(source.pathname) &&
+        (source.pathname !== '/zhuma-id/profile' ||
+          request.method === 'GET' ||
+          request.method === 'POST');
       const memberContext =
         product || (request.method === 'POST' && OPTIONAL_MEMBER_LOOKUP_PATH.test(source.pathname));
       const login = product && request.method === 'POST' && source.pathname === '/zhuma-id/login';

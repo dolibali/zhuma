@@ -180,7 +180,7 @@ export function LocalSetupForm({
           <small>同时创建你的个人空间。</small>
         </div>
         <section className="zm-local-setup-experts" aria-labelledby={`${errorId}-experts`}>
-          <h2 id={`${errorId}-experts`}>团队基础专家</h2>
+          <h2 id={`${errorId}-experts`}>基础 Agent 专家</h2>
           {snapshot.packs.map((pack) => (
             <label key={pack.id}>
               <input

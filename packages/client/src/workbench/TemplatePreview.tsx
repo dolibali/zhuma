@@ -104,6 +104,11 @@ export function TemplatePreview({ definition }: { definition: WorkflowTemplate }
         <div className="zm-template-node-detail">
           <strong>{node.title}</strong>
           <p>交付：{node.output}</p>
+          {node.dependsOn.length > 0 && (
+            <p>
+              前置工作：{node.dependsOn.map((id) => workTree.nodes.get(id)?.title ?? id).join('、')}
+            </p>
+          )}
           <small>
             {name(node.assigneeId)}
             {node.reviewRequired ? ` · 评审：${node.reviewerIds.map(name).join('、')}` : ''}
