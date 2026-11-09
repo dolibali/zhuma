@@ -1,93 +1,64 @@
-# Zhuma
+# 历史评审资料存档
 
-<img src="branding/default/icon.png" alt="Zhuma" width="100" />
+本分支集中保留历史界面评审、截图和验收资料的原始提交。原来的临时分支已归档清理；下表按固定提交访问，原始文件与提交历史不变。
 
-基于 DeepSeek Harness（DSH）官方 Electron 桌面实现的插件化 AI 工作台。
+这些记录说明对应当时版本的检查范围，不代表当前版本的完整功能或平台验收。当前产品说明请阅读 [main 分支](https://github.com/dolibali/zhuma/tree/main)。
 
-本仓库是产品主仓：维护自己的任务核心、工程上下文、DSH 适配、客户端和发行配置。DSH 完整源码作为固定提交的 Git 子模块放在 `upstream/deepseek-harness/`，官方桌面入口位于其 `apps/desktop/`，不另外复制一套 Electron 应用。
+本存档只提供索引；各历史资料提交作为本分支提交的父提交保留，不将其内容合入产品主线。机器可读索引见 [evidence-index.json](evidence-index.json)。
 
-## 当前状态
-
-本工程版本为 **v1.3.0**，自有代码采用 MIT；v1.2.0 的历史范围与证据保留原边界。共享后端保存团队业务，成员在官方桌面明确授权本机 Zhuma Agent 接续处理自己负责的工作节点；任务、交付与评审复用原领域，会话与执行模型凭据仍由成员本机原 Harness 管理。共享后端的 AI 规划使用其自身配置的模型。
-
-源码、Host／Client 契约及历史安装结果按版本分层保留，不能追认后续修改。正常桌面、真实模型＋Skill、同工作区同 Session、文件、独立 Agent 评审与恢复按准确候选分别验收。实时结论以 [交付总索引 #25](https://github.com/dolibali/zhuma/issues/25) 和 [v1.3 工作项 #310](https://github.com/dolibali/zhuma/issues/310) 为准，本轮范围和验证边界见 [v1.3.0 说明](docs/release-v1.3.md)；[v1.2.0 说明](docs/release-v1.2.md) 保留原版本边界。
-
-## 开始使用
-
-1. 取得已核对来源的 macOS arm64 DMG，或按[桌面发行指南](distribution/desktop/README.md)从源码构建。本版使用 ad-hoc 临时签名、未公证；正式来源见对应 Release，不认证全平台。
-2. 全新安装首次打开后创建本机账号、团队并选择基础专家；已有账号从成员登录入口进入。在账号与空间入口选择有权团队。旧单人 profile 的资料与模式不会自动迁移。
-3. 在“团队工作台”新建项目和任务，选择参与者。成员任务可用“AI 规划”或“从空白开始”，在列表／工作流中编辑节点、负责人、Skills、依赖和评审人，再保存并确认计划。模板复用的当前入口与限制见[正常操作说明](distribution/workbench/README.md#正常操作)。
-4. 使用 AI 前配置相应运行位置的模型：共享 AI 规划由服务操作者在后端官方模型页配置，本机 Agent 在桌面模型页配置。检查节点专家所需的 Skill；无模型也能编排人工任务。规划失败保留输入，不以模板结果冒充 AI 成功。
-5. 在“我的工作”开始已确认计划。成员可逐节点“提交产物”或“使用 Agent”，也可选择“运行工作流”，明确本机模型、工作区权限、交付范围与自动返工上限。本机只接续本成员获准处理的节点；其他成员或人工节点进入各自待办，离线时等待，不让后端代跑。查看或重开应用不自动执行，停止后须明确继续。
-6. 需要评审的固定文字／文件提交交给指定真人或独立 Agent 专家；自动退回修改受本轮上限约束，真人评审和预算耗尽都等待人工。全部指定评审通过且原运行收口后才接续。下游查看“上游输入”，项目“资料与成果”查看“已接受成果”；会话回复或停止状态本身不等于已交付。
-
-完整入口与执行方式见[工作台组合指南](distribution/workbench/README.md)；本地共享后端部署见[服务说明](distribution/server/README.md)。本轮多成员执行与恢复以同机共享后端及两个隔离成员 Host 为验证边界，实体异机网络、休眠差异另验。非空 MCP、批量反馈、复杂子流程与完整工作树执行、效能统计、完整跨会话通信、个人专家独立使用、其他 CLI 完整资格与跨 CLI 接管继续后置，范围保留而非完成。团队资产、固定资料与码道接入按 [v1.3.0 说明](docs/release-v1.3.md)的准确候选分别验收。
-
-## 开发准备
-
-- 本仓工具链：Node.js `24.15.0`、pnpm `12.4.2`。
-- 上游基线：DSH `dsh-v0.2.1-rc.4`，精确提交和独立工具链见 [runtime.lock.json](runtime.lock.json)。这是候选发布版本，不代表已完成本产品桌面集成验收。
-- DSH 上游使用自己的 pnpm 版本和锁文件；不要将其包纳入本仓 Workspace。
-
-在项目根目录执行：
-
-```bash
-git submodule update --init --recursive
-pnpm install --frozen-lockfile --ignore-scripts
-pnpm run doctor
-pnpm check
-pnpm upstream:check
-```
-
-在其他机器克隆时，请同时获取固定版本的 DSH 子模块：
-
-```bash
-git clone --recurse-submodules https://github.com/dolibali/zhuma.git
-cd zhuma
-```
-
-项目仓库：<https://github.com/dolibali/zhuma>。
-
-`pnpm check` 检查本仓源码、类型、格式、包边界和单元测试；`pnpm upstream:check` 检查 DSH 提交及工作树。两者都不构建 DSH 桌面、不调用模型、不访问生产系统，也不改动用户的 DSH 安装。
-
-工作台浏览器契约冒烟使用 `pnpm test:ui`，在独立临时页面中验证创建、编辑、连续规划和恢复交互。安装浏览器、CI 覆盖范围及响应重放边界见 [测试说明](tests/README.md)；它不替代真实 Host 或桌面验收。
-
-## 目录
-
-```text
-zhuma/
-├── upstream/deepseek-harness/   # 官方完整源码，固定提交
-├── packages/
-│   ├── agent-core/             # 任务、计划、协作与结果的领域契约
-│   ├── context/                # 工程知识、来源与任务上下文
-│   ├── dsh-adapter/            # DSH Host 适配与执行者边界
-│   └── client/                 # DSH Web Client 工作台、成员待办与会话界面
-├── distribution/               # 桌面与 Bundle/Profile 发行集成
-├── branding/default/           # 中性公开品牌配置
-├── patches/deepseek-harness/   # 必要的上游补丁
-├── resources/                  # Skills、Rules、专家、流程资源
-├── tests/                      # 集成、桌面与目标工程测试约定
-├── docs/                       # 架构、开发和实施顺序
-├── third_party/                # 上游来源及复用说明
-└── scripts/                    # 构建、测试与环境检查
-```
-
-## 开发边界
-
-- `agent-core` 管理工作台任务与协作，不重写 DSH Agent Loop、模型协议或 MCP 客户端。
-- `context` 提供有来源和版本的上下文，不管理 Agent 生命周期。
-- `dsh-adapter` 是 Host 侧接触 DSH 类型与执行接口的边界；码道适配沿附加 ACP 与明确的本机配置接入，真实 CLI 资格按准确候选验收，不做隐藏自动降级。
-- `client` 使用公开 DTO 和 DSH Client 扩展，不导入 Host 实现，不新增第二套执行状态。
-- 产品能力通过插件交付；代码包、插件入口、操作系统进程不是一一对应。
-
-详细说明见 [架构](docs/architecture.md)、[开发指南](docs/development.md)、[实施顺序](docs/roadmap.md)。
-
-## 桌面与发行
-
-桌面复用上游 `apps/desktop/`。品牌、插件预装及发行补丁在 `distribution/`、`branding/` 与补丁层维护；在 `.build/` 临时构建树应用，不直接长期修改子模块。当前已有构建集中于 macOS arm64；Windows、Linux 不计为已验证。Developer ID 签名、公证和自动更新尚未提供；本轮 v1.3.0 的支持平台、安装限制、签名状态与必要验收按最终发行说明核对。
-
-桌面构建使用可验证的上游补丁和独立临时 Git worktree，避免修改固定子模块。桌面不强制显示 DeepSeek 平台账号欢迎界面；Zhuma 成员登录与供应商模型凭据各走自己的正常入口。macOS 安装包构建指令、签名限制和调试说明见 [桌面发行指南](distribution/desktop/README.md)。
-
-## 许可与公开发布
-
-自有代码采用 [MIT License](LICENSE)。所有包保留 `private: true`，用于防止意外发布到包注册平台。DSH 及其他第三方内容保留各自版权、许可与声明，见 [第三方说明](THIRD_PARTY_NOTICES.md)。发行构建同时携带自有许可证全文和打包依赖的许可文本；资产授权、应用标识和发行配置仍按各自范围验证。
+| 原临时分支 | 固定资料提交 |
+| --- | --- |
+| `coord/fxnie-pr337-338-ui-20261031` | [c6df24ebf686](https://github.com/dolibali/zhuma/tree/c6df24ebf6861d3b3dddc633650cefd757707d64) |
+| `coord/pr102-ui-evidence-20261025` | [a90197e2519c](https://github.com/dolibali/zhuma/tree/a90197e2519ca1370704bb771fcc515b1353c840) |
+| `coord/pr115-ui-evidence-20261025` | [81526377d78b](https://github.com/dolibali/zhuma/tree/81526377d78bb06fc422d1d2c29c8a618a218e83) |
+| `coord/pr138-ui-evidence-20261026` | [5e6a016ce196](https://github.com/dolibali/zhuma/tree/5e6a016ce196305afb5510a0484f744fe8013e1a) |
+| `coord/pr147-ui-evidence-20261026` | [ec4a63eff42e](https://github.com/dolibali/zhuma/tree/ec4a63eff42e070fe09acd0e72e0a78726347966) |
+| `coord/pr149-153-ui-evidence-20261026` | [d2b469430692](https://github.com/dolibali/zhuma/tree/d2b4694306923aa72764c70f67e6f5657baba060) |
+| `coord/pr169-ui-evidence-20261026` | [5b6e18b94644](https://github.com/dolibali/zhuma/tree/5b6e18b94644acd3c538457d6ace1e6ef534d154) |
+| `coord/pr175-ui-evidence-20261026` | [0a3cf68fea0d](https://github.com/dolibali/zhuma/tree/0a3cf68fea0de2942c7185097eee8e542ec7a1bc) |
+| `coord/pr178-ci-20261027-c460202f` | [c460202f669d](https://github.com/dolibali/zhuma/tree/c460202f669d3f22cc0b1ad313b4ef2359f4a3a1) |
+| `coord/pr178-ui-evidence-20261027` | [788c654a8c2c](https://github.com/dolibali/zhuma/tree/788c654a8c2c7440a4c3e7020c4064d541579746) |
+| `coord/pr183-186-gui-evidence-20261027` | [e1986b3059ea](https://github.com/dolibali/zhuma/tree/e1986b3059eaecfd781816edf6c5c683dde43843) |
+| `coord/pr202-first-setup-evidence-20261027` | [e91dfe9f0b4b](https://github.com/dolibali/zhuma/tree/e91dfe9f0b4be4f5e1109bf750089fd90586dafd) |
+| `coord/pr228-ui-evidence-20261027` | [a4f3d36be6f0](https://github.com/dolibali/zhuma/tree/a4f3d36be6f0c883e2b2ced2719e0b731e9aa2c4) |
+| `coord/pr238-title-evidence-20261027` | [edc2993223ec](https://github.com/dolibali/zhuma/tree/edc2993223ec2a87bea2ba3b0a8db2281fecc993) |
+| `coord/pr252-recovery-ui-20261028` | [829275840494](https://github.com/dolibali/zhuma/tree/829275840494ba4374d5d663d5820e7b35f21828) |
+| `coord/pr272-ui-evidence-20261029` | [3c533888e42a](https://github.com/dolibali/zhuma/tree/3c533888e42a087050cdfd04106adf86cda6e742) |
+| `coord/pr292-ui-evidence-20261029` | [bd4711b8cda6](https://github.com/dolibali/zhuma/tree/bd4711b8cda60e37a9f6f2011e1263f3783d6b84) |
+| `coord/pr296-ui-evidence-20261029` | [b28de328e2cf](https://github.com/dolibali/zhuma/tree/b28de328e2cf729214f758b6ecceb24652b4a2c1) |
+| `coord/pr301-ui-evidence-20261029` | [33988150beeb](https://github.com/dolibali/zhuma/tree/33988150beebfe41e93451471774d7bf05b38bc2) |
+| `coord/pr306-file-scope-ui-evidence-20261029` | [3318cb5ec9f0](https://github.com/dolibali/zhuma/tree/3318cb5ec9f0f54ed8824225cffdaa32cda69d15) |
+| `coord/pr306-filter-ui-evidence-20261029` | [350d6e4e6aab](https://github.com/dolibali/zhuma/tree/350d6e4e6aab5f1c9794ef0001119d3376b58c77) |
+| `coord/pr306-workflow-ui-evidence-20261029` | [a12f68c1c662](https://github.com/dolibali/zhuma/tree/a12f68c1c662dda6bd8c28d1ea20a2686fa1c797) |
+| `coord/pr308-real-core-evidence-20261029` | [131b0f612a97](https://github.com/dolibali/zhuma/tree/131b0f612a974fbe816bc32ca20397cf794900e3) |
+| `coord/pr316-ui-evidence-20261030` | [bd77a6630a01](https://github.com/dolibali/zhuma/tree/bd77a6630a01d75293672cce1330f7f943eae3ab) |
+| `coord/pr322-ui-evidence-20261031` | [4e4d4a45cddf](https://github.com/dolibali/zhuma/tree/4e4d4a45cddfbb650a7e2c3042f318945ade53af) |
+| `coord/pr325-acp-ui-evidence-20261030` | [e429c921adaa](https://github.com/dolibali/zhuma/tree/e429c921adaa0a87fd1c54df8d48f8a5c362b3a8) |
+| `coord/pr328-ui-evidence-20261031` | [b62ad30271ec](https://github.com/dolibali/zhuma/tree/b62ad30271ec0be99af2cae1813792bce7679205) |
+| `coord/pr357-assets-ui-evidence-20261030` | [5dba7b0c812a](https://github.com/dolibali/zhuma/tree/5dba7b0c812a8c2fcf04af5884c916bb3b6482ed) |
+| `coord/pr365-codearts-ui-evidence-20261030` | [30eb92f8827e](https://github.com/dolibali/zhuma/tree/30eb92f8827ece24ca76b40b8d0995a66ddc1bd7) |
+| `coord/pr368-session-ui-evidence-20261030` | [b663c83fcccd](https://github.com/dolibali/zhuma/tree/b663c83fcccd78c1cf7cdbef2d255070db25c1d7) |
+| `coord/pr384-ui-evidence-20261103` | [a0953507d828](https://github.com/dolibali/zhuma/tree/a0953507d828a6c6f8dd36856fdcc3073120d75a) |
+| `coord/pr385-386-ui-evidence-20261103` | [3f948b7858a4](https://github.com/dolibali/zhuma/tree/3f948b7858a4433d5059d5137034d039127c8ce7) |
+| `coord/pr387-ui-evidence-20261105` | [3ed3eb9263cc](https://github.com/dolibali/zhuma/tree/3ed3eb9263cce31bbe85b13c9b55e2e44d816192) |
+| `coord/pr391-ui-evidence-20261105` | [399c35d6c077](https://github.com/dolibali/zhuma/tree/399c35d6c077344b919eb24999049865485b8c56) |
+| `coord/pr397-ui-evidence-20261105` | [ef6e089f732d](https://github.com/dolibali/zhuma/tree/ef6e089f732d391dbf8cad6e03da19238c707aaa) |
+| `coord/pr402-ui-evidence-20261105` | [3f4462936ebb](https://github.com/dolibali/zhuma/tree/3f4462936ebbce658695c2c6ad97a7454ae91805) |
+| `coord/pr404-ui-evidence-20261105` | [e92f3eb936e2](https://github.com/dolibali/zhuma/tree/e92f3eb936e2b19b7442ffe292c58acf68522cde) |
+| `coord/pr73-ui-evidence-20261024` | [39774047081a](https://github.com/dolibali/zhuma/tree/39774047081a1b3cbab5b4afe2f9f0c9cab441bd) |
+| `coord/pr77-ui-evidence-20261024` | [a610b9fbbac8](https://github.com/dolibali/zhuma/tree/a610b9fbbac8349cf68bf829855005b9805bc19c) |
+| `coord/pr79-ui-evidence-20261024` | [be146584f28b](https://github.com/dolibali/zhuma/tree/be146584f28bd0f5117a330b45719422491c2c81) |
+| `coord/pr86-cold-entry-evidence-20261024` | [7788b83fd9fe](https://github.com/dolibali/zhuma/tree/7788b83fd9fee2ae55d8c2214f914a93146b00cd) |
+| `coord/pr86-footer-evidence-20261024` | [fa359d5858b1](https://github.com/dolibali/zhuma/tree/fa359d5858b1cdee1b896fb62f1fbfaf4b79ebd9) |
+| `coord/pr86-native-footer-evidence-20261024` | [88a8b4a5bfab](https://github.com/dolibali/zhuma/tree/88a8b4a5bfab522db1c2078448aa3b3fc383acbc) |
+| `coord/pr86-ui-evidence-20261024` | [82274e83a0ab](https://github.com/dolibali/zhuma/tree/82274e83a0abf853227aea6a06821aeac834f60e) |
+| `coord/pr88-ui-evidence-20261024` | [6dc67e026278](https://github.com/dolibali/zhuma/tree/6dc67e02627869b3c26f6d15ce554696810b584f) |
+| `coord/pr89-ui-evidence-20261024` | [1674ed7a0d73](https://github.com/dolibali/zhuma/tree/1674ed7a0d73dec755f61ec96c78b0bc13c6aaab) |
+| `coord/pr90-ui-evidence-20261024` | [f9c5d4c6b334](https://github.com/dolibali/zhuma/tree/f9c5d4c6b3347de2ade2a4f2b0018ac92e54e739) |
+| `coord/pr91-ui-evidence-20261024` | [55bcef2fd69a](https://github.com/dolibali/zhuma/tree/55bcef2fd69a2070f4587ed7fab46089f1660878) |
+| `coord/pr93-ui-evidence-20261025` | [903dbafaa1e6](https://github.com/dolibali/zhuma/tree/903dbafaa1e6d5e082f572611e9fab167bf4a6be) |
+| `coord/pr95-ui-evidence-20261025` | [e27e314d37c0](https://github.com/dolibali/zhuma/tree/e27e314d37c0f87df6786dbad3c0ab3055f858cb) |
+| `coord/pr97-ui-evidence-20261025` | [43f7ea217dac](https://github.com/dolibali/zhuma/tree/43f7ea217dac42bc19c7fb64101996eaeed06adb) |
+| `coord/pr98-ui-evidence-20261025` | [6f945ac302ba](https://github.com/dolibali/zhuma/tree/6f945ac302bae898125509ba4d2396825760da3a) |
+| `coord/pr99-ui-evidence-20261025` | [8c2543f5403e](https://github.com/dolibali/zhuma/tree/8c2543f5403e336e987aba5aa512c2f84f2b3827) |
+| `coord/v14-ui-evidence-20261102` | [1369af4ba7f1](https://github.com/dolibali/zhuma/tree/1369af4ba7f13c7a0652384a6207fb74c446d35d) |

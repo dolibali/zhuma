@@ -1,5 +1,0 @@
-[submodule "upstream/deepseek-harness"]
-	# Fixed dsh-v0.2.1-rc.4 commit; runtime.lock.json is the source of truth.
-	path = upstream/deepseek-harness
-	url = https://github.com/deepseek-ai/deepseek-harness.git
-	shallow = true

@@ -1,0 +1,615 @@
+{
+  "purpose": "Historical review and UI evidence; immutable snapshots, not current product acceptance",
+  "sourceRepository": "https://github.com/dolibali/zhuma",
+  "createdAt": "2026-11-09T13:10:25.945652+00:00",
+  "snapshots": [
+    {
+      "formerBranch": "coord/fxnie-pr337-338-ui-20261031",
+      "commit": "c6df24ebf6861d3b3dddc633650cefd757707d64",
+      "relatedPRs": [
+        {
+          "number": 337,
+          "state": "closed",
+          "merged": true
+        },
+        {
+          "number": 338,
+          "state": "closed",
+          "merged": true
+        }
+      ]
+    },
+    {
+      "formerBranch": "coord/pr102-ui-evidence-20261025",
+      "commit": "a90197e2519ca1370704bb771fcc515b1353c840",
+      "relatedPRs": [
+        {
+          "number": 102,
+          "state": "closed",
+          "merged": true
+        }
+      ]
+    },
+    {
+      "formerBranch": "coord/pr115-ui-evidence-20261025",
+      "commit": "81526377d78bb06fc422d1d2c29c8a618a218e83",
+      "relatedPRs": [
+        {
+          "number": 115,
+          "state": "closed",
+          "merged": true
+        }
+      ]
+    },
+    {
+      "formerBranch": "coord/pr138-ui-evidence-20261026",
+      "commit": "5e6a016ce196305afb5510a0484f744fe8013e1a",
+      "relatedPRs": [
+        {
+          "number": 138,
+          "state": "closed",
+          "merged": true
+        }
+      ]
+    },
+    {
+      "formerBranch": "coord/pr147-ui-evidence-20261026",
+      "commit": "ec4a63eff42e070fe09acd0e72e0a78726347966",
+      "relatedPRs": [
+        {
+          "number": 147,
+          "state": "closed",
+          "merged": true
+        }
+      ]
+    },
+    {
+      "formerBranch": "coord/pr149-153-ui-evidence-20261026",
+      "commit": "d2b4694306923aa72764c70f67e6f5657baba060",
+      "relatedPRs": [
+        {
+          "number": 149,
+          "state": "closed",
+          "merged": true
+        },
+        {
+          "number": 153,
+          "state": "closed",
+          "merged": true
+        }
+      ]
+    },
+    {
+      "formerBranch": "coord/pr169-ui-evidence-20261026",
+      "commit": "5b6e18b94644acd3c538457d6ace1e6ef534d154",
+      "relatedPRs": [
+        {
+          "number": 169,
+          "state": "closed",
+          "merged": true
+        }
+      ]
+    },
+    {
+      "formerBranch": "coord/pr175-ui-evidence-20261026",
+      "commit": "0a3cf68fea0de2942c7185097eee8e542ec7a1bc",
+      "relatedPRs": [
+        {
+          "number": 175,
+          "state": "closed",
+          "merged": true
+        }
+      ]
+    },
+    {
+      "formerBranch": "coord/pr178-ci-20261027-c460202f",
+      "commit": "c460202f669d3f22cc0b1ad313b4ef2359f4a3a1",
+      "relatedPRs": [
+        {
+          "number": 178,
+          "state": "closed",
+          "merged": true
+        }
+      ]
+    },
+    {
+      "formerBranch": "coord/pr178-ui-evidence-20261027",
+      "commit": "788c654a8c2c7440a4c3e7020c4064d541579746",
+      "relatedPRs": [
+        {
+          "number": 178,
+          "state": "closed",
+          "merged": true
+        }
+      ]
+    },
+    {
+      "formerBranch": "coord/pr183-186-gui-evidence-20261027",
+      "commit": "e1986b3059eaecfd781816edf6c5c683dde43843",
+      "relatedPRs": [
+        {
+          "number": 183,
+          "state": "closed",
+          "merged": true
+        },
+        {
+          "number": 186,
+          "state": "closed",
+          "merged": true
+        }
+      ]
+    },
+    {
+      "formerBranch": "coord/pr202-first-setup-evidence-20261027",
+      "commit": "e91dfe9f0b4be4f5e1109bf750089fd90586dafd",
+      "relatedPRs": [
+        {
+          "number": 202,
+          "state": "closed",
+          "merged": true
+        }
+      ]
+    },
+    {
+      "formerBranch": "coord/pr228-ui-evidence-20261027",
+      "commit": "a4f3d36be6f0c883e2b2ced2719e0b731e9aa2c4",
+      "relatedPRs": [
+        {
+          "number": 228,
+          "state": "closed",
+          "merged": true
+        }
+      ]
+    },
+    {
+      "formerBranch": "coord/pr238-title-evidence-20261027",
+      "commit": "edc2993223ec2a87bea2ba3b0a8db2281fecc993",
+      "relatedPRs": [
+        {
+          "number": 238,
+          "state": "closed",
+          "merged": false
+        }
+      ]
+    },
+    {
+      "formerBranch": "coord/pr252-recovery-ui-20261028",
+      "commit": "829275840494ba4374d5d663d5820e7b35f21828",
+      "relatedPRs": [
+        {
+          "number": 252,
+          "state": "closed",
+          "merged": true
+        }
+      ]
+    },
+    {
+      "formerBranch": "coord/pr272-ui-evidence-20261029",
+      "commit": "3c533888e42a087050cdfd04106adf86cda6e742",
+      "relatedPRs": [
+        {
+          "number": 272,
+          "state": "closed",
+          "merged": true
+        }
+      ]
+    },
+    {
+      "formerBranch": "coord/pr292-ui-evidence-20261029",
+      "commit": "bd4711b8cda60e37a9f6f2011e1263f3783d6b84",
+      "relatedPRs": [
+        {
+          "number": 292,
+          "state": "closed",
+          "merged": true
+        }
+      ]
+    },
+    {
+      "formerBranch": "coord/pr296-ui-evidence-20261029",
+      "commit": "b28de328e2cf729214f758b6ecceb24652b4a2c1",
+      "relatedPRs": [
+        {
+          "number": 296,
+          "state": "closed",
+          "merged": true
+        }
+      ]
+    },
+    {
+      "formerBranch": "coord/pr301-ui-evidence-20261029",
+      "commit": "33988150beebfe41e93451471774d7bf05b38bc2",
+      "relatedPRs": [
+        {
+          "number": 301,
+          "state": "closed",
+          "merged": true
+        }
+      ]
+    },
+    {
+      "formerBranch": "coord/pr306-file-scope-ui-evidence-20261029",
+      "commit": "3318cb5ec9f0f54ed8824225cffdaa32cda69d15",
+      "relatedPRs": [
+        {
+          "number": 306,
+          "state": "closed",
+          "merged": true
+        }
+      ]
+    },
+    {
+      "formerBranch": "coord/pr306-filter-ui-evidence-20261029",
+      "commit": "350d6e4e6aab5f1c9794ef0001119d3376b58c77",
+      "relatedPRs": [
+        {
+          "number": 306,
+          "state": "closed",
+          "merged": true
+        }
+      ]
+    },
+    {
+      "formerBranch": "coord/pr306-workflow-ui-evidence-20261029",
+      "commit": "a12f68c1c662dda6bd8c28d1ea20a2686fa1c797",
+      "relatedPRs": [
+        {
+          "number": 306,
+          "state": "closed",
+          "merged": true
+        }
+      ]
+    },
+    {
+      "formerBranch": "coord/pr308-real-core-evidence-20261029",
+      "commit": "131b0f612a974fbe816bc32ca20397cf794900e3",
+      "relatedPRs": [
+        {
+          "number": 308,
+          "state": "closed",
+          "merged": true
+        }
+      ]
+    },
+    {
+      "formerBranch": "coord/pr316-ui-evidence-20261030",
+      "commit": "bd77a6630a01d75293672cce1330f7f943eae3ab",
+      "relatedPRs": [
+        {
+          "number": 316,
+          "state": "closed",
+          "merged": true
+        }
+      ]
+    },
+    {
+      "formerBranch": "coord/pr322-ui-evidence-20261031",
+      "commit": "4e4d4a45cddfbb650a7e2c3042f318945ade53af",
+      "relatedPRs": [
+        {
+          "number": 322,
+          "state": "closed",
+          "merged": true
+        }
+      ]
+    },
+    {
+      "formerBranch": "coord/pr325-acp-ui-evidence-20261030",
+      "commit": "e429c921adaa0a87fd1c54df8d48f8a5c362b3a8",
+      "relatedPRs": [
+        {
+          "number": 325,
+          "state": "closed",
+          "merged": true
+        }
+      ]
+    },
+    {
+      "formerBranch": "coord/pr328-ui-evidence-20261031",
+      "commit": "b62ad30271ec0be99af2cae1813792bce7679205",
+      "relatedPRs": [
+        {
+          "number": 328,
+          "state": "closed",
+          "merged": true
+        }
+      ]
+    },
+    {
+      "formerBranch": "coord/pr357-assets-ui-evidence-20261030",
+      "commit": "5dba7b0c812a8c2fcf04af5884c916bb3b6482ed",
+      "relatedPRs": [
+        {
+          "number": 357,
+          "state": "closed",
+          "merged": true
+        }
+      ]
+    },
+    {
+      "formerBranch": "coord/pr365-codearts-ui-evidence-20261030",
+      "commit": "30eb92f8827ece24ca76b40b8d0995a66ddc1bd7",
+      "relatedPRs": [
+        {
+          "number": 365,
+          "state": "closed",
+          "merged": true
+        }
+      ]
+    },
+    {
+      "formerBranch": "coord/pr368-session-ui-evidence-20261030",
+      "commit": "b663c83fcccd78c1cf7cdbef2d255070db25c1d7",
+      "relatedPRs": [
+        {
+          "number": 368,
+          "state": "closed",
+          "merged": true
+        }
+      ]
+    },
+    {
+      "formerBranch": "coord/pr384-ui-evidence-20261103",
+      "commit": "a0953507d828a6c6f8dd36856fdcc3073120d75a",
+      "relatedPRs": [
+        {
+          "number": 384,
+          "state": "closed",
+          "merged": true
+        }
+      ]
+    },
+    {
+      "formerBranch": "coord/pr385-386-ui-evidence-20261103",
+      "commit": "3f948b7858a4433d5059d5137034d039127c8ce7",
+      "relatedPRs": [
+        {
+          "number": 385,
+          "state": "closed",
+          "merged": true
+        },
+        {
+          "number": 386,
+          "state": "closed",
+          "merged": true
+        }
+      ]
+    },
+    {
+      "formerBranch": "coord/pr387-ui-evidence-20261105",
+      "commit": "3ed3eb9263cce31bbe85b13c9b55e2e44d816192",
+      "relatedPRs": [
+        {
+          "number": 387,
+          "state": "closed",
+          "merged": true
+        }
+      ]
+    },
+    {
+      "formerBranch": "coord/pr391-ui-evidence-20261105",
+      "commit": "399c35d6c077344b919eb24999049865485b8c56",
+      "relatedPRs": [
+        {
+          "number": 391,
+          "state": "closed",
+          "merged": true
+        }
+      ]
+    },
+    {
+      "formerBranch": "coord/pr397-ui-evidence-20261105",
+      "commit": "ef6e089f732d391dbf8cad6e03da19238c707aaa",
+      "relatedPRs": [
+        {
+          "number": 397,
+          "state": "closed",
+          "merged": true
+        }
+      ]
+    },
+    {
+      "formerBranch": "coord/pr402-ui-evidence-20261105",
+      "commit": "3f4462936ebbce658695c2c6ad97a7454ae91805",
+      "relatedPRs": [
+        {
+          "number": 402,
+          "state": "closed",
+          "merged": true
+        }
+      ]
+    },
+    {
+      "formerBranch": "coord/pr404-ui-evidence-20261105",
+      "commit": "e92f3eb936e2b19b7442ffe292c58acf68522cde",
+      "relatedPRs": [
+        {
+          "number": 404,
+          "state": "closed",
+          "merged": true
+        }
+      ]
+    },
+    {
+      "formerBranch": "coord/pr73-ui-evidence-20261024",
+      "commit": "39774047081a1b3cbab5b4afe2f9f0c9cab441bd",
+      "relatedPRs": [
+        {
+          "number": 73,
+          "state": "closed",
+          "merged": true
+        }
+      ]
+    },
+    {
+      "formerBranch": "coord/pr77-ui-evidence-20261024",
+      "commit": "a610b9fbbac8349cf68bf829855005b9805bc19c",
+      "relatedPRs": [
+        {
+          "number": 77,
+          "state": "closed",
+          "merged": true
+        }
+      ]
+    },
+    {
+      "formerBranch": "coord/pr79-ui-evidence-20261024",
+      "commit": "be146584f28bd0f5117a330b45719422491c2c81",
+      "relatedPRs": [
+        {
+          "number": 79,
+          "state": "closed",
+          "merged": true
+        }
+      ]
+    },
+    {
+      "formerBranch": "coord/pr86-cold-entry-evidence-20261024",
+      "commit": "7788b83fd9fee2ae55d8c2214f914a93146b00cd",
+      "relatedPRs": [
+        {
+          "number": 86,
+          "state": "closed",
+          "merged": true
+        }
+      ]
+    },
+    {
+      "formerBranch": "coord/pr86-footer-evidence-20261024",
+      "commit": "fa359d5858b1cdee1b896fb62f1fbfaf4b79ebd9",
+      "relatedPRs": [
+        {
+          "number": 86,
+          "state": "closed",
+          "merged": true
+        }
+      ]
+    },
+    {
+      "formerBranch": "coord/pr86-native-footer-evidence-20261024",
+      "commit": "88a8b4a5bfab522db1c2078448aa3b3fc383acbc",
+      "relatedPRs": [
+        {
+          "number": 86,
+          "state": "closed",
+          "merged": true
+        }
+      ]
+    },
+    {
+      "formerBranch": "coord/pr86-ui-evidence-20261024",
+      "commit": "82274e83a0abf853227aea6a06821aeac834f60e",
+      "relatedPRs": [
+        {
+          "number": 86,
+          "state": "closed",
+          "merged": true
+        }
+      ]
+    },
+    {
+      "formerBranch": "coord/pr88-ui-evidence-20261024",
+      "commit": "6dc67e02627869b3c26f6d15ce554696810b584f",
+      "relatedPRs": [
+        {
+          "number": 88,
+          "state": "closed",
+          "merged": true
+        }
+      ]
+    },
+    {
+      "formerBranch": "coord/pr89-ui-evidence-20261024",
+      "commit": "1674ed7a0d73dec755f61ec96c78b0bc13c6aaab",
+      "relatedPRs": [
+        {
+          "number": 89,
+          "state": "closed",
+          "merged": true
+        }
+      ]
+    },
+    {
+      "formerBranch": "coord/pr90-ui-evidence-20261024",
+      "commit": "f9c5d4c6b3347de2ade2a4f2b0018ac92e54e739",
+      "relatedPRs": [
+        {
+          "number": 90,
+          "state": "closed",
+          "merged": true
+        }
+      ]
+    },
+    {
+      "formerBranch": "coord/pr91-ui-evidence-20261024",
+      "commit": "55bcef2fd69a2070f4587ed7fab46089f1660878",
+      "relatedPRs": [
+        {
+          "number": 91,
+          "state": "closed",
+          "merged": true
+        }
+      ]
+    },
+    {
+      "formerBranch": "coord/pr93-ui-evidence-20261025",
+      "commit": "903dbafaa1e6d5e082f572611e9fab167bf4a6be",
+      "relatedPRs": [
+        {
+          "number": 93,
+          "state": "closed",
+          "merged": true
+        }
+      ]
+    },
+    {
+      "formerBranch": "coord/pr95-ui-evidence-20261025",
+      "commit": "e27e314d37c0f87df6786dbad3c0ab3055f858cb",
+      "relatedPRs": [
+        {
+          "number": 95,
+          "state": "closed",
+          "merged": true
+        }
+      ]
+    },
+    {
+      "formerBranch": "coord/pr97-ui-evidence-20261025",
+      "commit": "43f7ea217dac42bc19c7fb64101996eaeed06adb",
+      "relatedPRs": [
+        {
+          "number": 97,
+          "state": "closed",
+          "merged": true
+        }
+      ]
+    },
+    {
+      "formerBranch": "coord/pr98-ui-evidence-20261025",
+      "commit": "6f945ac302bae898125509ba4d2396825760da3a",
+      "relatedPRs": [
+        {
+          "number": 98,
+          "state": "closed",
+          "merged": true
+        }
+      ]
+    },
+    {
+      "formerBranch": "coord/pr99-ui-evidence-20261025",
+      "commit": "8c2543f5403e336e987aba5aa512c2f84f2b3827",
+      "relatedPRs": [
+        {
+          "number": 99,
+          "state": "closed",
+          "merged": true
+        }
+      ]
+    },
+    {
+      "formerBranch": "coord/v14-ui-evidence-20261102",
+      "commit": "1369af4ba7f13c7a0652384a6207fb74c446d35d",
+      "relatedPRs": []
+    }
+  ]
+}
