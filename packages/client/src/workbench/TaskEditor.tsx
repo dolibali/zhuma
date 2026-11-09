@@ -36,9 +36,12 @@ import { NativeRunLauncher } from '../run/NativeRunWorkspace.js';
 import type { NativeRunApi } from '../run/api.js';
 import { WorkflowControls } from '../workflow/WorkflowControls.js';
 import type { WorkflowView } from '../workflow/api.js';
+import type { ExecutionApi } from '../execution/ExecutionApi.js';
+import { useExecutionCommand } from '../execution/interaction.js';
 import { confirmedNodeTitles, progressNodeMarks } from '../execution/progress-focus.js';
 import { latestTaskPlan, type TaskProgressState } from '../execution/useTaskProgress.js';
 import { TaskProgressSummary } from '../execution/TaskProgressSummary.js';
+import { confirmedPlanAction } from './confirmed-plan-action.js';
 import { taskHeading } from './task-heading.js';
 import { expertResources, prepareExpertProposal } from './expert-resources.js';
 import { MemberAssetFilePicker } from '../assets/MemberAssetFilePicker.js';
@@ -78,6 +81,7 @@ export function TaskEditor({
   initialPlanning,
   backLabel = '任务清单',
   openWork,
+  startPlan,
   nativeRun,
   progress,
   refreshProgress,
@@ -94,6 +98,8 @@ export function TaskEditor({
   initialPlanning?: InitialPlanning;
   backLabel?: string;
   openWork?: () => void;
+  /** Explicit start for this confirmed plan. Absent callers keep the view-only action. */
+  startPlan?: ExecutionApi['startPlan'];
   nativeRun?: { api: NativeRunApi; spaceId: string };
   progress?: TaskProgressState | undefined;
   refreshProgress?: (() => void) | undefined;
@@ -177,6 +183,14 @@ export function TaskEditor({
   } | null>(null);
   const dirty = JSON.stringify(task) !== baseline;
   const applied = latestTaskPlan(state.appliedPlans, task.id);
+  const planToken = applied ? `${task.id}:${applied.id}:${applied.revision}` : '';
+  const [startedToken, setStartedToken] = useState('');
+  const startCommand = useExecutionCommand();
+  const offerStart =
+    confirmedPlanAction(
+      progress,
+      !!startPlan && !!openWork && !!applied && !dirty && startedToken !== planToken,
+    ) === 'start';
   const workflowFacts = useRef('');
   function updateWorkflowView(next: WorkflowView) {
     setWorkflowView(next);
@@ -719,10 +733,37 @@ export function TaskEditor({
         </span>
         {task.status === 'ready' ? (
           api.member ? (
-            openWork && (
-              <Button variant="primary" onClick={openWork}>
-                查看待办
+            offerStart && applied && startPlan && openWork ? (
+              <Button
+                variant="primary"
+                disabled={busy || planning}
+                busy={startCommand.pending}
+                busyLabel="正在派发…"
+                onClick={() => {
+                  const payload = {
+                    taskId: task.id,
+                    planId: applied.id,
+                    revision: applied.revision,
+                  };
+                  void startCommand.run(
+                    payload,
+                    (idempotencyKey, signal) => startPlan({ ...payload, idempotencyKey }, signal),
+                    () => {
+                      setStartedToken(planToken);
+                      refreshProgress?.();
+                      openWork();
+                    },
+                  );
+                }}
+              >
+                开始执行
               </Button>
+            ) : (
+              openWork && (
+                <Button variant="primary" onClick={openWork}>
+                  查看待办
+                </Button>
+              )
             )
           ) : (
             <button
@@ -895,10 +936,16 @@ export function TaskEditor({
           </Button>
         </div>
       )}
-      {error && (
+      {(startCommand.error || error) && (
         <div role="alert" className="zm-error">
-          {error}
-          <button onClick={() => setError('')} aria-label="关闭错误">
+          {startCommand.error || error}
+          <button
+            onClick={() => {
+              if (startCommand.error) startCommand.setError('');
+              else setError('');
+            }}
+            aria-label="关闭错误"
+          >
             ×
           </button>
         </div>
