@@ -8,6 +8,8 @@ import {
   boardDragDecision,
   boardReviewRequired,
   taskBoardColumn,
+  taskBoardColumns,
+  visibleTaskBoardColumns,
 } from '../dist/workbench/task-board.js';
 import { TaskBoard } from '../dist/workbench/TaskBoard.js';
 
@@ -230,6 +232,65 @@ test('boardReviewRequired follows node flags and in-review progress', () => {
   assert.equal(boardReviewRequired(noReview, ready(row())), true); // in-review count > 0
   const counts = { ...row().byStatus, 'in-review': 0 };
   assert.equal(boardReviewRequired(noReview, ready(row({ byStatus: counts }))), false);
+});
+
+test('visible board columns keep pipeline order and add 待核实 only when unknown is occupied', () => {
+  const ids = (columns) => columns.map((column) => column.id);
+  const pipeline = ['planning', 'attention', 'running', 'review', 'ended'];
+  assert.deepEqual(ids(taskBoardColumns), [...pipeline, 'unknown']);
+  assert.deepEqual(ids(visibleTaskBoardColumns([])), pipeline);
+  assert.deepEqual(ids(visibleTaskBoardColumns(['ended', 'planning'])), pipeline);
+  assert.deepEqual(ids(visibleTaskBoardColumns(['unknown', 'unknown'])), [...pipeline, 'unknown']);
+  assert.deepEqual(ids(visibleTaskBoardColumns(['review', 'unknown'])), [...pipeline, 'unknown']);
+  assert.equal(visibleTaskBoardColumns(['unknown']).at(-1).label, '待核实');
+  assert.deepEqual(ids(taskBoardColumns), [...pipeline, 'unknown']);
+});
+
+test('board hides an empty 待核实 column and shows it after 已结束 when a task projects there', () => {
+  const { state, task } = fixture();
+  const markup = (tasks, confirmed, progress = () => undefined) =>
+    renderToStaticMarkup(
+      createElement(TaskBoard, {
+        tasks,
+        projects: state.projects,
+        participants: state.participants,
+        progress,
+        confirmed,
+        openTask: () => {
+          throw new Error('Rendering must not start a command');
+        },
+      }),
+    );
+  const pipeline = ['规划中', '待处理', '进行中', '待评审', '已结束'];
+  const hidden = markup(state.tasks, () => false);
+  assert.equal(hidden.includes('待核实'), false);
+  assert.match(hidden, /grid-template-columns:repeat\(5, minmax\(210px, 1fr\)\)/);
+  assert.ok(hidden.includes('draggable="true"'));
+  assert.ok(hidden.includes('暂无任务'));
+  let at = 0;
+  for (const label of pipeline) {
+    const next = hidden.indexOf(`aria-label="${label} `, at);
+    assert.ok(next > at, label);
+    at = next;
+  }
+
+  const pending = { ...task, id: 'pending', title: '接口核对', status: 'ready' };
+  const shown = markup([task, pending], () => false);
+  assert.match(shown, /aria-label="待核实 1 项"/);
+  assert.match(shown, /grid-template-columns:repeat\(6, minmax\(210px, 1fr\)\)/);
+  assert.ok(shown.indexOf('aria-label="已结束') < shown.indexOf('aria-label="待核实'));
+  assert.ok(shown.includes('接口核对'));
+  assert.ok(shown.includes(task.title));
+  for (const label of pipeline) assert.ok(shown.includes(`aria-label="${label} `));
+
+  const verified = markup(
+    [task],
+    () => true,
+    () => ({ state: 'ready', row: unknown() }),
+  );
+  assert.match(verified, /aria-label="待核实 1 项"/);
+  assert.ok(verified.includes(task.title));
+  assert.equal(/onMoveTask|save-task/.test(verified), false);
 });
 
 test('board SSR contract renders the supplied task snapshot without commands; cards may be draggable', () => {

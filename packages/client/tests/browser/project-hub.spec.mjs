@@ -218,15 +218,23 @@ test('项目内打开任务清单只显示当前项目，离开项目后再打�
   await expect(page.getByRole('heading', { name: '没有匹配的任务' })).toBeVisible();
   await expect(page.getByLabel('筛选项目', { exact: true })).toContainText('空项目');
   await button(page, '看板').click();
+  const columns = page.locator('.zm-board-column');
   await expect(page.locator('.zm-board-card')).toHaveCount(0);
-  await expect(page.locator('.zm-board-column')).toHaveCount(6);
-  await expect(page.locator('.zm-board-empty')).toHaveCount(6);
+  await expect(columns).toHaveCount(5);
+  await expect(page.locator('.zm-board-empty')).toHaveCount(5);
+  await expect(columns.last()).toHaveAttribute('aria-label', /^已结束 /);
+  await expect(page.getByLabel('任务看板')).not.toContainText('待核实');
   await expect(page.getByLabel('任务看板')).not.toContainText('订单协作改进');
   await expect(page.getByLabel('任务看板')).not.toContainText('研究列表空状态');
 
   await openProject('订单门户');
   await tasksTab.click();
   await expect(page.locator('.zm-board-card')).toHaveCount(portal.length);
+  await expect(columns).toHaveCount(6);
+  await expect(columns.nth(4)).toHaveAttribute('aria-label', /^已结束 /);
+  await expect(columns.nth(5)).toHaveAttribute('aria-label', /^待核实 /);
+  await expect(columns.first()).toContainText('订单协作改进');
+  await expect(columns.nth(5)).toContainText('订单导出字段核对');
   await expect(page.getByLabel('任务看板')).toContainText('订单协作改进');
   await expect(page.getByLabel('任务看板')).toContainText('订单导出字段核对');
   await expect(page.getByLabel('任务看板')).not.toContainText('研究列表空状态');
