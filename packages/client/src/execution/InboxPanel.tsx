@@ -44,6 +44,7 @@ export function InboxPanel({
   pending = false,
   reload,
   open,
+  openedItemId,
   renderAgentAction,
 }: {
   items: readonly InboxItem[];
@@ -54,6 +55,8 @@ export function InboxPanel({
   pending?: boolean;
   reload(): void;
   open(item: InboxItem): void;
+  /** The submit row whose delivery panel is already open. Its card action is not a second submit. */
+  openedItemId?: string;
   renderAgentAction?: ((node: ExecutionNodeWire) => ReactNode) | undefined;
 }) {
   const heading = useId();
@@ -153,13 +156,19 @@ export function InboxPanel({
                       )}
                     </div>
                     <div className="zm-directory-actions">
-                      {agent && enabled ? (
+                      {item.action === 'submit' && openedItemId === item.id ? (
+                        <span className="zm-muted">提交面板已打开</span>
+                      ) : agent && enabled ? (
                         renderAgentAction!(node!)
                       ) : waiting ? (
                         <span className="zm-status">等待中</span>
                       ) : supported ? (
                         <Button disabled={!enabled} onClick={() => open(item)}>
-                          {agent ? '打开 Agent 会话' : view.actionLabel}
+                          {agent
+                            ? '打开 Agent 会话'
+                            : item.action === 'submit'
+                              ? '打开提交'
+                              : view.actionLabel}
                         </Button>
                       ) : (
                         <span className="zm-muted zm-inbox-unavailable">

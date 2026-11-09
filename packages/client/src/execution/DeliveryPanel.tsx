@@ -31,7 +31,8 @@ function DeliveryForm({ api, node, mode = 'submit', onSubmitted, headerAction }:
   const editor = useDeliveryEditor(api, node, available, onSubmitted);
   const [uploadPresence, setUploadPresence] = useState(false);
   const [uploadBusy, setUploadBusy] = useState(false);
-  useUnsavedChanges(editor.dirty || !!editor.pending || uploadPresence);
+  // Draft edits still confirm a space switch. They do not trap sidebar navigation.
+  useUnsavedChanges(editor.dirty || uploadPresence, 'form');
   const upstreamBlocked = node.inputs?.some((input) => input.blocking) === true;
   const locked = editor.pending === 'save' || editor.pending === 'submit' || editor.submitted;
   const status = editor.submitted
@@ -183,9 +184,11 @@ function DeliveryForm({ api, node, mode = 'submit', onSubmitted, headerAction }:
         </Button>
         <Button
           variant="primary"
-          disabled={!editor.canWrite || upstreamBlocked || editor.incompleteFiles || uploadPresence}
-          busy={editor.pending === 'submit'}
-          busyLabel="正在提交…"
+          disabled={!editor.canSubmit || uploadPresence}
+          busy={editor.pending === 'submit' || editor.submitQueued}
+          busyLabel={
+            editor.submitQueued && editor.pending !== 'submit' ? '正在保存后提交…' : '正在提交…'
+          }
           onClick={() => void editor.submit()}
         >
           {mode === 'revise' ? '重新提交' : '提交产物'}
