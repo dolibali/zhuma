@@ -1,5 +1,6 @@
 import type { NodeStatus } from '@zhuma/agent-core';
 import { NODE_STATUS_LABELS } from '../execution-view.js';
+import { Spinner } from './Button.js';
 
 /** Canvas mark for one confirmed node. Rendering does not start or change work. */
 export function NodeStatusMark({
@@ -11,8 +12,13 @@ export function NodeStatusMark({
 }) {
   if (executing || status === 'running')
     return (
-      <span className="zm-flow-status zm-flow-status-running" title="执行中">
-        <span className="zm-spinner" role="img" aria-label="执行中" />
+      <span
+        className="zm-flow-status zm-flow-status-running"
+        role="img"
+        aria-label="执行中"
+        title="执行中"
+      >
+        <Spinner />
       </span>
     );
   if (status === 'completed')

@@ -7,7 +7,7 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from 'react';
-import { Button } from '../workbench/Button.js';
+import { Button, Spinner } from '../workbench/Button.js';
 import { Field } from '../workbench/controls.js';
 import type { IdentityApi, LoginCredentials, MemberSession } from './api.js';
 import { createMemberSessionController, type MemberSessionState } from './session.js';
@@ -195,7 +195,7 @@ export function MemberSessionView({
                 </>
               ) : (
                 <p role="status" className="zm-login-status">
-                  <span className="zm-spinner" aria-hidden />
+                  <Spinner />
                   {state.status === 'restoring' ? '正在检查登录状态…' : '正在结束当前会话…'}
                 </p>
               )}

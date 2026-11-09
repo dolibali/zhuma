@@ -8,7 +8,7 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from 'react';
-import { Button } from '../workbench/Button.js';
+import { Button, Spinner } from '../workbench/Button.js';
 import { Modal } from '../workbench/controls.js';
 import { SingleSelect } from '../workbench/SingleSelect.js';
 import { ControlIcon } from '../workbench/ControlIcon.js';
@@ -184,7 +184,15 @@ export function MemberSpaceBoundary({
       </nav>
       {state.status === 'checking' && (
         <div className="zm-space-state" role="status" aria-busy="true">
-          正在确认空间访问权限…
+          <div className="zm-boot-skeleton" aria-hidden="true">
+            <span />
+            <span />
+            <span />
+          </div>
+          <p className="zm-pending">
+            <Spinner />
+            正在确认空间访问权限…
+          </p>
         </div>
       )}
       {state.status === 'empty' && (

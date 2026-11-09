@@ -1,4 +1,5 @@
 import type { NodeStatus } from '@zhuma/agent-core';
+import { Spinner } from '../workbench/Button.js';
 import { focusNodes } from './progress-focus.js';
 import type { TaskProgressState } from './useTaskProgress.js';
 import type { TaskProgressRow } from './task-progress.js';
@@ -105,7 +106,7 @@ export function TaskProgressSummary({
     >
       {executing && (
         <span className="zm-task-progress-running" title={executing}>
-          <span className="zm-spinner" aria-hidden="true" />
+          <Spinner />
           <b>{executing}</b>
         </span>
       )}

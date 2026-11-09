@@ -1,5 +1,5 @@
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
-import { Button } from '../workbench/Button.js';
+import { Button, Spinner } from '../workbench/Button.js';
 import { Field } from '../workbench/controls.js';
 import type { LoginCredentials, MemberSpace } from './api.js';
 import type { MemberSessionController, MemberShell } from './shell.js';
@@ -315,7 +315,7 @@ export function LocalSetupBoundary({
           </header>
           {state.kind === 'checking' ? (
             <p className="zm-login-status" role="status">
-              <span className="zm-spinner" aria-hidden />
+              <Spinner />
               正在读取设置状态…
             </p>
           ) : (
