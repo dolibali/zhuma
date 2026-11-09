@@ -45,7 +45,7 @@ pnpm upstream:check
 
 ## 3. 从源码启动桌面
 
-当前产品平台为 macOS arm64、Windows x64；Linux 使用后文的服务入口。macOS 需要可用的系统签名工具；进入系统原生模块源码构建时需要 `cc` 和对应 Node headers。Windows 在原生 Windows 文件系统和 PowerShell 中工作；WSL 的 Linux 构建不能替代 Windows 桌面资格。完整 SDK 条件见[固定开发指南](../upstream/deepseek-harness/docs/development.zh.md)。
+当前产品平台为 macOS arm64、Windows x64；Linux 使用后文的服务入口。macOS 需要可用的系统签名工具；进入系统原生模块源码构建时需要 `cc` 和对应 Node headers。Windows 在原生 Windows 文件系统和 PowerShell 中工作；WSL 的 Linux 构建不能替代 Windows 桌面资格。完整 SDK 条件见[固定开发指南](https://github.com/deepseek-ai/deepseek-harness/blob/504a01a9578abc2c6f1fb896b1dc322c9fe24f66/docs/development.zh.md)。
 
 为这次源码运行选择新的、未使用的状态目录，不导入已安装应用的 profile、模型密钥或会话库。
 
