@@ -50,7 +50,7 @@ examples/       独立示例与演示项目
 
 源码环境使用 Node.js **24.15.0**、pnpm **12.4.2** 和可用的 Corepack、Git。安装版桌面无需这套源码工具；Linux 便携服务包的运行要求单独见指南。
 
-在完成工具安装后，从自选目录取得完整源码并启动桌面：
+在完成工具安装后，从自选目录取得完整源码并准备桌面构建目录：
 
 ```sh
 git clone --recurse-submodules https://github.com/dolibali/zhuma.git
@@ -58,10 +58,9 @@ cd zhuma
 pnpm install --frozen-lockfile --ignore-scripts
 pnpm run doctor
 pnpm desktop:prepare
-pnpm desktop:dev
 ```
 
-桌面源码入口面向 macOS arm64 和 Windows x64，会准备隔离构建目录并编译、启动应用。各系统的状态隔离、完整依赖准备、可选共享后端、Linux 便携/镜像启动、端口与数据保留见[源码运行与本地部署指南](docs/getting-started.md)。根 Workspace 保持独立，具体分包和实现来源见技术文档。
+桌面源码入口面向 macOS arm64 和 Windows x64。启动前先按[指南第 3 节](docs/getting-started.md#3-从源码启动桌面)为当前平台设置新的状态目录，再执行 `pnpm desktop:dev`，避免复用已安装应用的 profile。完整依赖准备、可选共享后端、Linux 便携/镜像启动、端口与数据保留见[源码运行与本地部署指南](docs/getting-started.md)。根 Workspace 保持独立，具体分包和实现来源见技术文档。
 
 ## 技术文档
 
