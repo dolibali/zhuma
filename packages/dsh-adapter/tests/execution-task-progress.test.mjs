@@ -104,6 +104,7 @@ test('task progress Service: absent start is distinct from missing receipt or pa
   assert.equal(unstarted.delivery, 'pending');
   assert.equal(unstarted.expectedNodes, 2);
   assert.equal(unstarted.acceptedNodes, 0);
+  assert.equal(Object.hasOwn(unstarted, 'humanReady'), false);
   assert.equal(
     Object.values(unstarted.byStatus).reduce((a, b) => a + b, 0),
     0,
@@ -120,6 +121,7 @@ test('task progress Service: absent start is distinct from missing receipt or pa
     assert.equal(item.reason, 'incomplete-plan');
     assert.equal(item.acceptedNodes, null);
     assert.equal(item.byStatus, null);
+    assert.equal(Object.hasOwn(item, 'humanReady'), false);
     assert.equal(item.resources, null);
   }
 });
@@ -502,6 +504,45 @@ test('task progress Service: recorded author and review resources and Stop reque
   assert.equal(item.resources.reviewHeld, 1);
 });
 
+test('task progress pure projection: a ready human is counted apart from a ready expert', () => {
+  const state = reviewWorkbench({ reviewerIds: ['outside'], parallelExpert: true });
+  const applied = state.appliedPlans[0];
+  const target = reference(applied);
+  const started = startAppliedPlan({ requested: target, applied, actorId: 'chen', existing: [] });
+  assert.equal(started.ok, true);
+  const records = new Map(started.records.map((record) => [nodeRecordKey(record), record]));
+  const source = {
+    global: { schemaVersion: 1 },
+    readPlan() {
+      return {
+        idempotencyKey: 'start',
+        fingerprint: canonicalPayload(target),
+        nodeIds: started.records.map((record) => record.nodeId),
+      };
+    },
+    readNode(node) {
+      return records.get(nodeRecordKey(node));
+    },
+  };
+  const selection = selectTaskProgress(
+    state,
+    'chen',
+    taskProgressQuerySchema.parse({ spaceId: 'north', plans: [target] }),
+  );
+  const result = taskProgressProjection(selection, source, { detail: true });
+  const summary = taskProgressProjection(selection, source);
+  assert.equal(Object.hasOwn(summary.items[0], 'humanReady'), false);
+  assert.equal(Object.hasOwn(summary.items[0], 'nodeStatuses'), false);
+  const item = result.items[0];
+  assert.equal(item.facts, 'present');
+  assert.equal(item.delivery, 'pending');
+  assert.equal(item.byStatus.ready, 2);
+  assert.equal(item.byStatus.blocked, 1);
+  assert.equal(item.byStatus.running, 0);
+  assert.equal(item.humanReady, 1);
+  assert.deepEqual(item.assigneeCounts, { human: 2, expert: 1 });
+});
+
 test('task progress pure projection: five complete eighty-node plans take exactly four hundred point reads and bounded metadata', () => {
   const state = projectWorkbench({ count: 400, privateTask: false }),
     records = new Map(),
@@ -535,6 +576,7 @@ test('task progress pure projection: five complete eighty-node plans take exactl
   for (const item of result.items) {
     assert.equal(item.expectedNodes, 80);
     assert.equal(item.byStatus.ready, 80);
+    assert.equal(Object.hasOwn(item, 'humanReady'), false);
     assert.equal(item.delivery, 'pending');
   }
   assert.ok(Buffer.byteLength(JSON.stringify(result)) <= TASK_PROGRESS_LIMITS.responseBytes);

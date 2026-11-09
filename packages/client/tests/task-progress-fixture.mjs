@@ -37,6 +37,7 @@ export function row(patch = {}) {
       completed: 2,
     },
     assigneeCounts: { human: 3, expert: 2 },
+    humanReady: 0,
     resources: { authorHeld: 2, reviewHeld: 1, stopRequested: 0 },
     workflow: 'inactive',
     ...patch,
@@ -64,5 +65,6 @@ export const unknown = () =>
     nodeStatuses: null,
     workflow: null,
     assigneeCounts: null,
+    humanReady: null,
     resources: null,
   });

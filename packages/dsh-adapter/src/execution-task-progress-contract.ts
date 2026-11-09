@@ -57,6 +57,11 @@ interface KnownCounts {
   /** Omitted on the summary protocol. Null until a plan receipt exists. */
   readonly workflow?: TaskProgressWorkflow | null;
   readonly assigneeCounts: { readonly human: number; readonly expert: number };
+  /**
+   * Human assignees whose node status is `ready`. Present with node detail.
+   * Summary responses omit it so older readers keep the previous key set.
+   */
+  readonly humanReady?: number;
   readonly resources: TaskProgressResources;
 }
 export type TaskProgressUnknownReason =
@@ -90,6 +95,8 @@ export type TaskProgressRow =
       readonly nodeStatuses?: null;
       readonly workflow?: null;
       readonly assigneeCounts: null;
+      /** Present with node detail. Omitted on the summary protocol. */
+      readonly humanReady?: null;
       readonly resources: null;
     };
 export interface TaskProgressValue {

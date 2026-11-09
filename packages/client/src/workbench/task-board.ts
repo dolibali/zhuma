@@ -27,7 +27,11 @@ export function taskBoardColumn(
   if (row.byStatus['in-review']) return 'review';
   if (row.byStatus['needs-revision'] || row.byStatus['waiting-for-input'] || row.byStatus.failed)
     return 'attention';
-  return 'attention';
+  // A human assignee in `ready` is waiting to deliver, so the board column is in progress.
+  const awaitingHuman = row.nodeStatuses
+    ? row.nodeStatuses.some((node) => node.status === 'ready' && node.assignee === 'human')
+    : row.humanReady > 0;
+  return awaitingHuman ? 'running' : 'attention';
 }
 
 /** Pipeline order for detecting a drag that jumps past review. */
