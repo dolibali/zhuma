@@ -36,10 +36,38 @@
 
 完整操作见[工作台使用指南](distribution/workbench/README.md#正常操作)。客户端安装不会自动升级团队共享服务，已有数据与配置的升级安排见[服务部署说明](distribution/server/README.md)和本版发行说明。
 
+## 项目结构与源码启动
+
+```text
+packages/       产品领域、上下文、运行适配与客户端代码
+resources/      工作流、技能和专家资源
+scripts/        开发、构建与检查入口
+distribution/   桌面、共享服务与部署模板
+docs/           架构、运行及开发说明
+tests/          分层验证约定
+examples/       独立示例与演示项目
+```
+
+源码环境使用 Node.js **24.15.0**、pnpm **12.4.2** 和可用的 Corepack、Git。安装版桌面无需这套源码工具；Linux 便携服务包的运行要求单独见指南。
+
+在完成工具安装后，从自选目录取得完整源码并启动桌面：
+
+```sh
+git clone --recurse-submodules https://github.com/dolibali/zhuma.git
+cd zhuma
+pnpm install --frozen-lockfile --ignore-scripts
+pnpm run doctor
+pnpm desktop:prepare
+pnpm desktop:dev
+```
+
+桌面源码入口面向 macOS arm64 和 Windows x64，会准备隔离构建目录并编译、启动应用。各系统的状态隔离、完整依赖准备、可选共享后端、Linux 便携/镜像启动、端口与数据保留见[源码运行与本地部署指南](docs/getting-started.md)。根 Workspace 保持独立，具体分包和实现来源见技术文档。
+
 ## 技术文档
 
 | 文档                                           | 内容                         |
 | ---------------------------------------------- | ---------------------------- |
+| [源码运行与本地部署](docs/getting-started.md)  | 从克隆到启动、配置和停止     |
 | [开发指南](docs/development.md)                | 环境准备、开发命令与协作约定 |
 | [架构说明](docs/architecture.md)               | 模块边界、接口与实现来源     |
 | [桌面发行指南](distribution/desktop/README.md) | 源码构建、平台打包与来源核验 |
@@ -47,7 +75,7 @@
 | [测试说明](tests/README.md)                    | 各层验证方法及证据边界       |
 | [产品范围](docs/product-coverage.md)           | 已有能力、保留范围与退出条件 |
 
-本次补丁范围与发行进度见[工作项 #449](https://github.com/dolibali/zhuma/issues/449)，协作入口见[总索引 #25](https://github.com/dolibali/zhuma/issues/25)。
+v1.5.1 范围与发行记录见[工作项 #449](https://github.com/dolibali/zhuma/issues/449)，协作入口见[总索引 #25](https://github.com/dolibali/zhuma/issues/25)。
 
 ## 许可
 
