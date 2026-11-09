@@ -1,59 +1,74 @@
 # 开发指南
 
-## 交付入口
+第一次运行先读[源码运行与本地部署](getting-started.md)：其中给出完整检出、工具安装、Windows/macOS 桌面启动、可选共享后端、Linux 包运行及数据保留。这里维护开发边界和日常命令；[架构](architecture.md)解释当前模块和事实归属。
 
-[交付规则与总索引 #25](https://github.com/dolibali/zhuma/issues/25) 是统一入口；实时阶段、优先级和依赖读取对应 Issue 标签／正文，由协调者维护。Project 只作用户总览，开发者无需 Projects 写权限。范围与退出条件保留在[覆盖账本](product-coverage.md)，接口与分期见 [roadmap](roadmap.md)，不另建状态副本。
+## 仓库与工具
 
-A/B 全程用 GitHub 插件或 `gh` 处理 Issue 与 PR，不打开或自动化操作浏览器。开始、交付、阻塞／依赖变化、验收时，在原工作项更新一次：分支与完整 SHA、PR、实际完成、证据与未覆盖边界、阻塞负责人、下一交付。无变化不重复确认，评审细节留在 PR；用 `Refs #工作项` 关联，未满足退出条件不自动关闭。
+根仓库使用 Node.js `24.15.0`、pnpm `12.4.2`；固定 DSH SDK 使用自己的 `pnpm@11.28.5`。以 `.node-version`、`.nvmrc`、`package.json` 和 `runtime.lock.json` 为准，不自动修改全局工具。根 Workspace 只有 `packages/*`，不能纳入上游整套 Workspace。
 
-A 的 Host 身份装配见 [#28](https://github.com/dolibali/zhuma/issues/28)，登录／空间 UI 见 [#31](https://github.com/dolibali/zhuma/issues/31)，执行业务和显式开始的共享装配见 [#32](https://github.com/dolibali/zhuma/issues/32)。B 的可信身份、项目空间事实和人工链分别见 [#27](https://github.com/dolibali/zhuma/issues/27)、[#29](https://github.com/dolibali/zhuma/issues/29)、[#30](https://github.com/dolibali/zhuma/issues/30)。A 消费真实接口并单写共享入口，不创建第二份授权事实或执行业务。
-
-退回修改的 Client 查询、版本对照、输入生命周期和显式重提边界见[接口说明](contracts/client-revision.md)。
-上游来源的公开投影、正常提交／修改入口和服务阻塞消费见[上游输入说明](contracts/client-upstream-inputs.md)。
-文字／链接草稿的明确保存、冲突恢复、跨轮版本与文件引用边界见[草稿说明](contracts/client-delivery-drafts.md)。
-具体工作项分组、正常处理入口及已审来源投影边界见[待办说明](contracts/client-inbox-groups.md)。
-
-## 第一次准备
-
-安装 `.node-version` 中的 Node 和 `package.json` 中的 pnpm。仓库提供版本声明，不自动修改开发者全局工具。
-
-```bash
+```sh
 git submodule update --init --recursive
 pnpm install --frozen-lockfile --ignore-scripts
 pnpm run doctor
-pnpm check
 pnpm upstream:check
 ```
 
+从克隆开始的完整命令及 Corepack 安装见[运行指南](getting-started.md)。仅安装根依赖或通过 `pnpm build`，不会生成可运行桌面。Windows/macOS 使用对应本机依赖；Linux 服务原生构建不复制另一系统的二进制。Node 的 TypeScript 支持不得被 `--no-experimental-strip-types` 禁用。
+
+## 目录与依赖
+
+| 目录/包                     | 作用                                  |
+| --------------------------- | ------------------------------------- |
+| `packages/agent-core`       | 纯领域契约与任务/计划/交付模型        |
+| `packages/context`          | 有来源/版本的上下文和证据             |
+| `packages/dsh-adapter`      | Host、运行、身份/空间、存储与运输适配 |
+| `packages/client`           | 工作台、成员处理、会话与评审 UI       |
+| `resources`                 | 工作流、Skills、专家等资源            |
+| `scripts`、`distribution`   | 准备、构建、核验及桌面/服务发行材料   |
+| `docs`、`tests`、`examples` | 技术文档、验证约定和独立示例          |
+| `upstream/deepseek-harness` | 由子模块锁定的官方依赖源码            |
+
+包边界按 [AGENTS.md](../AGENTS.md)执行；跨包走 `@zhuma/*` 公开入口。修改公共 DTO、装配或其他写者模块前，先在原工作项明确文件和最小接缝，不另造身份、聊天或工作台事实库。
+
 ## 常用命令
 
-项目环境检查使用 `pnpm run doctor`，显式写 `run`，避免命中 pnpm 自带的同名命令。
+以下在根目录运行；环境检查写作 `pnpm run doctor`，避免命中 pnpm 自带的同名命令。
 
-| 命令                                | 作用                                                |
-| ----------------------------------- | --------------------------------------------------- |
-| `pnpm build`                        | 按 TypeScript 引用构建四个自研包                    |
-| `pnpm typecheck`                    | 构建引用声明，再检查各包类型                        |
-| `pnpm test`                         | 构建后运行 Node 原生测试，不调用模型                |
-| `pnpm check:repo`                   | 检查目录、包名、版本和源码依赖方向                  |
-| `pnpm format` / `pnpm format:check` | 处理自有文件，排除上游和生成目录                    |
-| `pnpm check`                        | 仓库边界、格式、类型和单元测试                      |
-| `pnpm workspace:demo`               | 构建后启动 Agent 处理演示，地址打印在标准输出       |
-| `pnpm test:browser`                 | 构建后用本机 Chrome 跑模拟执行器的浏览器流程        |
-| `pnpm upstream:check`               | 核对子模块 URL、gitlink、HEAD、包版本及上游干净状态 |
-| `pnpm clean`                        | 只删除四个自研包的 dist                             |
+| 命令                                        | 作用与边界                                              |
+| ------------------------------------------- | ------------------------------------------------------- |
+| `pnpm build`                                | 构建四个产品包的 TypeScript 引用                        |
+| `pnpm typecheck`                            | 先构建引用声明，再检查各包类型                          |
+| `pnpm test`                                 | 构建后运行 Node 测试，模型/特定环境项目保留原显式条件   |
+| `pnpm check`                                | 仓库、图标、格式、类型和上述测试；提交前必须执行        |
+| `pnpm check:repo`                           | 检查 Workspace、命名和导入边界                          |
+| `pnpm format:check` / `pnpm format`         | 检查/整理自有文件，排除生成与上游目录                   |
+| `pnpm upstream:check`                       | 核子模块 URL、gitlink、HEAD、版本及干净状态             |
+| `pnpm workbench:build`                      | 生成 `.build/workbench` 的产品插件文件，不启动应用      |
+| `pnpm desktop:prepare` / `pnpm desktop:dev` | 准备隔离桌面源码/编译并启动；不同于普通包构建           |
+| `pnpm test:host`                            | 构建工作台并核组合 Host，使用独立测试数据；不是安装验收 |
+| `pnpm test:ui`                              | 构建工作台并运行浏览器契约；不是产品实机/模型证明       |
+| `pnpm clean`                                | 删除四个产品包的 dist，不是用户数据迁移工具             |
 
-`pnpm test` 验证契约和内存事务，不调用模型。`pnpm test:browser` 用浏览器操作显式选择的模拟执行器，不计入 `pnpm check`。真实 DSH 插件、桌面安装、模型调用和 CLI 联动仍未验证，不把这些项目计为通过。`pnpm check` 覆盖仓库、类型和 Node 契约测试，不等于业务验收。已有工作台、项目与资产等切片的正式 Host／隔离桌面记录分别保存在[验证记录](workbench-validation.md)和 `docs/review/`；这些历史证据只认证注明的提交和环境。契约、响应重放、作者报告、独立验证、真实 Host／多账号／模型、原生桌面与安装包分列，没有执行的层次不计通过。额外验证由对应工作项约定，不因文档维护重跑旧 UI。
+`examples/` 与 `workspace:demo`、`test:browser` 中的早期模拟演示保留原语义，不是当前产品共享服务入口。正式源码启动和部署使用[运行指南](getting-started.md)中的真实脚本，不把临时演示或夹具当作真实成员业务。
 
-## DSH 的工具链
+## 模型、状态与本机数据
 
-本仓使用 pnpm `12.4.2`；锁定的上游使用 pnpm `11.28.5`，二者分别安装与构建。先读取上游 `AGENTS.md`、`docs/architecture.md`、`apps/desktop/README.md`，再执行上游自己的命令。
+人工编排/提交不要求模型。后端 AI 规划与桌面本机执行各用自己的模型设置和凭据，入口、隔离目录和开发网关开关见[运行指南](getting-started.md)。不提交密钥、个人路径、会话库、用户材料或操作者能力文件，不复制其他安装的 profile。
 
-初次初始化不安装上游全部依赖，不下载 Electron，不改动已有 DSH 应用。后续桌面构建需在隔离工作树准备。不能把根目录 `pnpm build` 的成功解释为官方桌面构建成功。
+新建桌面 profile 进入明确的本机成员设置；旧 profile 保持原模式和数据，不自动迁移。根发行 overlay 的 legacy 兼容值不能用来推断新安装默认模式。任务/计划与执行/交付状态分开，浏览器选择不能替代服务授权，CLI 完成不等于节点已交付。
 
-## 升级上游
+## 验证和交付
 
-通过专门分支选择标签和精确提交；同步子模块 gitlink 与 `runtime.lock.json`，检查其工具链和接口变化，运行最小插件、状态、桌面及打包回归后再合并。不使用自动跟踪远程分支或启动时安装 latest。
+[交付规则与总索引 #25](https://github.com/dolibali/zhuma/issues/25) 与对应工作项是实时入口，具体文件归属读 [AGENTS.md](../AGENTS.md)。阶段、优先级由协调维护；文档保存范围/接口/证据版本，不另抄阶段表。Issue/PR 使用 GitHub 插件或 `gh`，保留独立 topic/worktree，按有效规则普通合并。
 
-## 后续开发
+开始、交付、阻塞变化和验收时，在原工作项合并更新分支/完整 SHA、PR、实际完成、证据边界、负责人和下一交付。无变化不刷评论；代码评审和详细证据留 PR，用 `Refs #工作项` 关联，未达退出条件不自动关闭。
 
-从 #25 依赖关系拉取一个主要交付切片，在已集成基线上准备；未合入实现写作“已发布待审”，不能据此声称正式集成，也不能忽略已经交付的模块。后续仍需逐项完成真实成员入口、人工／Agent 处理、固定产物、评审、恢复与安装验收，具体退出条件见[覆盖账本](product-coverage.md)。
+当前已经提供成员创建/规划、原生会话处理、固定文字/文件交付、评审与下游等实现；完整 FR/LC、工程案例和延期范围仍读[产品范围](product-coverage.md)。`pnpm check` 只证明其实际运行的检查，不能认证模型、平台、安装或全业务通过。新增代码后的验证必须绑定新源码；未变部分按准确版本继承历史证据，不因文档整理重复 GUI/SDK/模型。
+
+接口参考：[退回修改](contracts/client-revision.md)、[上游输入](contracts/client-upstream-inputs.md)、[草稿](contracts/client-delivery-drafts.md)、[待办](contracts/client-inbox-groups.md)。历史正式 Host/桌面记录见[验证记录](workbench-validation.md)及 `docs/review/`，只在对应 SHA/环境范围内使用。
+
+## 固定依赖与发行
+
+固定源码的工具链独立安装、编译；先读其开发/桌面说明，再通过本仓准备脚本在隔离树应用产品补丁，不直接修改子模块。升级需专门分支，同步 `.gitmodules`、gitlink、`runtime.lock.json` 和必要接口/平台证据；不自动追踪最新版本。
+
+版本、签名、打包和发布操作见[桌面发行指南](../distribution/desktop/README.md)、[服务指南](../distribution/server/README.md)。发布与当前分支的代码检查分开，不能把文档准备、版本号或一次构建成功当作新包已发布。
