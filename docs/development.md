@@ -28,7 +28,7 @@ pnpm upstream:check
 | `docs`、`tests`、`examples` | 技术文档、验证约定和独立示例          |
 | `upstream/deepseek-harness` | 由子模块锁定的官方依赖源码            |
 
-包边界按 [AGENTS.md](../AGENTS.md)执行；跨包走 `@zhuma/*` 公开入口。修改公共 DTO、装配或其他写者模块前，先在原工作项明确文件和最小接缝，不另造身份、聊天或工作台事实库。
+包边界与通用工程约定见 [AGENTS.md](../AGENTS.md)；跨包走 `@zhuma/*` 公开入口。公共 DTO、装配及持久化协议的变更，应明确影响范围、兼容方式和验证方法；身份、聊天与工作台数据继续沿各自的权威来源维护。
 
 ## 常用命令
 
@@ -59,9 +59,9 @@ pnpm upstream:check
 
 ## 验证和交付
 
-[交付规则与总索引 #25](https://github.com/dolibali/zhuma/issues/25) 与对应工作项是实时入口，具体文件归属读 [AGENTS.md](../AGENTS.md)。阶段、优先级由协调维护；文档保存范围/接口/证据版本，不另抄阶段表。Issue/PR 使用 GitHub 插件或 `gh`，保留独立 topic/worktree，按有效规则普通合并。
+变更通过独立 topic 分支和 Pull Request 集成，遵守仓库有效保护规则；Issue/PR 可使用 GitHub 插件或 `gh` 管理。通用约定见 [AGENTS.md](../AGENTS.md)，长期范围与历史证据见[产品范围](product-coverage.md)。
 
-开始、交付、阻塞变化和验收时，在原工作项合并更新分支/完整 SHA、PR、实际完成、证据边界、负责人和下一交付。无变化不刷评论；代码评审和详细证据留 PR，用 `Refs #工作项` 关联，未达退出条件不自动关闭。
+提交变更时说明解决的问题、行为变化、影响范围及验证结果。检查记录绑定准确源码版本，区分契约、真实 Host、界面、模型和安装等层次；详细证据保留在对应 PR，工作项引用结论。产品与使用文档维护稳定入口和行为说明，阶段进展集中在[总索引 #25](https://github.com/dolibali/zhuma/issues/25)与对应工作项。
 
 当前已经提供成员创建/规划、原生会话处理、固定文字/文件交付、评审与下游等实现；完整 FR/LC、工程案例和延期范围仍读[产品范围](product-coverage.md)。`pnpm check` 只证明其实际运行的检查，不能认证模型、平台、安装或全业务通过。新增代码后的验证必须绑定新源码；未变部分按准确版本继承历史证据，不因文档整理重复 GUI/SDK/模型。
 
