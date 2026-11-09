@@ -1,5 +1,7 @@
 # Zhuma Desktop 发行指南
 
+首次从源码运行或本地部署，先读[源码运行与本地部署指南](../../docs/getting-started.md)。本页保留该发行入口的详细约束。
+
 Zhuma 使用固定的官方 DSH Electron 实现，自有工作台通过插件预装，必要的上游改动保存在 `patches/deepseek-harness/zhuma-desktop.patch`。构建脚本在 `.build/desktop/deepseek-harness/` 创建一次性的 DSH Git worktree，**不修改** `upstream/deepseek-harness/` 的已固定代码。
 
 ## 安装与首发边界
